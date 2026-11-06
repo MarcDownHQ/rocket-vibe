@@ -86,6 +86,7 @@ where
         offering: None,
         gathered: Vec::new(),
         relay_only: false,
+        stream: None,
         microphone: true,
         deafened: false,
         connected: false,
@@ -333,6 +334,7 @@ async fn joined<S: CallSignaling>(
                 }
                 Peer::Track { stream, id, track } => {
                     debug(&format!("track {id} of {stream}"));
+                    call.stream = Some(stream.clone());
                     let task = sound.listen_rtc(id.clone(), stream, true, track);
                     if let Some(old) = call.heard.insert(id, task) {
                         old.abort();
@@ -531,6 +533,8 @@ struct Call {
     /// The local candidates so far, which an offer that waited carries.
     gathered: Vec<Candidate>,
     relay_only: bool,
+    /// The stream of the last remote track.
+    stream: Option<String>,
     microphone: bool,
     deafened: bool,
     connected: bool,
@@ -555,6 +559,7 @@ impl Call {
             pc.close();
         }
         self.levels.clear();
+        self.stream = None;
         self.offering = None;
         self.gathered.clear();
     }
@@ -620,7 +625,13 @@ impl Call {
         for m in &self.roster {
             let (speaking, loud) = match self.levels.get(&m.id) {
                 Some(level) => (*level > SPEAKING && !m.muted, *level),
-                None => self.mix.activity(&m.id, false),
+                // One mixed stream and one person: its loudness is theirs.
+                None => match (&self.stream, self.roster.len()) {
+                    (Some(stream), 1) if self.mix.activity(&m.id, false) == (false, 0.0) => {
+                        self.mix.activity(stream, false)
+                    }
+                    _ => self.mix.activity(&m.id, false),
+                },
             };
             participants.push(Participant {
                 identity: m.id.clone(),
