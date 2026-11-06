@@ -987,6 +987,11 @@ impl Tokens {
         Ok(token)
     }
 
+    /// The calling stack's bearer (cc, conv, broker, epconv).
+    pub async fn calling(&self) -> Result<Zeroizing<String>, RestError> {
+        Ok(self.access("https://ic3.teams.office.com").await?.value)
+    }
+
     /// The templates bearer, for renaming a channel.
     pub async fn templates(&self) -> Result<Zeroizing<String>, RestError> {
         let mut held = self.held.lock().await;

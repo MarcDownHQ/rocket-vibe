@@ -1,6 +1,7 @@
 //! Microsoft Teams: an account signed in with a device code (`auth`), its
 //! service calls (`client`), translation and the Trouter live connection.
 pub mod auth;
+pub mod calling;
 pub mod client;
 pub mod frames;
 pub mod live;
