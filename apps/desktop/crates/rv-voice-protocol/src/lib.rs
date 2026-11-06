@@ -21,6 +21,14 @@ fn is_false(value: &bool) -> bool {
 /// The participant attribute through which a client reports being deafened.
 pub const DEAFENED_ATTRIBUTE: &str = "rv.deafened";
 
+/// Someone else in an external call.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RemoteMember {
+    pub id: String,
+    pub name: String,
+    pub muted: bool,
+}
+
 #[derive(Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum Command {
@@ -60,6 +68,24 @@ pub enum Command {
         join_token: String,
         /// The provider's web origin the signalling expects.
         origin: String,
+    },
+    /// A call whose signalling the app speaks itself (Teams, over its own tokens
+    /// and socket): the sidecar offers ([`Event::LocalOffer`]) and carries the media.
+    /// Audio only.
+    ConnectExternal {
+        identity: String,
+    },
+    /// The answer to [`Event::LocalOffer`], in plain WebRTC SDP.
+    RemoteAnswer {
+        sdp: String,
+    },
+    /// Who else is in an external call.
+    RemoteRoster {
+        members: Vec<RemoteMember>,
+    },
+    /// The other side ended an external call.
+    RemoteEnded {
+        reason: String,
     },
     /// The room's group reached a new epoch: frames from now on use its key.
     SetKey {
@@ -153,6 +179,10 @@ impl std::fmt::Debug for Command {
                 .field("signaling_url", signaling_url)
                 .field("attendee_id", attendee_id)
                 .finish_non_exhaustive(),
+            Self::ConnectExternal { .. } => f.write_str("ConnectExternal"),
+            Self::RemoteAnswer { .. } => f.write_str("RemoteAnswer"),
+            Self::RemoteRoster { members } => f.debug_struct("RemoteRoster").field("members", &members.len()).finish(),
+            Self::RemoteEnded { reason } => f.debug_struct("RemoteEnded").field("reason", reason).finish(),
             Self::SetKey { .. } => f.write_str("SetKey"),
             Self::SetMicrophone { enabled } => f.debug_struct("SetMicrophone").field("enabled", enabled).finish(),
             Self::SetDeafened { deafened } => f.debug_struct("SetDeafened").field("deafened", deafened).finish(),
@@ -274,6 +304,11 @@ pub fn thumbnail(id: &str) -> String {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum Event {
+    /// An external call's local offer, its candidates in it: signal it, then
+    /// give the answer back with [`Command::RemoteAnswer`].
+    LocalOffer {
+        sdp: String,
+    },
     Hello {
         version: u32,
         sidecar: String,

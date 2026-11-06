@@ -102,6 +102,10 @@ fn main() {
                 connected = true;
                 publish(&me);
             }
+            Command::ConnectExternal { .. }
+            | Command::RemoteAnswer { .. }
+            | Command::RemoteRoster { .. }
+            | Command::RemoteEnded { .. } => {}
             Command::ConnectChime { signaling_url, attendee_id, .. } => {
                 url = signaling_url;
                 me.identity = attendee_id;

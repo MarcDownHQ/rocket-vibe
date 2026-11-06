@@ -338,6 +338,8 @@ struct Inner {
     /// The microphone's level (`f32` bits), apart from the snapshot: it moves
     /// ten times a second and only a meter reads it.
     input_level: AtomicU32,
+    /// An external call's local offer, from the sidecar to whoever signals it.
+    local_offer: tokio::sync::watch::Sender<Option<String>>,
 }
 
 /// A Jitsi Meet call to carry natively: where its conference is and as whom.
@@ -449,6 +451,7 @@ impl VoiceController {
                 key_refresh: KEY_REFRESH,
                 video: Mutex::default(),
                 input_level: AtomicU32::new(0),
+                local_offer: tokio::sync::watch::channel(None).0,
             }),
         }
     }
@@ -522,6 +525,35 @@ impl VoiceController {
             origin: call.origin.clone(),
         };
         self.start(label.to_owned(), true, None, None, connect).await
+    }
+
+    /// Starts a call whose signalling the app speaks itself (Teams), audio only:
+    /// the offer comes from [`Self::local_offer`], the rest goes through the
+    /// `remote_*` methods.
+    pub async fn connect_external(&self, label: &str, identity: &str) -> Result<(), VoiceError> {
+        self.inner.local_offer.send_replace(None);
+        let connect = Command::ConnectExternal { identity: identity.to_owned() };
+        self.start(label.to_owned(), true, None, None, connect).await
+    }
+
+    /// The external call's local offer, once the sidecar gathered it; `None` when
+    /// it does not come in time.
+    pub async fn local_offer(&self) -> Option<String> {
+        let mut offers = self.inner.local_offer.subscribe();
+        let offer = tokio::time::timeout(Duration::from_secs(15), offers.wait_for(Option::is_some)).await.ok()?.ok()?;
+        offer.clone()
+    }
+
+    pub async fn remote_answer(&self, sdp: &str) {
+        self.command(Command::RemoteAnswer { sdp: sdp.to_owned() }).await;
+    }
+
+    pub async fn remote_roster(&self, members: Vec<rv_voice_protocol::RemoteMember>) {
+        self.command(Command::RemoteRoster { members }).await;
+    }
+
+    pub async fn remote_ended(&self, reason: &str) {
+        self.command(Command::RemoteEnded { reason: reason.to_owned() }).await;
     }
 
     /// Joins a call the sidecar carries itself.
@@ -893,6 +925,9 @@ impl Inner {
                         _ => {}
                     }
                     s.snapshot.error = Some(code);
+                }
+                Event::LocalOffer { sdp } => {
+                    self.local_offer.send_replace(Some(sdp));
                 }
                 Event::Hello { .. } | Event::Devices { .. } | Event::Screens { .. } | Event::InputLevel { .. } => {}
             }

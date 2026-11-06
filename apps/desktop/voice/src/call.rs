@@ -85,6 +85,7 @@ where
         levels: HashMap::new(),
         offering: None,
         gathered: Vec::new(),
+        relay_only: false,
         microphone: true,
         deafened: false,
         connected: false,
@@ -98,7 +99,8 @@ where
         let reason = match stop {
             Stop::Left => break "client_initiated".to_owned(),
             Stop::Over(reason) => break reason,
-            Stop::Lost(reason) => reason,
+            Stop::Lost(reason) if session.rejoinable() => reason,
+            Stop::Lost(reason) => break reason,
         };
         (factory, microphone) = media(&sound);
         diagnose(&format!("call: lost ({reason}), joining again"));
@@ -212,6 +214,24 @@ async fn joined<S: CallSignaling>(
                     local(Ok(Command::SetMicrophone { enabled }), call, microphone, sound);
                     let _ = session.set_muted(!enabled).await;
                 }
+                Some(Ok(Command::RemoteAnswer { sdp })) => {
+                    if let Err(e) = set_answer(call, &sdp).await {
+                        diagnose(&format!("call: answer: {e}"));
+                        session.leave().await;
+                        return Stop::Over("connect_failed".to_owned());
+                    }
+                }
+                Some(Ok(Command::RemoteRoster { members })) => {
+                    call.roster = members
+                        .into_iter()
+                        .map(|m| CallMember { id: m.id, name: m.name, muted: m.muted })
+                        .collect();
+                    call.publish(session.local_id());
+                }
+                Some(Ok(Command::RemoteEnded { reason })) => {
+                    session.leave().await;
+                    return Stop::Over(reason);
+                }
                 Some(command) => local(command, call, microphone, sound),
             },
             event = session.next_event() => match event {
@@ -225,6 +245,7 @@ async fn joined<S: CallSignaling>(
                         .collect();
                 }
                 Some(CallEvent::OfferWanted { relay_only }) => {
+                    call.relay_only = relay_only;
                     if !call.ensure_pc(factory, relay_only, &peer_tx, microphone, session.local_id()) {
                         session.leave().await;
                         return Stop::Lost("connect_failed".to_owned());
@@ -245,13 +266,7 @@ async fn joined<S: CallSignaling>(
                     }
                 }
                 Some(CallEvent::Answer { sdp }) => {
-                    let Some(pc) = &call.pc else { continue };
-                    let answer = SessionDescription::parse(&sdp, SdpType::Answer);
-                    let set = match answer {
-                        Ok(answer) => pc.set_remote_description(answer).await.map_err(|e| format!("{e:?}")),
-                        Err(e) => Err(format!("{e:?}")),
-                    };
-                    if let Err(e) = set {
+                    if let Err(e) = set_answer(call, &sdp).await {
                         diagnose(&format!("call: answer: {e}"));
                         session.leave().await;
                         return Stop::Lost("connect_failed".to_owned());
@@ -333,7 +348,7 @@ async fn joined<S: CallSignaling>(
                 if call
                     .offering
                     .as_ref()
-                    .is_some_and(|(_, at)| at.elapsed() > GATHERING || (!call.gathered.is_empty() && at.elapsed() > FIRST_CANDIDATE))
+                    .is_some_and(|(_, at)| at.elapsed() > GATHERING || (call.relay_only && !call.gathered.is_empty() && at.elapsed() > FIRST_CANDIDATE))
                     && send_offer(session, call).await.is_err()
                 {
                     return Stop::Lost("other".to_owned());
@@ -341,6 +356,64 @@ async fn joined<S: CallSignaling>(
                 call.tick(session.local_id());
             }
         }
+    }
+}
+
+/// The remote answer set on the peer connection.
+async fn set_answer(call: &Call, sdp: &str) -> Result<(), String> {
+    let Some(pc) = &call.pc else { return Ok(()) };
+    let answer = SessionDescription::parse(sdp, SdpType::Answer).map_err(|e| format!("{e:?}"))?;
+    pc.set_remote_description(answer).await.map_err(|e| format!("{e:?}"))
+}
+
+/// The signalling of a call the app speaks itself: this side only offers, and the
+/// app answers through the window's commands. It cannot be joined again from here.
+pub struct External {
+    identity: String,
+    started: u8,
+}
+
+impl External {
+    pub fn new(identity: String) -> Self {
+        External { identity, started: 0 }
+    }
+}
+
+impl CallSignaling for External {
+    async fn next_event(&mut self) -> Option<CallEvent> {
+        self.started += 1;
+        match self.started {
+            1 => Some(CallEvent::IceServers(Vec::new())),
+            2 => Some(CallEvent::OfferWanted { relay_only: false }),
+            _ => std::future::pending().await,
+        }
+    }
+
+    async fn answer(&mut self, _sdp: &str) -> Result<(), rv_call::Error> {
+        Ok(())
+    }
+
+    async fn offer(&mut self, sdp: &str) -> Result<(), rv_call::Error> {
+        emit(Event::LocalOffer { sdp: sdp.to_owned() });
+        Ok(())
+    }
+
+    async fn local_candidate(&mut self, _candidate: Candidate) -> Result<(), rv_call::Error> {
+        Ok(())
+    }
+
+    async fn set_muted(&mut self, _muted: bool) -> Result<(), rv_call::Error> {
+        Ok(())
+    }
+
+    async fn leave(&mut self) {}
+
+    fn local_id(&self) -> &str {
+        &self.identity
+    }
+
+    fn rejoinable(&self) -> bool {
+        false
     }
 }
 
@@ -457,6 +530,7 @@ struct Call {
     offering: Option<(String, tokio::time::Instant)>,
     /// The local candidates so far, which an offer that waited carries.
     gathered: Vec<Candidate>,
+    relay_only: bool,
     microphone: bool,
     deafened: bool,
     connected: bool,

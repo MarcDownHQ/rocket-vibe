@@ -108,6 +108,10 @@ pub trait CallSignaling {
     fn leave(&mut self) -> impl Future<Output = ()> + Send;
     /// The stream id this client's own tracks must carry (`msid`).
     fn local_id(&self) -> &str;
+    /// Whether a session lost on the way can be joined again by this adapter.
+    fn rejoinable(&self) -> bool {
+        true
+    }
 }
 
 /// An SDP with these gathered candidates in their media sections, for a
