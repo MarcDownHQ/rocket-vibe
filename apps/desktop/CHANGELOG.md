@@ -11,6 +11,7 @@ section here.
 
 - Notes: Slack canvases keep bold, italic, strikethrough, code and links, and checklist items can be ticked; the whole formatting bar is available there.
 - Notes: Teams task lists show assignees, due dates and buckets; single tasks can be added and removed, and a save can create a new table or task list.
+- Teams (experimental): a call started in a chat runs inside the app, audio only, with no Microsoft sign-in in a browser window; Teams' page stays the fallback.
 - Slack (experimental): a huddle runs inside the app, audio only, in its own call window (who is there, who speaks, mute, deafen, hang up); its page stays the fallback when the join fails.
 - Notes open beside the conversation instead of in a dialog, the room list hidden meanwhile. Back returns to the conversation with the list restored, forward reopens the notes, and an unsaved edit comes back when they reopen.
 - Notes: the editor has a formatting bar (bold, italic, strikethrough, heading, link, code, quote, lists). Slack canvases offer the block formats only, since they keep no inline formatting.

@@ -185,10 +185,19 @@ impl Ended {
                 "connection_failed" => ("call.end.media_failed", None),
                 "terminated" | "transport_replaced" | "meeting_ended" => ("call.end.server", None),
                 "connect_failed" | "refused" | "at_capacity" => ("call.end.join_failed", None),
+                "remote_ended" => ("call.end.remote", None),
+                "no_answer" => ("call.end.no_answer", None),
                 "sidecar_exited" => ("call.end.sidecar", None),
                 other => ("call.end.other", Some(other)),
             },
         }
+    }
+
+    /// A call that never connected because it could not be joined: its page may
+    /// take over. Not when the other side declined or never answered: opening the
+    /// page would ring them again.
+    pub fn is_join_failure(&self) -> bool {
+        matches!(self, Self::Failed(reason) if !matches!(reason.as_str(), "remote_ended" | "no_answer"))
     }
 
     pub fn from_reason(reason: &str) -> Self {

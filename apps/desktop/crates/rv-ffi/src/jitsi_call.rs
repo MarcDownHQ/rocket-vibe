@@ -18,6 +18,19 @@ pub struct JitsiCallSession {
     asked: Mutex<HashSet<String>>,
 }
 
+/// Places a native Teams call in this chat; None to open Teams' page instead.
+pub(crate) async fn start_teams(session: Arc<Session>, rid: String, title: String) -> Option<Arc<JitsiCallSession>> {
+    if !rv_core::voice::available() || !session.teams_call_possible(&rid) {
+        return None;
+    }
+    on_tokio(async move {
+        let voice = VoiceController::new();
+        session.place_teams_call(&voice, rv_core::teams_call::Target::Room(rid), &title).await.ok()?;
+        Some(Arc::new(JitsiCallSession { voice, naming: None, asked: Mutex::default() }))
+    })
+    .await
+}
+
 /// Joins a Slack huddle, starting it when none runs; None to open its page instead.
 pub(crate) async fn start_huddle(
     session: Arc<Session>,

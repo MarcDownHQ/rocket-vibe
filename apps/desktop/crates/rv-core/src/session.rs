@@ -270,6 +270,8 @@ pub struct Session {
     synced: Arc<Mutex<std::collections::HashSet<String>>>,
     /// Calls started in direct rooms, and the one ringing (`crate::call_ring`).
     rings: Mutex<crate::call_ring::Rings>,
+    /// Pushes to the callbacks of the Teams calls placed here.
+    pub(crate) teams_call_pushes: broadcast::Sender<Value>,
 }
 
 /// Exponential back-off from 1 s to `MAX_RECONNECT_DELAY_MS`, with up to 1 s of jitter.
@@ -498,6 +500,7 @@ impl Session {
             avatars: Mutex::default(),
             notification_preference: Mutex::new("default".to_owned()),
             rings: Mutex::default(),
+            teams_call_pushes: broadcast::channel(64).0,
             e2e: Mutex::default(),
             custom_emoji: Mutex::default(),
             custom_emoji_names: Mutex::default(),
@@ -589,6 +592,9 @@ impl Session {
                 LiveEvent::Event { name, data, broadcast } => match s.backend() {
                     Backend::Slack(_) => s.apply_slack(&name, &data).await,
                     Backend::Teams(_) if name == crate::teams::live::CALL_EVENT => s.teams_call(&data),
+                    Backend::Teams(_) if name == crate::teams::live::CALL_AGENT_EVENT => {
+                        let _ = s.teams_call_pushes.send(data);
+                    }
                     Backend::Teams(teams) if name == crate::teams::live::REGISTERED_EVENT => {
                         teams.set_presence_route(&data);
                         let teams = teams.clone();
@@ -2358,6 +2364,12 @@ impl Session {
         }
         let call_id = actions::start_call(&self.rest, rid).await?;
         actions::join_call(&self.rest, &call_id).await
+    }
+
+    /// Whether a Teams call in this room can be placed natively.
+    pub fn teams_call_possible(&self, rid: &str) -> bool {
+        let Backend::Teams(teams) = self.backend() else { return false };
+        teams.call_targets(rid).is_some() && teams.call_route().is_some()
     }
 
     /// Joins the huddle a call id names (starting it when none runs), for

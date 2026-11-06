@@ -633,6 +633,11 @@ impl Chat {
         jitsi_call::start_huddle(self.session.clone(), call_url, title).await
     }
 
+    /// Places a Teams call in this chat natively; None to open Teams' page instead.
+    pub async fn start_teams_call(&self, rid: String, title: String) -> Option<Arc<jitsi_call::JitsiCallSession>> {
+        jitsi_call::start_teams(self.session.clone(), rid, title).await
+    }
+
     pub fn is_slack(&self) -> bool {
         self.session.info.slack.is_some()
     }

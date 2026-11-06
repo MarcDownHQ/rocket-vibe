@@ -12,6 +12,8 @@ use std::time::Instant;
 
 use adw::prelude::*;
 use gtk::glib;
+use rv_core::session::Session;
+use rv_core::teams_call::Target;
 use rv_core::voice::{ConnectionState, Ended, NativeCall, Snapshot, VoiceController};
 
 use crate::chat::voice::{Occupant, avatar_card, avatar_frame, controls, name_tag};
@@ -49,9 +51,17 @@ impl Names {
     }
 }
 
+/// What the window joins.
+pub enum Call {
+    /// The sidecar speaks the provider's signalling itself.
+    Sidecar(NativeCall),
+    /// This account speaks it and the sidecar carries the media (Teams).
+    Account(std::sync::Arc<Session>, Target),
+}
+
 /// Opens the call; `fallback` opens the meeting's page instead when the
 /// sidecar is missing or could not join.
-pub fn open(call: NativeCall, title: &str, names: Names, fallback: impl Fn() + 'static) {
+pub fn open(call: Call, title: &str, names: Names, fallback: impl Fn() + 'static) {
     if !rv_core::voice::available() {
         return fallback();
     }
@@ -150,7 +160,7 @@ pub fn open(call: NativeCall, title: &str, names: Names, fallback: impl Fn() + '
             let Some(window) = w.upgrade() else { return };
             if let Some(ended) = &snapshot.ended {
                 if !s.closed.get() {
-                    if !s.ever_connected.get() && matches!(ended, Ended::Failed(_)) {
+                    if !s.ever_connected.get() && ended.is_join_failure() {
                         // Never joined: the meeting's page instead.
                         fb();
                         s.closed.set(true);
@@ -193,7 +203,15 @@ pub fn open(call: NativeCall, title: &str, names: Names, fallback: impl Fn() + '
     let fb = fallback.clone();
     let label = title.to_owned();
     glib::spawn_future_local(async move {
-        let joined = on_tokio(async move { v.connect_native(&label, &call).await }).await;
+        let joined = on_tokio(async move {
+            match call {
+                Call::Sidecar(call) => v.connect_native(&label, &call).await.map_err(|e| e.to_string()),
+                Call::Account(session, target) => {
+                    session.place_teams_call(&v, target, &label).await.map_err(|e| e.message)
+                }
+            }
+        })
+        .await;
         if let Err(e) = joined {
             eprintln!("Native call not joined ({e}), opening the meeting's page");
             fb();

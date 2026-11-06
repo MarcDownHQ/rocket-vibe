@@ -731,6 +731,24 @@ impl TeamsSync {
         translate::call_link(&users, upn(self.service.me()).as_deref())
     }
 
+    /// Who a call in this chat rings and, for a group's, its thread.
+    pub fn call_targets(&self, rid: &str) -> Option<(Vec<String>, Option<String>)> {
+        let entries = self.entries.lock().unwrap();
+        let (entry, team) = entries.get(rid)?;
+        if team.is_some() {
+            return None;
+        }
+        let people = translate::call_people(self.service.me(), entry);
+        (!people.is_empty()).then(|| (people, group_chat(entry).then(|| rid.to_owned())))
+    }
+
+    /// The socket's route, which a call's callbacks live under; `None` until registered.
+    pub fn call_route(&self) -> Option<String> {
+        let route = self.presence_route.lock().unwrap();
+        let (uri, _) = route.as_ref()?;
+        uri.strip_suffix("unifiedPresenceService").map(str::to_owned)
+    }
+
     /// Whether a call can be started in a room: a chat. A channel call needs
     /// a meeting this client cannot create.
     pub fn callable(&self, rid: &str) -> bool {
