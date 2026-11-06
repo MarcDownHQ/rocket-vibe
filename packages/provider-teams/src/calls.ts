@@ -1,6 +1,6 @@
 /**
- * Teams calls in the app's call screen, on Teams' web app: there is no API
- * this client can join a call's media with. A call card's id is its start
+ * Teams calls in the app's call screen, on Teams' web app, unless started in a
+ * chat, which the voice engine carries itself (`calling.ts`). A call card's id is its start
  * message: Join opens a channel call's own join page (`meetupLink`, the
  * starter as organizer), a chat call's conversation page. Starting one in a
  * chat opens Teams' call link ringing its people by their sign-in names; a
@@ -10,14 +10,24 @@
  * and `join_url` in `apps/desktop/crates/rv-core/src/teams/sync.rs`.
  */
 
-import type { NativeCalls } from '@rocket-vibe/provider-api/calls';
+import type { ExternalCallEngine, NativeCalls } from '@rocket-vibe/provider-api/calls';
+import { placeExternalCall } from './calling.ts';
 import type { TeamsClient } from './client.ts';
 import type { TeamsRooms } from './sync.ts';
 import { callAllowed, callLink, callPeople, channelLink, chatLink, meetupLink, mriOf, objectId, splitId, str } from './translate.ts';
 
 const VIEW = 'view=msnp24Equivalent%7CsupportsMessageProperties';
 
-export function teamsCalls(client: TeamsClient, rooms: TeamsRooms, tenant: string, me: string): NativeCalls {
+/** What a call carried by the voice engine needs of the account's socket. */
+export type CallSocket = {
+  /** The registration's route, which a call's callbacks live under; null until registered. */
+  route: () => string | null;
+  pushes: (listener: (envelope: Record<string, unknown>) => void) => () => void;
+  id: () => string;
+  name: string;
+};
+
+export function teamsCalls(client: TeamsClient, rooms: TeamsRooms, tenant: string, me: string, socket?: CallSocket): NativeCalls {
   const url = async (rid: string): Promise<string> => {
     const known = rooms.entries.get(rid);
     if (!known?.team) return chatLink(rid, tenant);
@@ -48,7 +58,30 @@ export function teamsCalls(client: TeamsClient, rooms: TeamsRooms, tenant: strin
     };
     return callLink(people.map(upn).filter((u): u is string => u !== null), upn(me));
   };
+  const targets = (rid: string): { people: string[]; thread: string | null } | null => {
+    const known = rooms.entries.get(rid);
+    if (!known || known.team) return null;
+    const people = callPeople(me, known.entry);
+    if (people.length === 0) return null;
+    return { people, thread: people.length > 1 ? rid : null };
+  };
+  const external = socket === undefined ? {} : {
+    placeable: (room: string) => targets(room) !== null && socket.route() !== null,
+    placeExternal: async (room: string, engine: ExternalCallEngine) => {
+      const target = targets(room);
+      const surl = socket.route();
+      if (target === null || surl === null) throw new Error('call_not_placeable');
+      await placeExternalCall({
+        post: (url, chain, body) => client.callingPost(url, chain, socket.id(), body),
+        pushes: socket.pushes,
+        id: socket.id,
+        me: { mri: me, name: socket.name },
+        surl,
+      }, engine, target.people, target.thread);
+    },
+  };
   return {
+    ...external,
     available: async (room) => !(room !== undefined && rooms.entries.get(room)?.team),
     memo: () => true,
     start: async (room) => (await ring(room)) ?? url(room),

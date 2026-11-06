@@ -80,6 +80,8 @@ internal class JitsiSession(
   private val tracks = ConcurrentHashMap<String, AudioTrack>()
   private val heard = ConcurrentHashMap<String, Long>()
   private val levels = ConcurrentHashMap<String, Double>()
+  /** The stream of the last remote track: one person's voice when only one is here. */
+  @Volatile private var mixed: String? = null
   @Volatile var connected = false; private set
   /** Lost on the way and joining again. */
   @Volatile var reconnecting = false; private set
@@ -89,6 +91,9 @@ internal class JitsiSession(
 
   /** The offer waiting for ICE gathering, sent once at most. */
   private var offering = false
+  /** The app signals this call: the offer goes to [onLocalOffer], and a loss ends it. */
+  private var external = false
+  var onLocalOffer: ((String) -> Unit)? = null
   private var relayOnly = false
 
   /** Joins on a thread of its own; false at once when the library is missing. */
@@ -99,6 +104,28 @@ internal class JitsiSession(
       hold { if (configJs == null) 0L else JitsiCall.start(meeting, configJs, displayName, token) }
     }, "jitsi-call").start()
     return true
+  }
+
+  /**
+   * A call whose signalling the app speaks itself: this side offers through
+   * [onLocalOffer] and takes the answer with [remoteAnswer]. Needs no library:
+   * nothing here crosses JNI. Called on the main thread.
+   */
+  fun startExternal(identity: String) {
+    external = true
+    localId = identity
+    // After the engine set this session's microphone state, which the track reads.
+    main.post { if (!closed) localOffer() }
+  }
+
+  fun remoteAnswer(sdp: String) {
+    pc?.setRemoteDescription(Sdp(), SessionDescription(SessionDescription.Type.ANSWER, sdp))
+  }
+
+  fun remoteRoster(members: List<Triple<String, String, Boolean>>) {
+    roster.clear()
+    members.forEach { (id, name, muted) -> roster[id] = name to muted }
+    onChange()
   }
 
   /** Joins a Chime meeting on a thread of its own; false at once when the library is missing. */
@@ -275,7 +302,8 @@ internal class JitsiSession(
     if (closed || !offering) return
     val sdp = pc?.localDescription?.description ?: return
     offering = false
-    if (handle != 0L) JitsiCall.offer(handle, sdp)
+    if (external) onLocalOffer?.invoke(sdp)
+    else if (handle != 0L) JitsiCall.offer(handle, sdp)
   }
 
   private val observer = object : PeerConnection.Observer {
@@ -291,7 +319,7 @@ internal class JitsiSession(
           PeerConnection.PeerConnectionState.CONNECTED -> {
             connected = true; everConnected = true; reconnecting = false; onChange()
           }
-          PeerConnection.PeerConnectionState.FAILED -> lost = "connection_failed"
+          PeerConnection.PeerConnectionState.FAILED -> if (external) onEnd("connection_failed") else lost = "connection_failed"
           else -> {}
         }
       }
@@ -299,6 +327,7 @@ internal class JitsiSession(
     override fun onAddTrack(receiver: RtpReceiver, streams: Array<out MediaStream>) {
       val track = receiver.track() as? AudioTrack ?: return
       val endpoint = streams.firstOrNull()?.id ?: return
+      mixed = endpoint
       track.setEnabled(!deafened)
       tracks[endpoint] = track
     }
@@ -336,10 +365,12 @@ internal class JitsiSession(
       "deafened" to VoiceEngine.deafened, "level" to 0.0, "local" to true, "camera" to false, "screen" to false,
     )
     return listOf(local) + roster.map { (id, value) ->
+      // One mixed stream and one person: its loudness is theirs.
+      val source = if (roster.size == 1 && heard[id] == null && levels[id] == null) mixed ?: id else id
       mapOf(
         "identity" to id, "name" to value.first, "muted" to value.second, "deafened" to false,
-        "speaking" to (!value.second && (heard[id]?.let { now - it < HANGOVER_MS } ?: false)),
-        "level" to (levels[id] ?: 0.0), "local" to false, "camera" to false, "screen" to false,
+        "speaking" to (!value.second && (heard[source]?.let { now - it < HANGOVER_MS } ?: false)),
+        "level" to (levels[source] ?: 0.0), "local" to false, "camera" to false, "screen" to false,
       )
     }
   }

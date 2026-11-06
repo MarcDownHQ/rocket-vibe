@@ -502,6 +502,26 @@ object VoiceEngine {
   internal fun connectChime(callId: String, credentials: ChimeCredentials, title: String): Boolean =
     connectNative(callId, title) { it.startChime(credentials) }
 
+  /**
+   * A call whose signalling the app speaks itself (Teams), audio only: the offer
+   * arrives through [onLocalOffer], the rest through the `remote*` functions.
+   */
+  fun connectExternal(callId: String, identity: String, title: String): Boolean =
+    connectNative(callId, title) { session ->
+      session.onLocalOffer = { sdp -> onLocalOffer?.invoke(sdp) }
+      session.startExternal(identity)
+      true
+    }
+
+  var onLocalOffer: ((String) -> Unit)? = null
+
+  fun remoteAnswer(sdp: String) { jitsi?.remoteAnswer(sdp) }
+
+  fun remoteRoster(members: List<Triple<String, String, Boolean>>) { jitsi?.remoteRoster(members) }
+
+  /** The other side ended an external call. */
+  fun remoteEnded(why: String) { if (jitsi != null) teardown(why, cue = state == "connected") }
+
   private fun connectNative(callId: String, title: String, start: (JitsiSession) -> Boolean): Boolean {
     teardown(null, cue = false)
     val session = JitsiSession(app, onChange = {

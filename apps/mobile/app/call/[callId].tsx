@@ -14,7 +14,8 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { WebView } from 'react-native-webview';
 
 import { callAllowed as teamsCallAllowed } from '@rocket-vibe/provider-teams/translate';
-import { callContext, callPersonName, joinConference, nativeChime, nativeJitsi } from '../../lib/call.ts';
+import type { ExternalCallEngine } from '@rocket-vibe/provider-api/calls';
+import { callContext, callPersonName, joinConference, nativeChime, nativeJitsi, placeNative } from '../../lib/call.ts';
 import { sameOrigin, originOf } from '../../lib/origin.ts';
 import { VoiceNative, type VoiceSnapshot } from '../../modules/voice/index.ts';
 import type { RestClient } from '../../lib/rest.ts';
@@ -176,6 +177,8 @@ function Call({
           if (!alive) return;
           await Linking.openURL(u);
           router.back();
+        } else if (await placedNatively(u)) {
+          if (alive) setNative(true);
         } else if (await joinedNatively(u)) {
           if (alive) setNative(true);
         } else if (originOf(u) === null) {
@@ -188,6 +191,37 @@ function Call({
         if (alive) setError(t('call.joinFailed'));
       }
     })();
+    // A Teams call started here (its call link, not a Join) runs on the voice engine.
+    async function placedNatively(u: string): Promise<boolean> {
+      const voice = VoiceNative;
+      if (pageOnly || voice === null || rid === undefined || !u.startsWith('https://teams.microsoft.com/l/call/')) return false;
+      try {
+        await requestMicrophone();
+        // Listening before the session opens: the offer can come at once.
+        const offered = new Promise<string>((resolve, reject) => {
+          const timer = setTimeout(() => { sub.remove(); reject(new Error('no_offer')); }, 20_000);
+          const sub = voice.addListener('localOffer', ({ sdp }) => { clearTimeout(timer); sub.remove(); resolve(sdp); });
+        });
+        const engine: ExternalCallEngine = {
+          start: async (identity) => {
+            if (!await voice.connectExternal(callId, identity, title)) throw new Error('voice_unavailable');
+          },
+          offer: () => offered,
+          answer: (sdp) => voice.remoteAnswer(sdp),
+          roster: (members) => voice.remoteRoster(members),
+          ended: (reason) => voice.remoteEnded(reason),
+          left: () => new Promise((resolve) => {
+            const sub = voice.addListener('change', (next) => {
+              if (next.state === 'disconnected') { sub.remove(); resolve(); }
+            });
+          }),
+        };
+        return await placeNative(client, rid, engine);
+      } catch {
+        await voice.disconnect().catch(() => {});
+        return false;
+      }
+    }
     async function joinedHuddle(): Promise<boolean> {
       if (pageOnly || VoiceNative === null) return false;
       try {
@@ -347,7 +381,12 @@ function endReason(t: T, reason: string | null | undefined): string {
     case 'connection_lost': case 'connection_closed': return t('call.endConnectionLost');
     case 'connection_failed': return t('call.endMediaFailed');
     case 'terminated': case 'transport_replaced': return t('call.endServer');
-    case 'connect_failed': return t('call.endJoinFailed');
+    case 'meeting_ended': return t('call.endServer');
+    case 'connect_failed': case 'refused': case 'at_capacity': return t('call.endJoinFailed');
+    case 'remote_ended': return t('call.endRemote');
+    case 'no_answer': return t('call.endNoAnswer');
+    case 'duplicate_identity': return t('call.endElsewhere');
+    case 'removed': return t('call.endRemoved');
     default: return reason ? reason : t('call.endServer');
   }
 }

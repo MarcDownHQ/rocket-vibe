@@ -1651,6 +1651,10 @@ const fr = {
   'call.endMediaFailed': 'la connexion audio a échoué',
   'call.endServer': 'le serveur d’appel a fermé la session',
   'call.endJoinFailed': 'impossible de rejoindre l’appel',
+  'call.endRemote': 'l’appel est terminé de l’autre côté',
+  'call.endNoAnswer': 'pas de réponse',
+  'call.endElsewhere': 'rejoint depuis un autre appareil',
+  'call.endRemoved': 'retiré de l’appel',
   'call.loadFailed': "L'appel n'a pas pu se charger.",
 
   // ── Navigateur d'emojis
@@ -3381,6 +3385,10 @@ const en: Record<TranslationKey, string> = {
   'call.endMediaFailed': 'the audio connection failed',
   'call.endServer': 'the call server closed the session',
   'call.endJoinFailed': 'could not join the call',
+  'call.endRemote': 'the other side ended the call',
+  'call.endNoAnswer': 'no answer',
+  'call.endElsewhere': 'joined from another device',
+  'call.endRemoved': 'removed from the call',
   'call.loadFailed': "The call couldn't load.",
 
   'emojiPicker.search': 'Search for an emoji',

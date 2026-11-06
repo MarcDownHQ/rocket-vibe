@@ -3,6 +3,20 @@ export type CallScope={room?:string;membership?:string|null;alive?:()=>boolean};
 /** An Amazon Chime attendee's credentials, for a call the voice engine carries itself. */
 export type ChimeCredentials={signalingUrl:string;audioHost:string;attendeeId:string;joinToken:string;origin:string};
 
+/** The voice engine, for a call whose signalling the provider speaks itself. */
+export type ExternalCallEngine={
+  /** Opens the session under this identity. */
+  start:(identity:string)=>Promise<void>;
+  /** The local offer, once its candidates are gathered. */
+  offer:()=>Promise<string>;
+  answer:(sdp:string)=>Promise<void>;
+  roster:(members:{id:string;name:string;muted:boolean}[])=>Promise<void>;
+  /** The call ended elsewhere, for this reason. */
+  ended:(reason:string)=>Promise<void>;
+  /** Resolves when the call is hung up here. */
+  left:()=>Promise<void>;
+};
+
 export type NativeCalls={
   available:(room?:string,membership?:string|null)=>Promise<boolean>;
   memo:()=>boolean;
@@ -11,6 +25,10 @@ export type NativeCalls={
   decline?:(id:string)=>Promise<void>;
   /** A call the voice engine can carry over Amazon Chime: joins it and answers its credentials (Slack's huddles). */
   chime?:(id:string)=>Promise<ChimeCredentials>;
+  /** Whether this room's call can run on the voice engine with `placeExternal`. */
+  placeable?:(room:string)=>boolean;
+  /** Places this room's call on the engine: resolves once the provider took it. */
+  placeExternal?:(room:string,engine:ExternalCallEngine)=>Promise<void>;
   /** The name of someone in such a call, from the id the call gives them. */
   personName?:(identity:string)=>Promise<string|null>;
 };

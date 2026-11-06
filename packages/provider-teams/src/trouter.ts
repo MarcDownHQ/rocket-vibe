@@ -109,6 +109,8 @@ export function presenceUri(surl: string): string {
 
 /** The `DdpEvent` collection a call push is emitted on. */
 export const CALL_COLLECTION = 'teams-call';
+/** A push to a callback of a call this client placed. */
+export const CALL_AGENT_COLLECTION = 'teams-call-agent';
 
 export const CALL_APP = { appId: 'SkypeSpacesWeb', templateKey: 'SkypeSpacesWeb_2.6' };
 export const CHAT_APP = { appId: 'TeamsCDLWebWorker', templateKey: 'TeamsCDLWebWorker_2.6' };
@@ -417,6 +419,10 @@ export class TeamsTrouter implements Listener {
         const reply = replyFrame(frame.envelope);
         if (reply) this.send(reply);
         if (frame.ack) this.send(`6:::${frame.ack}`);
+        if (typeof frame.envelope.url === 'string' && frame.envelope.url.includes('/callAgent/')) {
+          this.emit({ collection: CALL_AGENT_COLLECTION, eventKey: '', args: [frame.envelope] });
+          return;
+        }
         const pushed = presencePush(frame.envelope);
         if (pushed) {
           for (const e of presenceEvents(presenceRows(pushed))) this.emit(e);

@@ -31,21 +31,24 @@ class VoiceModule : Module() {
   private val listener: () -> Unit = { sendEvent("change", VoiceEngine.last) }
   private val levelListener: (Double) -> Unit = { level -> sendEvent("level", mapOf("level" to level)) }
   private val hangUpListener: () -> Unit = { sendEvent("hangUp", emptyMap<String, Any>()) }
+  private val offerListener: (String) -> Unit = { sdp -> sendEvent("localOffer", mapOf("sdp" to sdp)) }
   private var consent: Promise? = null
 
   override fun definition() = ModuleDefinition {
     Name("Voice")
-    Events("change", "level", "hangUp")
+    Events("change", "level", "hangUp", "localOffer")
     OnCreate {
       VoiceEngine.attach(appContext.reactContext ?: throw IllegalStateException("No React context"))
       VoiceEngine.listen(listener)
       VoiceEngine.listenLevel(levelListener)
       CallService.listen(hangUpListener)
+      VoiceEngine.onLocalOffer = offerListener
     }
     OnDestroy {
       VoiceEngine.unlisten(listener)
       VoiceEngine.unlistenLevel(levelListener)
       CallService.unlisten(hangUpListener)
+      VoiceEngine.onLocalOffer = null
     }
     Function("snapshot") { VoiceEngine.last }
     Function("canvasRead") { load: String -> Canvas.readDocument(load) }
@@ -61,6 +64,16 @@ class VoiceModule : Module() {
     AsyncFunction("connectChime") { callId: String, signalingUrl: String, audioHost: String, attendeeId: String, joinToken: String, origin: String, title: String ->
       VoiceEngine.connectChime(callId, ChimeCredentials(signalingUrl, audioHost, attendeeId, joinToken, origin), title)
     }.runOnQueue(Queues.MAIN)
+    AsyncFunction("connectExternal") { callId: String, identity: String, title: String ->
+      VoiceEngine.connectExternal(callId, identity, title)
+    }.runOnQueue(Queues.MAIN)
+    AsyncFunction("remoteAnswer") { sdp: String -> VoiceEngine.remoteAnswer(sdp) }.runOnQueue(Queues.MAIN)
+    AsyncFunction("remoteRoster") { members: List<Map<String, Any?>> ->
+      VoiceEngine.remoteRoster(members.map { m ->
+        Triple(m["id"] as? String ?: "", m["name"] as? String ?: "", m["muted"] as? Boolean ?: false)
+      })
+    }.runOnQueue(Queues.MAIN)
+    AsyncFunction("remoteEnded") { reason: String -> VoiceEngine.remoteEnded(reason) }.runOnQueue(Queues.MAIN)
     AsyncFunction("disconnect") { VoiceEngine.leave() }.runOnQueue(Queues.MAIN)
     AsyncFunction("setE2eeKey") { key: String -> VoiceEngine.setE2eeKey(key) }.runOnQueue(Queues.MAIN)
     AsyncFunction("setMicrophone") { enabled: Boolean -> VoiceEngine.setMicrophone(enabled) }.runOnQueue(Queues.MAIN)
