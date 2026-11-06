@@ -741,6 +741,33 @@ impl Service {
         .map(|_| ())
     }
 
+    /// A POST to the calling stack (`epconv`, or a link it gave) with its bearer
+    /// and client headers; its JSON answer, `Null` when it has none.
+    pub async fn calling_post(&self, url: &str, chain: &str, body: &Value) -> Result<Value, RestError> {
+        let url = calling_url(url).ok_or_else(|| RestError::incomplete("call: not a Teams calling link"))?;
+        let bearer = self.tokens.calling().await?;
+        let response = self
+            .http
+            .post(url)
+            .bearer_auth(bearer.as_str())
+            .header("x-microsoft-skype-chain-id", chain)
+            .header("x-microsoft-skype-message-id", crate::calling::random_id())
+            .header("x-microsoft-skype-client", crate::calling::CLIENT)
+            .header("x-ms-migration", "True")
+            .header("origin", "https://teams.cloud.microsoft")
+            .header("referer", "https://teams.cloud.microsoft/")
+            .json(body)
+            .send()
+            .await
+            .map_err(|e| RestError::incomplete(&format!("call: {}", e.without_url())))?;
+        let status = response.status();
+        let text = response.text().await.unwrap_or_default();
+        if !status.is_success() {
+            return Err(RestError::incomplete(&format!("call: {status}")));
+        }
+        Ok(serde_json::from_str(&text).unwrap_or(Value::Null))
+    }
+
     /// How far each member read a conversation (the chat service's
     /// `consumptionhorizons`): each member's MRI and the arrival time of the
     /// last message they read, as Teams' web app reads it for its receipts.

@@ -13,15 +13,12 @@ use std::time::Duration;
 
 use futures_util::{SinkExt, StreamExt};
 use rv_teams::auth::{Tokens, from_secret};
-use rv_teams::calling::{self, CallEvent, Caller};
+use rv_teams::calling::{self, CLIENT, CallEvent, Caller, EPCONV};
 use rv_teams::frames::{self, Frame};
 use serde_json::{Value, json};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio_tungstenite::tungstenite::Message;
 use tokio_tungstenite::tungstenite::client::IntoClientRequest;
-
-const EPCONV: &str = "https://api-emea.flightproxy.teams.microsoft.com/api/v2/epconv";
-const CLIENT: &str = "SkypeSpaces/1415/26100212018/os=linux; osVer=undefined; deviceType=computer; browser=chrome";
 
 fn uuid() -> String {
     let mut b = [0u8; 16];
@@ -170,7 +167,7 @@ async fn main() {
             .json(&body)
             .send()
     };
-    let payload = calling::place_call(&caller, &[], &calling::teams_offer(&offer), &uuid());
+    let payload = calling::place_call(&caller, &[], None, &calling::teams_offer(&offer), &uuid());
     let response = post(EPCONV.to_owned(), payload).await.unwrap();
     let status = response.status();
     let body = response.text().await.unwrap_or_default();
@@ -221,6 +218,7 @@ async fn main() {
                         println!("push {tail}: {}", match &event {
                             CallEvent::Accepted { sdp, .. } => format!("accepted, {} bytes of SDP", sdp.len()),
                             CallEvent::Ended { phrase } => format!("ended {phrase:?}"),
+                            CallEvent::Roster(changes) => format!("roster {changes:?}"),
                             CallEvent::Other => shape(&calling::pushed_body(&envelope), 1),
                         });
                         match event {
@@ -243,7 +241,7 @@ async fn main() {
                                 }
                             }
                             CallEvent::Ended { .. } => break,
-                            CallEvent::Other => {}
+                            CallEvent::Roster(_) | CallEvent::Other => {}
                         }
                     }
                     _ => {}

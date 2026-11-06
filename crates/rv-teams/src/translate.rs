@@ -874,6 +874,11 @@ pub fn call_people(me: &str, chat: &Value) -> Vec<String> {
         .collect()
 }
 
+/// Whether a call link starts a call (`call_link`), rather than joins one.
+pub fn is_call_start(link: &str) -> bool {
+    link.starts_with("https://teams.microsoft.com/l/call/")
+}
+
 /// The call window profile of a Teams account (its MRI), a folder name.
 pub fn call_profile(account: &str) -> String {
     let id: String = account

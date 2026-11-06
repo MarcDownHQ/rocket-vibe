@@ -9,6 +9,12 @@ use serde_json::{Value, json};
 /// Microsoft's Test Call bot: it plays back what it hears, and rings no one.
 pub const ECHO_BOT: &str = "cf28171e-fcfd-47e4-a1d6-79460b0b3ca0";
 
+/// Where a call is placed.
+pub const EPCONV: &str = "https://api.flightproxy.teams.microsoft.com/api/v2/epconv";
+
+/// How this client presents itself to the calling stack.
+pub const CLIENT: &str = "SkypeSpaces/1415/26100212018/os=linux; osVer=undefined; deviceType=computer; browser=chrome";
+
 /// A plain WebRTC offer, audio only, in Teams' dialect: its profile is written
 /// `RTP/SAVP`, its extension URIs with backslashes, and the audio section carries
 /// its label and the range of the source it sends. The media line names a real
@@ -152,7 +158,30 @@ pub enum CallEvent {
     Ended {
         phrase: Option<String>,
     },
+    /// Who is in the call now, as a delta: an account with no endpoint left.
+    Roster(Vec<RosterChange>),
     Other,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RosterChange {
+    pub mri: String,
+    pub name: String,
+    pub present: bool,
+}
+
+fn roster_changes(body: &Value) -> Option<Vec<RosterChange>> {
+    let participants = body.get("participants")?.as_object()?;
+    Some(
+        participants
+            .iter()
+            .map(|(mri, entry)| RosterChange {
+                mri: mri.clone(),
+                name: entry.pointer("/details/displayName").and_then(Value::as_str).unwrap_or_default().to_owned(),
+                present: entry.get("endpoints").and_then(Value::as_object).is_some_and(|e| !e.is_empty()),
+            })
+            .collect(),
+    )
 }
 
 /// A pushed request's JSON body, unwrapped from its gzip when it has one.
@@ -192,12 +221,27 @@ pub fn call_event(envelope: &Value) -> CallEvent {
             keep_alive_seconds: accepted.get("callKeepAliveInterval").and_then(Value::as_u64),
         };
     }
+    if envelope.get("url").and_then(Value::as_str).is_some_and(|u| u.contains("/rosterUpdate"))
+        && let Some(changes) = roster_changes(&body)
+    {
+        return CallEvent::Roster(changes);
+    }
     for key in ["callEnd", "conversationEnd", "sessionRejection"] {
         if let Some(end) = body.get(key) {
             return CallEvent::Ended { phrase: end.get("phrase").and_then(Value::as_str).map(str::to_owned) };
         }
     }
     CallEvent::Other
+}
+
+/// A version 4 UUID, as the calling stack's ids are.
+pub fn random_id() -> String {
+    let mut b = [0u8; 16];
+    let _ = getrandom::fill(&mut b);
+    b[6] = (b[6] & 0x0f) | 0x40;
+    b[8] = (b[8] & 0x3f) | 0x80;
+    let hex: String = b.iter().map(|x| format!("{x:02x}")).collect();
+    format!("{}-{}-{}-{}-{}", &hex[..8], &hex[8..12], &hex[12..16], &hex[16..20], &hex[20..])
 }
 
 /// Who places a call and from where.
@@ -225,14 +269,14 @@ impl Caller<'_> {
 
 /// `epconv`'s body placing a call with this offer: to `to`'s accounts, or, with
 /// none, Microsoft's Test Call.
-pub fn place_call(caller: &Caller, to: &[String], offer: &str, modality_id: &str) -> Value {
+pub fn place_call(caller: &Caller, to: &[String], thread: Option<&str>, offer: &str, modality_id: &str) -> Value {
     let cb = |path: &str| caller.callback(path);
     let test = to.is_empty();
     let oid = caller.mri.strip_prefix("8:orgid:").unwrap_or(caller.mri);
-    let group_chat = if test {
-        json!({"threadId": format!("19:{oid}_{ECHO_BOT}@unq.gbl.spaces"), "messageId": null})
-    } else {
-        Value::Null
+    let group_chat = match thread {
+        _ if test => json!({"threadId": format!("19:{oid}_{ECHO_BOT}@unq.gbl.spaces"), "messageId": null}),
+        Some(thread) => json!({"threadId": thread, "messageId": null}),
+        None => Value::Null,
     };
     let targets: Vec<Value> = to.iter().map(|mri| json!({"id": mri, "participantId": modality_id})).collect();
     let mut body = json!({
@@ -418,6 +462,17 @@ mod tests {
         let ended = json!({"body": {"callEnd": {"phrase": "Busy"}}});
         assert_eq!(call_event(&ended), CallEvent::Ended { phrase: Some("Busy".into()) });
         assert_eq!(call_event(&json!({"body": "{}"})), CallEvent::Other);
+        let roster = json!({"url": "https://x/callAgent/e/r/conversation/rosterUpdate/", "body": {"participants": {
+            "8:orgid:a": {"details": {"displayName": "Ana"}, "endpoints": {"x": {}}},
+            "8:orgid:b": {"details": {"displayName": "Bo"}, "endpoints": {}},
+        }}});
+        assert_eq!(
+            call_event(&roster),
+            CallEvent::Roster(vec![
+                RosterChange { mri: "8:orgid:a".into(), name: "Ana".into(), present: true },
+                RosterChange { mri: "8:orgid:b".into(), name: "Bo".into(), present: false },
+            ])
+        );
     }
 
     #[test]
@@ -441,11 +496,14 @@ mod tests {
             random: "r",
             client: "c",
         };
-        let test = place_call(&caller, &[], "v=0", "m");
+        let test = place_call(&caller, &[], None, "v=0", "m");
         assert_eq!(test["participants"]["to"], json!([]));
         assert_eq!(test["scenario"], "UserInitiatedTestCall");
         assert_eq!(test["callInvitation"]["links"]["acceptance"], "https://t/callAgent/e/r/call/acceptance/");
-        let real = place_call(&caller, &["8:orgid:x".to_owned()], "v=0", "m");
+        let real = place_call(&caller, &["8:orgid:x".to_owned()], None, "v=0", "m");
+        assert_eq!(real["groupChat"], Value::Null);
+        let group = place_call(&caller, &["8:orgid:x".to_owned()], Some("19:t@thread.v2"), "v=0", "m");
+        assert_eq!(group["groupChat"]["threadId"], "19:t@thread.v2");
         assert_eq!(real["participants"]["to"][0]["id"], "8:orgid:x");
         assert_eq!(real.get("scenario"), None);
     }

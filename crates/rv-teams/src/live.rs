@@ -32,6 +32,8 @@ const CALLING_APP: (&str, &str) = ("SkypeSpacesWeb", "SkypeSpacesWeb_2.6");
 /// The `LiveEvent` name of a pushed call; its data is the pushed request, read
 /// again with [`frames::call_push`].
 pub const CALL_EVENT: &str = "TeamsCall";
+/// A push to a callback of a call this client placed.
+pub const CALL_AGENT_EVENT: &str = "TeamsCallAgent";
 /// Presence changes Unified Presence pushed: `{presence: [...]}`.
 pub const PRESENCE_EVENT: &str = "TeamsPresence";
 /// The chat registration made on this socket: `{trouterUri, registration}`,
@@ -347,7 +349,13 @@ impl Actor {
                 {
                     return false;
                 }
-                if let Some((name, data)) = frames::chat_event(&envelope) {
+                if envelope.get("url").and_then(Value::as_str).is_some_and(|u| u.contains("/callAgent/")) {
+                    self.emit(LiveEvent::Event {
+                        name: CALL_AGENT_EVENT.to_owned(),
+                        data: envelope,
+                        broadcast: Value::Null,
+                    });
+                } else if let Some((name, data)) = frames::chat_event(&envelope) {
                     self.emit(LiveEvent::Event { name, data, broadcast: Value::Null });
                 } else if let Some(data) = frames::presence_push(&envelope) {
                     self.emit(LiveEvent::Event { name: PRESENCE_EVENT.to_owned(), data, broadcast: Value::Null });
