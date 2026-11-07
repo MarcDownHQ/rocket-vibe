@@ -23,6 +23,9 @@ const RINGING: Duration = Duration::from_secs(90);
 pub enum Target {
     /// This chat's people.
     Room(String),
+    /// These accounts directly, by MRI, with no chat of this client's to go through
+    /// (someone of another tenant, whom its people search does not find).
+    People(Vec<String>),
     /// Microsoft's Test Call bot, which plays back what it hears and rings no one.
     TestCall,
 }
@@ -64,6 +67,7 @@ impl Session {
         let route = teams.call_route().ok_or_else(|| RestError::incomplete("call: socket not registered"))?;
         let (to, thread) = match &target {
             Target::TestCall => (Vec::new(), None),
+            Target::People(people) => (people.clone(), None),
             Target::Room(rid) => {
                 teams.call_targets(rid).ok_or_else(|| RestError::incomplete("call: nobody to ring here"))?
             }

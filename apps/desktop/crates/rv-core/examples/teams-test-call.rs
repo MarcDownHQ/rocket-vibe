@@ -1,6 +1,7 @@
-//! Live: a full account session places Microsoft's Test Call (it rings no one)
-//! through `Session::place_teams_call` and an `rv-voice` sidecar, prints what the
-//! voice session does, and hangs up.
+//! Live: a full account session places Microsoft's Test Call (it rings no one), or
+//! with `TEAMS_PROBE_TO=<mri>` rings that account, through
+//! `Session::place_teams_call` and an `rv-voice` sidecar, prints what the voice
+//! session does, and hangs up.
 //!
 //!   secret-tool lookup application me.barrut.RocketVibe kind session account '<key>' \
 //!     | RV_VOICE_BIN=path/to/rv-voice RV_VOICE_FAKE_AUDIO=sine cargo run -p rv-core --example teams-test-call
@@ -23,10 +24,14 @@ async fn main() {
     let dir = tempfile::tempdir().unwrap();
     let session = Session::start(info, &dir.path().join("probe.sqlite")).unwrap();
     let voice = VoiceController::new();
+    let target = match std::env::var("TEAMS_PROBE_TO") {
+        Ok(mri) => Target::People(vec![mri]),
+        Err(_) => Target::TestCall,
+    };
     let mut placed = Err("not tried".to_owned());
     for _ in 0..30 {
         tokio::time::sleep(Duration::from_secs(1)).await;
-        placed = session.place_teams_call(&voice, Target::TestCall, "Test Call").await.map_err(|e| e.message);
+        placed = session.place_teams_call(&voice, target.clone(), "Test Call").await.map_err(|e| e.message);
         match &placed {
             Err(message) if message.contains("not registered") => continue,
             _ => break,
