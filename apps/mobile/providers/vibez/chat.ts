@@ -50,6 +50,7 @@ export class NativeChat {
   private readonly socketFactory: (url: string) => WebSocket;
   private readonly reconnect: Reconnector;
   private readonly listeners = new Set<() => void>();
+  private readonly threadListeners = new Set<() => void>();
   private socket: WebSocket | null = null;
   private generation = 0;
   private stopped = false;
@@ -166,6 +167,9 @@ export class NativeChat {
   }
   profileVersionFor(id:string|null):string {return `${this.generation}:${this.verified}:${this.store.projectionToken()}:${id?`${this.profileHeads.get(id)??'unobserved'}:${id===this.session.userId?this.ownProfileHead:''}`:this.profileChanges}`;}
   private notify(): void { for (const listener of this.listeners) listener(); }
+  /** Nothing in the journal names a thread: a list or totals read again whenever the cursor moves. */
+  onThreadsChanged(listener:()=>void):()=>void {this.threadListeners.add(listener);return()=>{this.threadListeners.delete(listener);};}
+  private threadsChanged():void {for(const listener of [...this.threadListeners])listener();}
   start(): void { this.reconnect.trigger(); }
   private disconnect(): void {
     for(const view of this.cryptoViews)void view.close();
@@ -263,7 +267,7 @@ export class NativeChat {
       if (!alive()) return;
       await this.open(url,generation);
       if (!alive()) return;
-      this.status = {online:true,error:null}; this.notify();
+      this.status = {online:true,error:null}; this.notify();this.threadsChanged();
       if(this.capabilities?.presence){this.emitPresence('online');this.presenceTimer=setInterval(()=>this.emitPresence('online'),20_000);}
       this.lastFrame = Date.now();
       this.watchdog = setInterval(() => {
@@ -337,7 +341,7 @@ export class NativeChat {
           if (batch.protocol_version !== 1) throw new Error('Unsupported batch version');
           await this.store.applyBatch(batch);
           for(const room of this.live.state?.rooms??[])if((await this.store.readState(room.room_id))?.membership_version!==room.membership_version){this.live.clear();break;}
-          if (generation === this.generation) this.notify();
+          if (generation === this.generation) {this.notify();this.threadsChanged();}
         }).catch(() => { if (generation === this.generation) this.lost(); }).finally(() => { this.queued--; });
       };
     });
@@ -1273,7 +1277,7 @@ export class NativeChat {
     const room=await this.transport.roomReadState(saved.rid);
     await this.stateGeneration(generation,projection,saved.rid,saved.membership);
     if(!await this.store.cacheReadState(room,projection))throw new NativeError(409,'delivery_revalidate');
-    this.notify();
+    this.notify();this.threadsChanged();
   }
   private applyFavorite(saved:SavedFavorite):Promise<void> {
     const operation=this.commands.then(async()=>{
@@ -1377,6 +1381,28 @@ export class NativeChat {
     if (!await this.store.ingest(page.messages,projection)) throw new NativeError(409,'delivery_revalidate');
     this.notify();
     return page.has_more;
+  }
+  async threadInbox(filter:'followed'|'unread',before:string|null):Promise<import('./protocol.generated.ts').ThreadInbox>{
+    this.ready();if(!this.capabilities?.thread_inbox)throw new NativeError(501,'unsupported_feature');
+    return this.transport.threadInbox(filter,before);
+  }
+  async threadInboxTotals():Promise<import('./protocol.generated.ts').ThreadInboxTotals>{
+    this.ready();if(!this.capabilities?.thread_inbox)throw new NativeError(501,'unsupported_feature');
+    return this.transport.threadInboxTotals();
+  }
+  async markAllThreadsRead():Promise<void>{
+    this.ready();if(!this.capabilities?.thread_inbox)throw new NativeError(501,'unsupported_feature');
+    await this.transport.markThreadsRead({operation_id:this.id()});
+    this.threadsChanged();
+  }
+  async followThread(root:string,present:boolean):Promise<void>{
+    this.ready();if(!this.capabilities?.thread_follow)throw new NativeError(501,'unsupported_feature');
+    await this.transport.setThreadFollow(root,{operation_id:this.id(),present});
+    this.threadsChanged();
+  }
+  async threadFollowing(root:string):Promise<boolean>{
+    this.ready();if(!this.capabilities?.thread_follow)throw new NativeError(501,'unsupported_feature');
+    return (await this.transport.message(root)).personal_follow?.present===true;
   }
   async loadThread(root:string,abandoned:()=>boolean=()=>false):Promise<void>{
     this.ready();

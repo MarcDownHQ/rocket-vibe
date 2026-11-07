@@ -541,6 +541,10 @@ export class NativeTransport {
   }
   history(room: string, before?: string): Promise<MessagePage> { return this.request('MessagePage', `/api/v1/rooms/${encodeURIComponent(room)}/messages${before === undefined ? '' : '?before=' + encodeURIComponent(before)}`); }
   thread(root:string,before?:string):Promise<NativeTypes['ThreadPage']>{return this.request('ThreadPage',`/api/v1/messages/${encodeURIComponent(root)}/thread${before===undefined?'':'?before='+encodeURIComponent(before)}`);}
+  threadInbox(filter:'followed'|'unread',before:string|null):Promise<NativeTypes['ThreadInbox']>{return this.request('ThreadInbox',`/api/v1/threads?filter=${filter}${before===null?'':'&before='+encodeURIComponent(before)}`);}
+  threadInboxTotals():Promise<NativeTypes['ThreadInboxTotals']>{return this.request('ThreadInboxTotals','/api/v1/threads/totals');}
+  markThreadsRead(input:NativeTypes['MarkThreadsRead']):Promise<NativeTypes['ThreadsReadReceipt']>{return this.request('ThreadsReadReceipt','/api/v1/threads/read',input);}
+  setThreadFollow(id:string,input:NativeTypes['SetMark']):Promise<Message>{return this.request('Message',`/api/v1/messages/${encodeURIComponent(id)}/follow`,input,false,undefined,'PUT');}
   markThreadRead(root:string,position:string):Promise<NativeTypes['ThreadReadState']>{return this.request('ThreadReadState',`/api/v1/messages/${encodeURIComponent(root)}/thread/read`,{position});}
   async snapshot(): Promise<Snapshot> {
     if (this.token === null) throw new NativeError(401,'session_rejected');
