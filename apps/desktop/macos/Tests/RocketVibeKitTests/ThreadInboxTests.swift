@@ -168,4 +168,93 @@ final class ThreadInboxTests: XCTestCase {
         XCTAssertNil(inbox.badge)
         XCTAssertFalse(inbox.markingAll)
     }
+
+    func testChipsKeepTheCoreRuleAndEachHasItsEmptyPage() async {
+        let source = FakeSource()
+        source.pages["false/"] = ThreadInboxPage(entries: [
+            entry("mine", participated: true),
+            entry("named", mentioned: true),
+            entry("both", participated: true, mentioned: true),
+            entry("other"),
+        ], next: nil)
+        source.pages["true/"] = ThreadInboxPage(entries: [entry("named", mentioned: true)], next: nil)
+        let inbox = ThreadInboxModel(source: source)
+        await inbox.open()
+        XCTAssertEqual(inbox.scope, .all)
+        XCTAssertEqual(inbox.visible.map(\.root), ["mine", "named", "both", "other"])
+        await inbox.setScope(.participated)
+        XCTAssertEqual(inbox.visible.map(\.root), ["mine", "both"])
+        await inbox.setScope(.mentioned)
+        XCTAssertEqual(inbox.visible.map(\.root), ["named", "both"], "participated and mentioned overlap")
+        await inbox.setScope(.others)
+        XCTAssertEqual(inbox.visible.map(\.root), ["other"])
+        XCTAssertEqual(source.asked.count, 1, "a chip filters what is loaded")
+
+        await inbox.setUnreadOnly(true)
+        XCTAssertEqual(inbox.scope, .others, "the chip stays across the tabs")
+        XCTAssertEqual(inbox.phase, .empty)
+        XCTAssertEqual(inbox.emptyTitle, "thread_inbox.none_others")
+        XCTAssertFalse(inbox.caughtUp)
+        await inbox.setScope(.participated)
+        XCTAssertEqual(inbox.emptyTitle, "thread_inbox.none_participated")
+        await inbox.setScope(.mentioned)
+        XCTAssertEqual(inbox.phase, .list)
+        await inbox.setScope(.all)
+        XCTAssertEqual(inbox.emptyTitle, "thread_inbox.none_unread")
+        XCTAssertTrue(inbox.caughtUp)
+        await inbox.setUnreadOnly(false)
+        XCTAssertEqual(inbox.emptyTitle, "thread_inbox.none_followed")
+    }
+
+    func testAShortListReadsAtMostFourMorePagesPerAction() async {
+        let source = FakeSource()
+        for page in 0..<20 {
+            source.set(cursor: page == 0 ? nil : String(page), ["o\(page)"], next: String(page + 1))
+        }
+        let inbox = ThreadInboxModel(source: source)
+        await inbox.open()
+        XCTAssertEqual(source.asked.map(\.cursor), [nil, "1", "2", "3", "4"])
+        XCTAssertEqual(inbox.visible.count, 5)
+
+        await inbox.setScope(.mentioned)
+        XCTAssertEqual(source.asked.count, 9, "the chip reads four more pages, no more")
+        XCTAssertTrue(inbox.visible.isEmpty)
+        XCTAssertEqual(inbox.phase, .list, "past the bound the list offers to load more")
+        XCTAssertEqual(inbox.next, "9")
+        XCTAssertFalse(inbox.loadingMore)
+
+        await inbox.loadMore()
+        XCTAssertEqual(source.asked.count, 14, "load more is a new action with its own bound")
+
+        source.pages["false/14"] = ThreadInboxPage(entries: [entry("named", mentioned: true)], next: nil)
+        await inbox.loadMore()
+        XCTAssertEqual(source.asked.count, 15, "nothing left to read")
+        XCTAssertEqual(inbox.visible.map(\.root), ["named"])
+        XCTAssertNil(inbox.next)
+    }
+
+    func testAPolledSourceIsReadOnATimerAndOnReturning() async {
+        let source = FakeSource()
+        source.set(["a"])
+        let still = ThreadInboxModel(source: source, refreshDelay: 1_000_000, pollInterval: 5_000_000)
+        await still.open()
+        still.appBecameActive()
+        try? await Task.sleep(nanoseconds: 40_000_000)
+        XCTAssertEqual(source.asked.count, 1, "a source with live events is not polled")
+        still.stop()
+
+        source.polled = true
+        source.asked = []
+        let inbox = ThreadInboxModel(source: source, refreshDelay: 1_000_000, pollInterval: 5_000_000)
+        await inbox.open()
+        await until(source.asked.count > 2, "read again while on screen")
+        inbox.close()
+        try? await Task.sleep(nanoseconds: 20_000_000)
+        let asked = source.totalsAsked
+        try? await Task.sleep(nanoseconds: 40_000_000)
+        XCTAssertEqual(source.totalsAsked, asked, "closed, the timer stops")
+        inbox.appBecameActive()
+        await until(source.totalsAsked > asked, "returning to the app reads the totals")
+        inbox.stop()
+    }
 }
