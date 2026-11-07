@@ -1486,6 +1486,13 @@ const fr = {
   'threads.noneFollowed': 'Vous ne suivez aucun fil de ce salon.',
   'threads.loadFailed': 'Chargement impossible.',
   'threads.followFailed': 'Le suivi du fil n’a pas pu changer.',
+  'threadInbox.followed': 'Suivis',
+  'threadInbox.unread': 'Non lus',
+  'threadInbox.markAll': 'Tout marquer comme lu',
+  'threadInbox.markAllFailed': 'Les fils n’ont pas pu être marqués comme lus.',
+  'threadInbox.noneFollowed': 'Vous ne suivez aucun fil',
+  'threadInbox.noneUnread': 'Aucun fil non lu',
+  'threadInbox.caughtUp': 'Vous êtes à jour',
 
   // ── Message actions
   'messageActions.messageNotFound': 'Message introuvable.',
@@ -3228,6 +3235,13 @@ const en: Record<TranslationKey, string> = {
   'threads.noneFollowed': "You don't follow any thread in this room.",
   'threads.loadFailed': "Couldn't load.",
   'threads.followFailed': "Couldn't change following this thread.",
+  'threadInbox.followed': 'Followed',
+  'threadInbox.unread': 'Unread',
+  'threadInbox.markAll': 'Mark all as read',
+  'threadInbox.markAllFailed': "Couldn't mark the threads as read.",
+  'threadInbox.noneFollowed': 'You follow no thread',
+  'threadInbox.noneUnread': 'No unread threads',
+  'threadInbox.caughtUp': "You're all caught up",
 
   'messageActions.messageNotFound': 'Message not found.',
   'messageActions.noActions': 'Nothing to do with this message.',
