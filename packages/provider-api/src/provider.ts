@@ -237,6 +237,21 @@ export interface ProviderActions {
   /** Follows or unfollows the thread of `root` (idempotent server-side). */
   followThread?(rid: string, root: string, put: boolean): Promise<void>;
   /**
+   * A page of the account's threads across its rooms, latest reply first.
+   * `cursor`: the previous page's `next`, opaque, `null` for the first page.
+   * Absent where the server has no such list (screens hide the entry).
+   */
+  threadInbox?(filter: ThreadInboxFilter, cursor: string | null): Promise<ThreadInboxPage>;
+  /** How many of the account's threads hold unread replies. */
+  threadTotals?(): Promise<ThreadTotals>;
+  /** Reads the thread of `root` and nothing of its room, at least up to `lastReply` (ms). */
+  markThreadRead?(rid: string, root: string, lastReply?: number | null): Promise<void>;
+  markAllThreadsRead?(): Promise<void>;
+  /** Whether I follow the thread, where its root carries no follower list. */
+  threadFollowing?(rid: string, root: string): Promise<boolean>;
+  /** Told when the account's threads may have changed; returns the unsubscribe function. */
+  onThreadsChanged?(listener: () => void): () => void;
+  /**
    * A page of a channel's or group's members from `offset`, owners and
    * moderators first, `filter` searched by the server. Absent where the
    * server has no such list (a DM has none).
@@ -314,6 +329,26 @@ export type EditableSettings = { name: boolean; texts: boolean; readOnly: boolea
 
 /** One page of `ProviderActions.listThreads`. */
 export type ThreadPage = { threads: LocalMessage[]; total: number };
+
+export type ThreadInboxFilter = 'followed' | 'unread';
+
+export type ThreadParticipant = { id: string; username: string };
+
+export type ThreadInboxEntry = {
+  root: LocalMessage;
+  /** The room's shown name, empty when it could not be read. */
+  room: string;
+  lastReply: number;
+  replies: number;
+  participants: ThreadParticipant[];
+  unreadReplies: number;
+  unreadMentions: number;
+};
+
+/** One page of `ProviderActions.threadInbox`; `next` is null at the end of the list. */
+export type ThreadInboxPage = { entries: ThreadInboxEntry[]; next: string | null };
+
+export type ThreadTotals = { unreadThreads: number; unreadMentions: number };
 /** A room's notes: markdown saved whole against `revision`. `updatedAt` in ms. */
 export type RoomNotes = {
   markdown: string;
