@@ -598,6 +598,13 @@ impl Chat {
         Ok(page.more.unwrap_or(page.count as i64 >= rv_core::sync::HISTORY_PAGE))
     }
 
+    /// The newest page, the room neither marked read nor made the open one.
+    pub async fn peek_room(&self, rid: String, kind: String) -> Result<bool, RvError> {
+        let s = self.session.clone();
+        let page = on_tokio(async move { s.sync.load_history(&rid, &kind, None).await }).await?;
+        Ok(page.more.unwrap_or(page.count as i64 >= rv_core::sync::HISTORY_PAGE))
+    }
+
     /// One more page before `oldest_ts`.
     pub async fn load_older(&self, rid: String, kind: String, oldest_ts: i64) -> Result<model::OlderPage, RvError> {
         let (s, room) = (self.session.clone(), rid.clone());
