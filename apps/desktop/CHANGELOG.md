@@ -32,6 +32,7 @@ section here.
 - Slack (experimental): the cards bots and integrations attach to a message now show, as they do on Android, with their links, mentions and colours.
 - macOS: a GIF attachment plays instead of showing its first frame, in the message and the full-size viewer, on every server; one scrolled away and back no longer stays frozen.
 - GTK: a GIF that scrolled away after several others no longer stays frozen, a GIF attachment stops playing when animations are off, and a GIF declaring an enormous size can no longer crash the app.
+- Mattermost and kChat: reading a channel no longer marks its threads as read.
 - Notes: saving after someone else changed them while you edited now always warns you and keeps your draft; a background refresh could let the save overwrite their change.
 - Teams (experimental): opening a chat Teams keeps hidden, from a search or a profile, now opens it; nothing happened before.
 - The mouse pointer turns into a hand over reactions (GTK, macOS), and on GTK also over the quick reactions and "more reactions" buttons, a thread's reply count, a failed message's retry, the edit buttons and the actions of file and integration cards.

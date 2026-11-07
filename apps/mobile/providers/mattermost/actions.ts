@@ -118,7 +118,7 @@ export class MmActions implements ProviderActions {
   }
 
   async markRead(rid: string): Promise<void> {
-    await this.client.post('/channels/members/me/view', { body: { channel_id: rid } });
+    await this.client.post('/channels/members/me/view', { body: { channel_id: rid, collapsed_threads_supported: true } });
   }
 
   async cardAction(postId: string, actionId: string, cookie: string | null, selected?: string): Promise<CardActionAnswer> {

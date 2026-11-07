@@ -28,6 +28,7 @@ release, and its notes are that version's section here.
 
 - Notes: a Slack canvas with formatting no longer shows raw HTML tags, and a Teams page just summarised by Teams no longer reads as an older version.
 - Slack (experimental): a Giphy or Tenor GIF posted by an app or pasted as a link now shows and plays; a pasted image's preview no longer leaves a card reading "370x208px image", and cards show their links, mentions and colours.
+- Mattermost and kChat: reading a channel no longer marks its threads as read.
 - Native Jitsi and kMeet calls: being left alone in a call no longer ends it. The server ends a lone participant's media session after about 20 seconds; the app took that for the end of the call and the window closed. It now stays in the room and the sound comes back as soon as someone returns.
 - Notes: saving after someone else changed them while you edited now always warns you and keeps your draft; a background refresh could let the save overwrite their change.
 - Teams (experimental): opening a chat Teams keeps hidden, from a search or a profile, lists it again.
