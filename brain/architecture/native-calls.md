@@ -403,8 +403,14 @@ meetings with video (2 to 3 months more).
   `28:cf28171e-...` invited by `addParticipant`; it rings no one), a tone from `rv-voice`, through
   `Session::place_teams_call` (`examples/teams-test-call.rs`; the signalling alone in rv-teams
   `examples/teams-echo.rs`): token taken, answer received, DTLS up, the bot heard as decoded audio (its tile
-  speaking and silent in turn), 0 packets lost each way at 10 ms, roster, leave. **Not run**: a person rung;
-  a group chat's call; the GTK window, SwiftUI, Android on a device. **Owed**: answering an incoming call
+  speaking and silent in turn), 0 packets lost each way at 10 ms, roster, leave. **A person rung the same
+  day**, the GTK AppImage calling an account in Teams' web app in the same tenant, four short calls (5 to 15 s):
+  the native window opened, a decline ended it with its message and no page, the user heard audio both ways on a
+  real microphone and speakers, the name and speaking indicator were right, and hanging up from either side
+  ended it; 0 packets lost, no fallback. The media server connects before the callee answers, so `connected`
+  comes while it rings (the window shows "waiting" until someone else is in the roster). **Not run**: a call
+  longer than 15 s with a person; a group chat's call; another network; SwiftUI (macOS CI only), Android on a
+  device (Kotlin compiled only). **Owed**: answering an incoming call
   natively (Accept still opens Teams' page), meetings, channels. `callKeepAliveInterval` (2700 s) is
   unexplained: no capture shows what it wants, so a call past 45 minutes may end.
 
