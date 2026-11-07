@@ -2,7 +2,7 @@
 //! state, and each conversation's history, newest page first, older pages
 //! reached through the backward link the service hands out.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
@@ -42,6 +42,8 @@ pub struct TeamsSync {
     listed: Mutex<Option<(std::time::Instant, Vec<Value>)>>,
     /// One-to-one chats opened here before their first message: no list has them yet.
     pending: Mutex<HashMap<String, Value>>,
+    /// Chats Teams marks hidden that were opened here: listed again for this session.
+    revealed: Mutex<HashSet<String>>,
     /// The handle (sign-in name) each person a people search found goes by, to their MRI.
     found: Mutex<HashMap<String, String>>,
     /// Where presence subscriptions point: the chat registration's push path and id.
@@ -68,6 +70,7 @@ impl TeamsSync {
             entries: Mutex::default(),
             listed: Mutex::default(),
             pending: Mutex::default(),
+            revealed: Mutex::default(),
             found: Mutex::default(),
             presence_route: Mutex::default(),
             keep_online: AtomicBool::new(true),
@@ -259,6 +262,14 @@ impl TeamsSync {
             pending.retain(|rid, _| !entries.contains_key(rid));
             for (rid, chat) in pending.iter() {
                 entries.insert(rid.clone(), (chat.clone(), None));
+            }
+        }
+        {
+            let revealed = self.revealed.lock().unwrap();
+            for rid in revealed.iter() {
+                if let Some((entry, _)) = entries.get_mut(rid) {
+                    translate::reveal(entry);
+                }
             }
         }
         unnamed.sort();
@@ -537,7 +548,22 @@ impl TeamsSync {
         let chat = translate::new_one_on_one(&self.me, mri, now)
             .ok_or_else(|| RestError::incomplete("direct message: not a person of this tenant"))?;
         let rid = str_of(&chat, "id").unwrap_or_default().to_owned();
-        if self.entries.lock().unwrap().contains_key(&rid) {
+        let known = {
+            let mut entries = self.entries.lock().unwrap();
+            entries.get_mut(&rid).map(|(entry, _)| {
+                translate::reveal(entry);
+                entry.clone()
+            })
+        };
+        if let Some(known) = known {
+            // A chat Teams hides is known but not listed, and opening it needs it listed.
+            self.revealed.lock().unwrap().insert(rid.clone());
+            if let Some((room, sub)) = self.row(&known, None) {
+                self.store.write(|w| {
+                    w.upsert_room(&room);
+                    w.upsert_subscription(&sub);
+                });
+            }
             return Ok(rid);
         }
         if let Some((room, sub)) = self.row(&chat, None) {

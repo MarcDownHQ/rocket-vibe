@@ -879,6 +879,14 @@ pub fn is_call_start(link: &str) -> bool {
     link.starts_with("https://teams.microsoft.com/l/call/")
 }
 
+/// A chat Teams marks hidden, listed again: someone opened it here.
+pub fn reveal(chat: &mut Value) {
+    if let Some(chat) = chat.as_object_mut() {
+        chat.remove("hidden");
+        chat.remove("isConversationDeleted");
+    }
+}
+
 /// The call window profile of a Teams account (its MRI), a folder name.
 pub fn call_profile(account: &str) -> String {
     let id: String = account

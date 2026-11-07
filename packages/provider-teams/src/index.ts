@@ -336,8 +336,12 @@ export function createTeamsProvider(session: Session, rest: TokenRejection, gene
         const chat = newOneOnOne(session.userId, mri, Date.now());
         const rid = chat ? str(chat, 'id') : null;
         if (!chat || !rid) throw new TeamsError('direct_message_unknown_person');
-        const known = rooms.entries.get(rid);
-        if (known) return { rid, rawRoom: { ...known.entry, __team: known.team } };
+        const known = rooms.reveal(rid);
+        if (known) {
+          const raw = { ...known.entry, __team: known.team };
+          if (engine) await engine.ingestSubscriptions([raw]);
+          return { rid, rawRoom: raw };
+        }
         rooms.open(chat);
         const raw = { ...chat, __team: null };
         if (engine) await engine.ingestSubscriptions([raw]);
