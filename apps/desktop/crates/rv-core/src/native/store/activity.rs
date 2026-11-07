@@ -2,6 +2,18 @@
 use super::*;
 
 impl NativeStore {
+    /// Whether the account follows this thread (`Message.personal_follow`).
+    pub fn thread_followed(&self, root: &str) -> rusqlite::Result<bool> {
+        let conn = self.conn.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        if !self.same(&conn)? {
+            return Ok(false);
+        }
+        Ok(conn
+            .query_row("SELECT followed FROM native_messages WHERE id=?1", [root], |r| r.get::<_, bool>(0))
+            .optional()?
+            .unwrap_or(false))
+    }
+
     /// Each candidate's room and row, the newest `limit`: others' messages
     /// that may mention me (an `@` in their words) or reply in a thread, and
     /// mine that carry reactions. Deleted ones never.

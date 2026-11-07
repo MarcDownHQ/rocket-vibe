@@ -25,6 +25,7 @@ mod room_operations;
 pub mod scheduled;
 mod search;
 pub mod social;
+mod thread_inbox;
 mod voice;
 pub mod workflows;
 pub use room_operations::{
@@ -713,6 +714,8 @@ impl NativeSession {
                     stars: true,
                     quotes: true,
                     threads: true,
+                    thread_inbox: true,
+                    thread_follow: true,
                     typing: true,
                     presence: true,
                     search: true,
