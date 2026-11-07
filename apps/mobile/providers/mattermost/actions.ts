@@ -6,7 +6,8 @@
 
 import { cardActionRoute } from '../../lib/integrationCards.ts';
 import type { LocalMessage } from '../../lib/normalize.ts';
-import type { CardActionAnswer, EditableSettings, GroupDmPerson, ProviderActions, RoomFavorite, RoomInformation, RoomSettingsChange } from '../../lib/provider.ts';
+import type { CardActionAnswer, EditableSettings, GroupDmPerson, ProviderActions, RoomFavorite, RoomInformation, RoomSettingsChange, ThreadInboxFilter, ThreadInboxPage, ThreadTotals } from '../../lib/provider.ts';
+import { MmThreads } from './threads.ts';
 import type { MmCategories } from './categories.ts';
 import type { MmClient } from './client.ts';
 import type { MmDirectory } from './directory.ts';
@@ -24,6 +25,7 @@ export class MmActions implements ProviderActions {
   private readonly translator: MmTranslator;
   private readonly myId: string;
   private readonly categories: MmCategories | null;
+  private readonly threads: MmThreads;
 
   constructor(options: { client: MmClient; directory: MmDirectory; live: MmLive; translator: MmTranslator; myId: string; categories?: MmCategories }) {
     this.client = options.client;
@@ -32,6 +34,7 @@ export class MmActions implements ProviderActions {
     this.translator = options.translator;
     this.myId = options.myId;
     this.categories = options.categories ?? null;
+    this.threads = new MmThreads(options);
   }
 
   /** The server moves the room in or out of my Favorites category, and says so with `sidebar_category_updated`. */
@@ -119,6 +122,37 @@ export class MmActions implements ProviderActions {
 
   async markRead(rid: string): Promise<void> {
     await this.client.post('/channels/members/me/view', { body: { channel_id: rid, collapsed_threads_supported: true } });
+  }
+
+  threadInbox(filter: ThreadInboxFilter, cursor: string | null): Promise<ThreadInboxPage> {
+    return this.threads.page(filter, cursor);
+  }
+
+  threadTotals(): Promise<ThreadTotals> {
+    return this.threads.totals();
+  }
+
+  async markThreadRead(rid: string, root: string, lastReply?: number | null): Promise<void> {
+    await this.threads.markRead(rid, root, lastReply);
+    this.live.threadsChanged();
+  }
+
+  async markAllThreadsRead(): Promise<void> {
+    await this.threads.markAllRead();
+    this.live.threadsChanged();
+  }
+
+  async followThread(rid: string, root: string, put: boolean): Promise<void> {
+    await this.threads.follow(rid, root, put);
+    this.live.threadsChanged();
+  }
+
+  threadFollowing(rid: string, root: string): Promise<boolean> {
+    return this.threads.following(rid, root);
+  }
+
+  onThreadsChanged(listener: () => void): () => void {
+    return this.live.onThreadsChanged(listener);
   }
 
   async cardAction(postId: string, actionId: string, cookie: string | null, selected?: string): Promise<CardActionAnswer> {

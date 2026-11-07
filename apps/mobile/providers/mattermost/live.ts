@@ -48,7 +48,9 @@ const CATEGORY_EVENTS = new Set(['sidebar_category_created', 'sidebar_category_u
 /** At most this many memberships loaded by one `group_added` without a channel id. */
 const DISCOVER_MAX = 10;
 
-const QUIET_EVENTS =new Set(['hello', 'thread_read_changed', 'thread_updated', 'plugin_statuses_changed', 'config_changed', 'license_changed', 'response']);
+const THREAD_EVENTS = new Set(['thread_read_changed', 'thread_updated', 'thread_follow_changed']);
+
+const QUIET_EVENTS = new Set([...THREAD_EVENTS, 'hello', 'plugin_statuses_changed', 'config_changed', 'license_changed', 'response']);
 
 export class MmLive {
   private readonly client: MmClient;
@@ -194,7 +196,19 @@ export class MmLive {
     return [...compact(out), ...this.relist().filter((e) => !rids.has(e.eventKey))];
   }
 
+  private readonly threadListeners = new Set<() => void>();
+
+  onThreadsChanged(listener: () => void): () => void {
+    this.threadListeners.add(listener);
+    return () => this.threadListeners.delete(listener);
+  }
+
+  threadsChanged(): void {
+    for (const listener of this.threadListeners) listener();
+  }
+
   async expand(name: string, data: Doc, broadcast: Doc): Promise<DdpEvent[]> {
+    if (THREAD_EVENTS.has(name)) this.threadsChanged();
     if (QUIET_EVENTS.has(name)) return [{ collection: MM_QUIET, eventKey: name, args: [] }];
     if (CATEGORY_EVENTS.has(name)) return this.regroup();
     if (name === 'badge_updated') return this.recount();
