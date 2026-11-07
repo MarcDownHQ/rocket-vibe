@@ -599,3 +599,15 @@ whatsapp-rust speaks a WhatsApp call whole and hands its audio as 16 kHz PCM cha
 The Threads view swaps the sidebar's room list for its own list, and the thread opens in the content pane with the existing thread page and composer, rather than a third pane or a dialog: the list and the thread stay side by side, as kChat's web app shows them, at no new layout on any app.
 
 A thread opened from the list does not read its room. `open_room` reads on entry, which would clear the unread of a channel nobody looked at, so the room opens through `open_room_unread` and a room covered by a thread is not being read until the thread is left. A channel view also sends `collapsed_threads_supported: true`, or reading a channel would empty the Unread tab.
+
+## The Threads view reaches every server that has threads, and only those (2026-11-07)
+
+User decision. The account's threads are owed on Mattermost and kChat, Vibez, Slack and Teams, decided by what each server can do (the gate in [threads](features/threads.md)), not by which provider is convenient. Rocket.Chat has no cross-room thread route and WhatsApp has no threads, so both are `n/a`: the apps do not assemble a substitute by walking rooms, because a view the server does not have would not match what its own clients show. Teams is owed, held back only by unprobed writes on a test tenant.
+
+## Threads chips: a direct conversation counts as participated (2026-11-07)
+
+User decision. The chips All / Participated / Mentioned / Others filter the loaded entries client-side, since no server filters by participation. A thread in a 1:1 or group DM counts as participated by default: in a direct conversation every thread is addressed to me. A short filtered list reads on by itself, but at most 4 extra pages per user action, then "Load more", so a rare chip cannot walk a whole account silently.
+
+## Another server's dot is red for a mention or a DM (2026-11-07)
+
+User decision. The rail dot of an account not on screen uses the attention rule of the room list badge (`rv_core::rooms::attention`: unread in a direct conversation, or a mention elsewhere): red when it holds one, the usual colour for plain unread. A push marks a server plain unread only, as its payload does not say which.

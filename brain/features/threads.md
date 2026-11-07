@@ -11,18 +11,31 @@ A thread is a root message plus the replies that carry its id as `tmid`. Both ap
 - Live replies arrive on the same message streams as the room's messages ([offline and sync](offline-and-sync.md)).
 - **List**: `chat.getThreadsList?rid=&count=&offset=[&type=following]` returns the roots, newest last reply first, with `total`. Its `type=unread` filter is not offered: no REST route reads ONE thread (REST `chat.getThreadMessages` leaves `tunread` alone, `subscriptions.read {readThreads: true}` clears the whole room's), so an unread list would never empty.
 - **Following**: a root's `replies` is the uids of its followers (the author and every replier are added automatically). `chat.followMessage` / `chat.unfollowMessage {mid}` are idempotent and rebroadcast the root, so the followers stay live through ordinary ingestion. Exact behaviour in `CLAUDE.md`, "Threads: list and follow".
-- Mattermost servers have no per-room list; they have the account's (below). The Vibez server has the list, following and "also send to the room" (below), but only the web client calls them so far: the mobile and desktop Vibez providers do not.
+- Mattermost servers have no per-room list; they have the account's (below). The Vibez server has the list, following and "also send to the room" (below). The native Vibez providers call the account's threads and following; the per-room list and "also send to the room" are still called by the web client only.
 
 ## The account's threads
 
 A row at the top of the room list, with a badge counting unread threads (mention colour when one mentions me), replaces the room list with this list: Followed and Unread tabs, "Mark all as read", rows of author, room chip, last reply time, a two-line preview, up to three participants, the reply count and the unread count. A row opens the thread in the content pane, the list staying beside it; on a phone it is a screen. Opening a thread marks it read, and so does a reply arriving while it is on screen in the active window. **The room stays unread while a thread covers it**: it is read when it is actually shown (`Session::open_room_unread`).
 
 - **Mattermost and kChat** (contract in `CLAUDE.md`, "The account's threads"; kChat not probed). The list is per team, each one repeating the DMs and groups, so several teams merge by last reply and dedupe: a team with more to read holds back what could sort after its next page, and the cursor holds each team's position (`merge`, `rv-core/src/mattermost/threads.rs`, ported in `apps/mobile/providers/mattermost/`). Totals are counted from the unread lists, each team's own totals counting the DMs again. The bell's state is `GET .../threads/<id>` (404: not followed). A channel view sends `collapsed_threads_supported: true`, without which it clears the channel's thread unreads. `thread_updated`, `thread_read_changed` and `thread_follow_changed` refresh it: `SessionEvent::Threads` on the desktop, `onThreadsChanged` on mobile.
-- **Vibez**: `GET /api/v1/threads`, `GET /api/v1/threads/totals` and `POST /api/v1/threads/read`, capability `thread_inbox` (`docs/protocol/THREADS.md`, `apps/server/src/threads.rs`). Encrypted rooms are left out, stricter than the per-room list. Mark-all journals one private `room_upsert` per room touched and no event names the threads, so clients read the list again when their cursor moves.
-- **Not offered**: Rocket.Chat has no cross-room route (`chat.getThreadsList` needs a `rid`, and no REST route reads one thread); Slack, Teams and WhatsApp are not mapped. See [parity](../parity.md).
+- **Vibez**: `GET /api/v1/threads`, `GET /api/v1/threads/totals` and `POST /api/v1/threads/read`, capability `thread_inbox` (`docs/protocol/THREADS.md`, `apps/server/src/threads.rs`). Encrypted rooms are left out, stricter than the per-room list. Mark-all journals one private `room_upsert` per room touched and no event names the threads, so clients read the list again when their cursor moves. Native apps gate on the capabilities the server announces (`thread_inbox`, `thread_follow`): desktop `rv-core/src/native/thread_inbox.rs` over `rv-client`, mobile `providers/vibez/threadInbox.ts`. Rows are read from the server, not stored, and deduplicated by root id. A thread is read by the existing observed-read path when its reply is seen (mobile has no `markThreadRead` for Vibez).
+- **Slack** (experimental provider; contract in `docs/protocol/SLACK_SESSION.md`, "Threads view"). `subscriptions.thread.getView` lists the followed threads, newest reply first, paged by the last thread's `latest_reply` as `current_ts`. Unread is computed client-side (`latest_reply > last_read`), the unread-replies count bounded by the `latest_replies` returned; the badge counts unread threads over one page of 50 and takes mentions from `client.counts`. Mark read `subscriptions.thread.mark` (forward only, to `latest_reply`; its effect on unread is not proven), mark all `subscriptions.thread.clearAll`, follow `subscriptions.thread.add` / `.remove`, the bell's state `subscriptions.thread.get`. No thread event is known: the list refreshes on any `message` frame with a `thread_ts`, on returning to the app, and every 30 s while on screen. Opening a thread reads the thread, never the room. Desktop `rv-core/src/slack/threads.rs`, mobile `packages/provider-slack/src/threads.ts`.
+- **Not offered (`n/a`)**: Rocket.Chat has no cross-room route (`chat.getThreadsList` needs a `rid`, and no REST route reads one thread), and the apps build no local substitute (user decision, see [decisions](../decisions.md)). WhatsApp has no threads, only quoted replies. Both stay hidden by the gate.
+- **Teams: owed, not built**. Its thread state is per conversation (`rcmetadata`, `docs/protocol/MICROSOFT_TEAMS.md`, "Thread metadata"), with no cross-conversation list and no thread "mark all" found, and its writes were not probed. See [parity](../parity.md).
+- **The gate**: desktop `Session::thread_inbox_available` (Mattermost, kChat, Slack) and `NativeSession` capabilities, rv-ffi the same, mobile the optional `threadInbox` action, web the `thread_inbox` capability. The session's thread matches (`thread_totals`, `mark_thread_read`, `mark_all_threads_read`, `thread_following`, `follow_thread`) name every backend, so a new one cannot fall through silently.
 - A list read past its first page is not reloaded by live events: it would throw the reader back to the top. The badge still moves.
+
+### Filter chips
+
+Inside both tabs, chips **All** (default), **Participated**, **Mentioned**, **Others**, not persisted (the web keeps the chip in the address, `threadsFilter=`). Each entry carries `participated` and `mentioned`, set by its provider; Participated and Mentioned overlap, Others is neither.
+
+- `participated`: I wrote the root, I am among its repliers, or the thread sits in a direct conversation (1:1 or group): a DM thread counts by default.
+- `mentioned`: the provider counts an unread mention, or the root or a returned reply names me.
+- Filtering is client-side over the loaded entries. A short filtered list reads on by itself, at most 4 extra pages per user action, then the existing "Load more"; each chip has its own empty state.
+- One pure rule per language: `rv_core::thread_inbox::Scope::matches` (rv-ffi `thread_inbox_scope_matches`, `thread_inbox_keep_fetching`), `packages/provider-api/src/threadScope.ts`, web `threadTraits` / `matchesFilter` in `src/thread-inbox.ts`.
+- **Known limits**: Mattermost's listing does not say whether a reply I already read mentioned me, so a thread can leave Mentioned once read (`mentioned` = `unread_mentions > 0` or `@<me>` in the root). Vibez's `participants` is capped at 5, so `participated` can miss an older reply of mine. The web counts `@all` and `@here` as naming me, mobile does not. Slack judges mentions over the one page of `latest_replies` it returns, and a group DM not in the store reads as not direct.
 - **Mobile**: `app/thread-inbox.tsx`, the entry in `app/index.tsx`, optional `ProviderActions` (`threadInbox`, `threadTotals`, `markThreadRead`, `markAllThreadsRead`, `threadFollowing`, `onThreadsChanged`, `packages/provider-api/src/provider.ts`).
-- **GTK**: `rv-gtk/src/thread_inbox.rs`, a stack beside the rooms in `ChatPage::new`, `ChatPage::open_inbox_thread`, `on_threads`. `schedule_read` skips a room covered by a thread, and leaving the thread schedules it. Smoke step `RV_SMOKE_DETAILS=thread-inbox`.
+- **GTK**: `rv-gtk/src/thread_inbox.rs`, a stack beside the rooms in `ChatPage::new`, `ChatPage::open_inbox_thread`, `on_threads`. `schedule_read` skips a room covered by a thread, and leaving the thread schedules it. The panel takes a source covering a `Session` and a `NativeSession` (`chat_native.rs`), a native row opening the native thread page with its bell. Smoke step `RV_SMOKE_DETAILS=thread-inbox` checks each chip's count against the core rule.
 - **SwiftUI**: `RocketVibe/ThreadInbox.swift`, `RocketVibeKit/ThreadInboxModel.swift`, rv-ffi `thread_inbox` and friends in `people.rs`. The room behind a thread is loaded with `peek_room`, then opened for real when the thread closes, so its typing indicator is not heard meanwhile. The views are checked by the macOS CI build only.
 - **Web**: `src/ui/thread-inbox.tsx`, `src/thread-inbox.ts`, the state in the address (`?threads=followed|unread&thread=<root>`), browser test `tests/thread-inbox.mjs`.
 
@@ -92,6 +105,19 @@ Thread view, live replies and thread composer in all four. Thread list, followin
 - apps/mobile/app/thread-inbox.tsx
 - apps/web/src/ui/thread-inbox.tsx
 - apps/web/src/thread-inbox.ts
+- apps/desktop/crates/rv-core/src/slack/threads.rs
+- apps/desktop/crates/rv-core/src/native/thread_inbox.rs
+- apps/desktop/crates/rv-gtk/src/chat_native.rs
+- apps/desktop/crates/rv-ffi/src/native.rs
+- crates/rv-client/src/lib.rs
+- crates/rv-provider/src/rest/slack.rs
+- packages/provider-api/src/threadScope.ts
+- packages/provider-slack/src/threads.ts
+- apps/mobile/providers/vibez/threadInbox.ts
+- apps/mobile/providers/mattermost/threads.ts
+- apps/mobile/lib/threadInbox.ts
+- docs/protocol/SLACK_SESSION.md
+- docs/protocol/MICROSOFT_TEAMS.md
 
 - apps/mobile/app/thread/[id].tsx
 - apps/mobile/providers/rocketchat/history.ts

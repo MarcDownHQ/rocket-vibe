@@ -217,6 +217,16 @@ Validate minimal/ignored fields, status, response/Location, author identity, lim
 
 No archive request proves reaction removal, channel-reply send, mention/quote serialization, pins/favorites, typing, own presence/profile writes, directory/message search, channel creation/roles or generic-file upload. Track those explicitly in the parity ledger; do not invent routes by analogy.
 
+### Thread metadata (read in the web bundle 2026-11-07, not probed)
+
+Read only on a work tenant; no write was sent. Per conversation C(threadId):
+
+- `GET C(threadId)/rcmetadata?startTime=&pageSize=&syncState=` lists the conversation's reply-chain metadata; `POST C(threadId)/getrcmetadata {"rootMessageIds": [...]}` reads chosen roots.
+- `PUT C(threadId)/rcmetadata/{rootId}` with `{"f": ..}` (follow), `{"ch": ..}` (read one thread) or `{"chb": ..}` (mark unread).
+- Inline: `includeRcMetadata=true` puts `rcMetadataList`, `rcMetadataHasMore` and `lastRcMetadataVersion` on conversations.
+- Fields seen: `ch, chb, chbv, f, s, sl2, r, rl2, lu`. No participant, mention or unread field.
+- No cross-conversation list and no thread "mark all" found: a client would walk conversations. Unknown: the encodings of `f` and `ch`, the GET's wrapper, and its auth. A test tenant is needed before any write.
+
 ## 6. Translation and local projection
 
 Write typed Teams DTOs with runtime validation, independent of Rocket.Chat normalize.ts and Graph DTOs. Bound nested JSON/HTML and tolerate unknown optional fields. Missing essential identity/type fields create diagnosed unsupported records, not fake ordinary messages.
