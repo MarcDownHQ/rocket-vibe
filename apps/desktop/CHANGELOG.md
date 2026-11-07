@@ -63,6 +63,7 @@ section here.
 
 ### Changed
 
+- Server rail: another account's dot turns red when it holds a mention or an unread direct message; plain unread keeps the usual colour (GTK, macOS).
 - Updates and the install script now come from the project's new home, `MarcDownHQ/rocket-vibe` on GitHub (the old address still redirects).
 - The native call window (Linux, Windows, macOS) now looks like the Vibez voice page: a tile per person with the speaking ring, the same round microphone, sound and hang-up buttons, and on Linux the microphone menu with the input and output devices.
 

@@ -54,6 +54,7 @@ release, and its notes are that version's section here.
 
 ### Changed
 
+- Server rail: another server's dot turns red when it holds a mention or an unread direct message; plain unread keeps the usual colour.
 - The app now looks for updates in the project's new home, `MarcDownHQ/rocket-vibe` on GitHub. Versions up to 0.26.1 no longer find in-app updates since the move: install this one by hand once.
 - The native call screen now looks like the Vibez voice screen: a tile per person whose border lights while they speak, and the same control buttons.
 
