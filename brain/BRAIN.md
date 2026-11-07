@@ -92,7 +92,7 @@ Each feature doc covers mobile and desktop, and says where they differ.
 | [discussions.md](features/discussions.md) | Rocket.Chat discussions: card, opening, creation. |
 | [room-switcher.md](features/room-switcher.md) | Ctrl+K room switcher, its ranking. |
 | [notes.md](features/notes.md) | A room's notes: one markdown document, rendered and edited natively, saved against its revision. |
-| [threads.md](features/threads.md) | Thread loading and paging, live replies, the thread composer and its limits, thread list and following. |
+| [threads.md](features/threads.md) | Thread loading and paging, live replies, the thread composer and its limits, thread list and following, the account's Threads view. |
 | [search.md](features/search.md) | `spotlight` to find people and channels, `chat.search` inside a room. |
 | [x-posts.md](features/x-posts.md) | X (Twitter) post cards from the server's link metadata, read from X itself on Rocket.Chat accounts only. |
 | [media-playback.md](features/media-playback.md) | Protected media URLs, image viewers, audio/video players, video-site cards. |

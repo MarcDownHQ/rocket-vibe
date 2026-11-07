@@ -594,3 +594,8 @@ Jitsi and Chime sessions run in the voice sidecar, as they need only what they a
 ## WhatsApp calls: the engine serves its audio on localhost (2026-11-11)
 
 whatsapp-rust speaks a WhatsApp call whole and hands its audio as 16 kHz PCM channels inside the process that runs it, while the audio devices, echo canceller and mix live in the voice sidecar on desktop and in Kotlin on Android. Rather than a PCM channel per host (rv-core's thread, the JNA library), the engine serves the call's audio on a TCP socket of its own on 127.0.0.1, guarded by a token: the sidecar and Kotlin connect to it the same way. libopus is left out: its C build is not wired for the apps' toolchains, and MLow, WhatsApp's default, needs it only for a peer's standard Opus frames. See [native-calls](architecture/native-calls.md#whatsapp-1-1-calls-audio-2026-11-11).
+## The account's threads replace the room list (2026-11-07)
+
+The Threads view swaps the sidebar's room list for its own list, and the thread opens in the content pane with the existing thread page and composer, rather than a third pane or a dialog: the list and the thread stay side by side, as kChat's web app shows them, at no new layout on any app.
+
+A thread opened from the list does not read its room. `open_room` reads on entry, which would clear the unread of a channel nobody looked at, so the room opens through `open_room_unread` and a room covered by a thread is not being read until the thread is left. A channel view also sends `collapsed_threads_supported: true`, or reading a channel would empty the Unread tab.
