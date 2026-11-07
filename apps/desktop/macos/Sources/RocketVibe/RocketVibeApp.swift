@@ -83,6 +83,7 @@ struct RocketVibeApp: App {
             guard app.native == nil else { return }
             Task { try? await app.provider?.send(rid: rid, text: text) }
         }
+        app.appIsActive = { NSApp.isActive }
         app.onIncoming = { [app] incoming in
             let watching = NSApp.isActive && app.room?.rid == incoming.rid
             if !watching { notifier.show(incoming, scope: app.native?.notificationKey(rid: incoming.rid)) }

@@ -271,9 +271,17 @@ struct RoomListView: View {
     /// "New message" puts the cursor in the search, which finds people and channels.
     @FocusState var searchFocused: Bool
 
-    var body: some View {
+    @ViewBuilder var list: some View {
+        if let inbox = app.threadInbox, inbox.shown, query.isEmpty {
+            ThreadInboxPanel(inbox: inbox)
+        } else {
+            roomList
+        }
+    }
+
+    var roomList: some View {
         let selection = Binding<String?>(get: { app.room?.rid }, set: { if let rid = $0 { app.select(rid) } })
-        List(selection: selection) {
+        return List(selection: selection) {
             if !query.isEmpty {
                 Section {
                     if found.isEmpty {
@@ -289,6 +297,7 @@ struct RoomListView: View {
                     }
                 }
             } else {
+                if let inbox = app.threadInbox { ThreadInboxEntryRow(inbox: inbox) }
                 RoomSections(groups: app.groups, collapsed: app.collapsed, toggle: app.toggle, canCreate: app.createsChannels, canMessage: app.directMessagesAvailable, add: { section in
                     if section == .channels { creating = true } else { searchFocused = true }
                 })
@@ -296,6 +305,10 @@ struct RoomListView: View {
         }
         .listStyle(.sidebar)
         .scrollContentBackground(.hidden)
+    }
+
+    var body: some View {
+        list
         .background(Vibe.deep.opacity(0.78))
         .searchable(text: $query, placement: .sidebar, prompt: L("spotlight.placeholder"))
         .searchFocused($searchFocused)
