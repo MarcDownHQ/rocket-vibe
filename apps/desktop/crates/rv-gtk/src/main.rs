@@ -65,6 +65,7 @@ mod staged;
 mod style;
 mod switcher;
 mod thread;
+mod thread_inbox;
 mod threads;
 mod tile_grid;
 mod totp_qr;

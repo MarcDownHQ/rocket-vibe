@@ -36,7 +36,7 @@ pub fn follow(session: Arc<Session>, root: String, on: bool, done: impl FnOnce(b
 }
 
 /// What a root says, on a few lines: its text, else that it is a file or locked.
-fn preview(row: &MessageRow) -> String {
+pub(crate) fn preview(row: &MessageRow) -> String {
     match row.text.as_deref().map(str::trim).filter(|t| !t.is_empty()) {
         Some(text) => text.to_owned(),
         None if row.system_type.as_deref() == Some(rv_core::normalize::ENCRYPTED_TYPE) => {

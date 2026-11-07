@@ -229,6 +229,8 @@ pub struct ChatPage {
     /// Search across rooms, on the device (Rocket.Chat and Mattermost).
     local_search_button: gtk::Button,
     marked_button: gtk::Button,
+    thread_inbox: Rc<crate::thread_inbox::ThreadInbox>,
+    open_unread: Cell<bool>,
     /// The room's threads (Rocket.Chat only).
     threads_button: gtk::Button,
     notes_button: gtk::Button,
@@ -489,13 +491,24 @@ impl ChatPage {
 
         let sidebar_toolbar = adw::ToolbarView::new();
         sidebar_toolbar.add_top_bar(&sidebar_header);
-        sidebar_toolbar.set_content(Some(
+        let thread_inbox = crate::thread_inbox::ThreadInbox::new();
+        let rooms_column = gtk::Box::builder().orientation(gtk::Orientation::Vertical).margin_top(6).build();
+        rooms_column.append(&thread_inbox.entry);
+        rooms_column.append(
             &gtk::ScrolledWindow::builder()
                 .hscrollbar_policy(gtk::PolicyType::Never)
+                .vexpand(true)
                 .child(&rooms_view)
-                .margin_top(6)
                 .build(),
-        ));
+        );
+        let sidebar_stack = gtk::Stack::new();
+        sidebar_stack.add_named(&rooms_column, Some("rooms"));
+        sidebar_stack.add_named(&thread_inbox.root, Some("threads"));
+        sidebar_toolbar.set_content(Some(&sidebar_stack));
+        let stack = sidebar_stack.clone();
+        thread_inbox.connect_toggle(move |shown| {
+            stack.set_visible_child_name(if shown { "threads" } else { "rooms" });
+        });
         let update_slot = gtk::Box::builder().orientation(gtk::Orientation::Vertical).build();
         sidebar_toolbar.add_bottom_bar(&update_slot);
         sidebar_toolbar.add_bottom_bar(&voice_ui.bar);
@@ -656,6 +669,8 @@ impl ChatPage {
             search_button: search_button.clone(),
             local_search_button: local_search_button.clone(),
             marked_button: marked_button.clone(),
+            thread_inbox: thread_inbox.clone(),
+            open_unread: Cell::new(false),
             threads_button: threads_button.clone(),
             notes_button: notes_button.clone(),
             root,
@@ -1071,6 +1086,19 @@ impl ChatPage {
                 && let Some(this) = w.upgrade()
             {
                 this.thread.replace(None);
+                this.schedule_read();
+            }
+        });
+        let w = weak.clone();
+        self.thread_inbox.connect_open(move |entry| {
+            if let Some(this) = w.upgrade() {
+                this.open_inbox_thread(&entry.root.rid, &entry.root.id);
+            }
+        });
+        let w = weak.clone();
+        self.thread_inbox.connect_failed(move |message| {
+            if let Some(this) = w.upgrade() {
+                this.toast(message);
             }
         });
         let w = weak.clone();
@@ -1661,6 +1689,8 @@ impl ChatPage {
         thread.reload();
         thread.composer.grab_focus();
         self.thread.replace(Some(thread.clone()));
+        self.read_open_thread();
+        self.refresh_thread_following();
         let root = root_id.to_owned();
         let weak = Rc::downgrade(self);
         glib::spawn_future_local(async move {
@@ -1674,21 +1704,82 @@ impl ChatPage {
         });
     }
 
-    /// The thread's bell follows it or stops, by what the store holds of its root now.
+    /// A thread of the account's list: its room opens behind it, and stays
+    /// unread until the thread is left for it.
+    fn open_inbox_thread(self: &Rc<Self>, rid: &str, root: &str) {
+        self.user_navigation();
+        self.open_unread.set(true);
+        self.open_room(rid);
+        self.open_unread.set(false);
+        if self.current_rid().as_deref() != Some(rid) {
+            self.toast(t("links.unavailable").to_owned());
+            return;
+        }
+        self.open_thread(root);
+        self.split.set_show_content(true);
+    }
+
+    /// The open thread is on screen in the active window: its replies are read.
+    fn read_open_thread(&self) {
+        let Some(session) = self.session.borrow().clone() else { return };
+        let Some(thread) = self.thread.borrow().clone() else { return };
+        if !session.thread_inbox_available()
+            || !self.split.root().and_downcast::<gtk::Window>().is_some_and(|w| w.is_active())
+        {
+            return;
+        }
+        let (rid, root) = (thread.rid.clone(), thread.root_id.clone());
+        crate::runtime().spawn(async move {
+            let _ = session.mark_thread_read(&rid, &root).await;
+        });
+    }
+
+    /// Where the root does not say whether I follow it, the server does.
+    fn refresh_thread_following(self: &Rc<Self>) {
+        let Some(session) = self.session.borrow().clone() else { return };
+        let Some(thread) = self.thread.borrow().clone() else { return };
+        if session.threads_available() || !session.thread_follow_available() {
+            return;
+        }
+        let (rid, root) = (thread.rid.clone(), thread.root_id.clone());
+        glib::spawn_future_local(async move {
+            let following = on_tokio(async move { session.thread_following(&rid, &root).await }).await;
+            if let Ok(following) = following {
+                thread.following.set(following);
+                crate::threads::bell(&thread.follow, following);
+            }
+        });
+    }
+
+    /// The account's threads changed; `root` just got a reply I have not read.
+    pub fn on_threads(self: &Rc<Self>, root: Option<String>) {
+        let open = self.thread.borrow().as_ref().map(|t| t.root_id.clone());
+        if root.is_some() && root == open {
+            self.read_open_thread();
+        }
+        if root.is_none() {
+            self.refresh_thread_following();
+        }
+        self.thread_inbox.schedule_refresh();
+    }
+
+    /// The thread's bell follows it or stops.
     fn wire_thread_follow(self: &Rc<Self>, thread: &Rc<ThreadPage>) {
         let (weak, root) = (Rc::downgrade(self), thread.root_id.clone());
+        let shown = Rc::downgrade(thread);
         thread.follow.connect_clicked(move |button| {
             let Some(this) = weak.upgrade() else { return };
             let Some(session) = this.session() else { return };
-            let on = !session
-                .store
-                .messages_by_id(std::slice::from_ref(&root))
-                .first()
-                .is_some_and(|r| r.followed_by(&session.info.user_id));
+            let Some(page) = shown.upgrade() else { return };
+            let on = !page.following.get();
             button.set_sensitive(false);
             let (button, weak) = (button.clone(), weak.clone());
             crate::threads::follow(session, root.clone(), on, move |ok| {
                 button.set_sensitive(true);
+                if ok {
+                    page.following.set(on);
+                    crate::threads::bell(&page.follow, on);
+                }
                 if let Some(this) = weak.upgrade() {
                     this.toast(
                         t(match (ok, on) {
@@ -1755,6 +1846,7 @@ impl ChatPage {
         self.search_button.set_sensitive(search);
         self.marked_button.set_sensitive(true);
         self.local_search_button.set_visible(session.is_some() && search);
+        self.thread_inbox.set_session(session.clone());
         self.set_loading(false);
         if let Some(s) = &session {
             let host = url::Url::parse(&s.info.base_url).ok().and_then(|u| u.host_str().map(str::to_owned));
@@ -1841,11 +1933,13 @@ impl ChatPage {
         let generation = self.read_generation.get() + 1;
         self.read_generation.set(generation);
         let (counter, list, split) = (self.read_generation.clone(), self.list.clone(), self.split.clone());
+        let navigation = self.room_nav.clone();
         let (Some(session), Some(rid)) = (self.session.borrow().clone(), self.current_rid()) else { return };
         glib::timeout_add_local_once(std::time::Duration::from_millis(1500), move || {
             let active = split.root().and_downcast::<gtk::Window>().is_some_and(|w| w.is_active());
             let visible = split.shows_content() || !split.is_collapsed();
-            if counter.get() == generation && active && visible && list.is_pinned() {
+            let in_room = navigation.visible_page().and_then(|p| p.tag()).as_deref() == Some("room");
+            if counter.get() == generation && active && visible && in_room && list.is_pinned() {
                 crate::runtime().spawn(async move { session.mark_read(&rid).await });
             }
         });
@@ -1916,6 +2010,7 @@ impl ChatPage {
         if unread == Some(true) {
             self.schedule_read();
         }
+        self.read_open_thread();
     }
 
     pub fn show_room_info(self: &Rc<Self>) {
@@ -3298,10 +3393,17 @@ impl ChatPage {
         let weak = Rc::downgrade(self);
         let (rid, kind) = (room.rid, room.kind);
         let expected = session.clone();
+        let unread = self.open_unread.get();
         glib::spawn_future_local(async move {
             let page = crate::on_tokio({
                 let (rid, kind) = (rid.clone(), kind.clone());
-                async move { session.open_room(&rid, &kind).await }
+                async move {
+                    if unread {
+                        session.open_room_unread(&rid, &kind).await
+                    } else {
+                        session.open_room(&rid, &kind).await
+                    }
+                }
             })
             .await;
             let Some(this) = weak.upgrade() else { return };
@@ -3836,6 +3938,11 @@ impl ChatPage {
 
     pub fn thread(&self) -> Option<Rc<ThreadPage>> {
         self.thread.borrow().clone()
+    }
+
+    /// For the smoke checks.
+    pub(crate) fn thread_inbox(&self) -> Rc<crate::thread_inbox::ThreadInbox> {
+        self.thread_inbox.clone()
     }
 
     pub fn session(&self) -> Option<Arc<Session>> {

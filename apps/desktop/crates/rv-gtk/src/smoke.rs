@@ -43,7 +43,7 @@
 //!                          sends (RV_SMOKE_UPLOAD_HOLD=1: left staged, for a screenshot)
 //!   RV_SMOKE_SPOTLIGHT=<query>  finds a channel, joins it and opens it
 //!   RV_SMOKE_REPORT, RV_SMOKE_ADMIN  members' reports and the administration: see `admin`
-//!   RV_SMOKE_DETAILS=profile:<user> | room | room-avatar | search:<text> | settings | emoji:<code> | marked
+//!   RV_SMOKE_DETAILS=thread-inbox | profile:<user> | room | room-avatar | search:<text> | settings | emoji:<code> | marked
 //!                          | threads | jump:<message id> | permissions:<expected, comma-separated>
 //!                          | local_search | also_in_room | invite | discussion | preview
 //!                          | members: see `rocket_chat`
@@ -1640,6 +1640,30 @@ fn details_checks(
             rocket_chat::discussion_checks(chat, session, rid, tag.to_owned()).await;
         } else if let Some(target) = what.strip_prefix("preview:") {
             rocket_chat::preview_checks(session, rid, target.to_owned()).await;
+        } else if what == "thread-inbox" {
+            use rv_core::thread_inbox::Filter;
+            let s = session.clone();
+            let followed = crate::on_tokio(async move { s.thread_inbox(Filter::Followed, None).await }).await;
+            check(
+                "the account's threads listed",
+                followed.as_ref().is_ok_and(|p| !p.entries.is_empty()),
+                followed.as_ref().map(|p| p.entries.len()),
+            );
+            let s = session.clone();
+            let unread = crate::on_tokio(async move { s.thread_inbox(Filter::Unread, None).await }).await;
+            let s = session.clone();
+            let totals = crate::on_tokio(async move { s.thread_totals().await }).await;
+            check(
+                "the unread total counts the unread list",
+                matches!((&unread, &totals), (Ok(p), Ok(t)) if p.entries.len() as i64 == t.unread_threads),
+                totals.as_ref().map(|t| t.unread_threads),
+            );
+            let inbox = chat.thread_inbox();
+            inbox.open_first_for_smoke();
+            glib::timeout_future(Duration::from_millis(2500)).await;
+            inbox.pick_first_for_smoke();
+            glib::timeout_future(Duration::from_millis(2500)).await;
+            check("the thread opens beside the list", chat.thread().is_some(), "");
         } else if what == "threads" {
             let (s, r) = (session.clone(), rid.clone());
             let listed = crate::on_tokio(async move { s.threads(&r, false, 0, 50).await }).await;

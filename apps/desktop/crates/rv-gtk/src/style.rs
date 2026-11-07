@@ -101,6 +101,8 @@ button.cta:active, button.cta:disabled { opacity: 0.75; }
 .tile-room { border-radius: 15px; }
 .tile-message { border-radius: 12px; }
 .tile-header { border-radius: 10px; }
+.tile-mini { border-radius: 8px; }
+.tile-mini .tile-glyph { font-size: 10px; }
 .tile-profile { border-radius: 28px; }
 .tile-profile .tile-glyph { font-size: 38px; }
 .details { padding: 4px 22px 22px 22px; }
@@ -193,6 +195,11 @@ button.attach-button { min-width: 28px; min-height: 24px; padding: 0 2px; color:
 .upload-row.failed { border-color: #FF7A8A; }
 .upload-row progressbar trough { min-height: 4px; border-radius: 2px; background: #2C2946; }
 .upload-row progressbar progress { min-height: 4px; border-radius: 2px; background: linear-gradient(90deg, #FF5FA2, #A78BFA); }
+.thread-inbox-entry { margin: 2px 8px 4px 8px; padding: 6px 10px; border-radius: 12px; }
+.thread-inbox > row { border-radius: 12px; }
+.thread-inbox-author { font-weight: 700; }
+.thread-inbox-room { font-size: 11px; font-weight: 700; padding: 1px 7px; border-radius: 6px; background: rgba(167, 139, 250, 0.18); color: #C9B8FF; }
+.thread-inbox-unread .thread-inbox-author { color: #FFD34E; }
 .section-header { margin: 12px 14px 2px 10px; }
 .section-title { font-size: 11.5px; font-weight: 800; color: #8F89AB; letter-spacing: 0.6px; }
 .section-chevron { color: #6E6890; -gtk-icon-size: 12px; }
