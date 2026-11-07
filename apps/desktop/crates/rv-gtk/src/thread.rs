@@ -194,6 +194,10 @@ impl ThreadPage {
                 self.composer.root.set_visible(false);
                 return;
             }
+            self.follow.set_visible(native.thread_follow_available());
+            let following = native.thread_following(&self.root_id).unwrap_or(false);
+            self.following.set(following);
+            crate::threads::bell(&self.follow, following);
             self.composer.validate_native_reply(&native.store);
             self.composer.root.set_visible(
                 native.can_send_to_room(&self.rid)

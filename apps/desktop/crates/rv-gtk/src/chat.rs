@@ -1846,7 +1846,7 @@ impl ChatPage {
         self.search_button.set_sensitive(search);
         self.marked_button.set_sensitive(true);
         self.local_search_button.set_visible(session.is_some() && search);
-        self.thread_inbox.set_session(session.clone());
+        self.thread_inbox.set_source(session.clone().map(rv_core::provider::Chat::Legacy));
         self.set_loading(false);
         if let Some(s) = &session {
             let host = url::Url::parse(&s.info.base_url).ok().and_then(|u| u.host_str().map(str::to_owned));

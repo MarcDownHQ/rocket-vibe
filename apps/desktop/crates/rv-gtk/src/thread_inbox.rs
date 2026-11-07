@@ -4,18 +4,16 @@
 
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
-use std::sync::Arc;
 use std::time::Duration;
 
 use adw::prelude::*;
 use gtk::glib;
-use rv_core::media::{AvatarTarget, avatar_path};
-use rv_core::session::Session;
+use rv_core::provider::Chat;
 use rv_core::thread_inbox::{Entry, Filter, Participant};
 
 use crate::i18n::{t, tn};
 use crate::on_tokio;
-use crate::rows::{label, short_time, with_photo};
+use crate::rows::{label, person_photo, short_time};
 use crate::widgets::{self, TileSize};
 
 const AVATARS: usize = 3;
@@ -33,11 +31,12 @@ pub struct ThreadInbox {
     list: gtk::ListBox,
     more: gtk::Button,
     empty: adw::StatusPage,
-    session: RefCell<Option<Arc<Session>>>,
+    source: RefCell<Option<Chat>>,
     filter: Cell<Filter>,
     entries: RefCell<Vec<Entry>>,
     next: RefCell<Option<String>>,
     selected: RefCell<Option<String>>,
+    sync_cursor: RefCell<Option<String>>,
     pages: Cell<u32>,
     generation: Cell<u64>,
     refresh_generation: Cell<u64>,
@@ -150,11 +149,12 @@ impl ThreadInbox {
             list,
             more,
             empty,
-            session: RefCell::default(),
+            source: RefCell::default(),
             filter: Cell::new(Filter::Followed),
             entries: RefCell::default(),
             next: RefCell::default(),
             selected: RefCell::default(),
+            sync_cursor: RefCell::default(),
             pages: Cell::new(0),
             generation: Cell::new(0),
             refresh_generation: Cell::new(0),
@@ -223,10 +223,11 @@ impl ThreadInbox {
         self.on_failed.replace(Some(Rc::new(f)));
     }
 
-    pub fn set_session(self: &Rc<Self>, session: Option<Arc<Session>>) {
-        let session = session.filter(|s| s.thread_inbox_available());
-        self.entry.set_visible(session.is_some());
-        self.session.replace(session);
+    /// The account on screen, whichever kind of session speaks for it.
+    pub fn set_source(self: &Rc<Self>, source: Option<Chat>) {
+        self.entry.set_visible(source.as_ref().is_some_and(Chat::thread_inbox_available));
+        self.source.replace(source);
+        self.sync_cursor.replace(None);
         self.generation.set(self.generation.get().wrapping_add(1));
         self.entries.borrow_mut().clear();
         self.next.replace(None);
@@ -246,6 +247,21 @@ impl ThreadInbox {
         }
         if shown {
             self.reload();
+        }
+    }
+
+    fn available_source(&self) -> Option<Chat> {
+        self.source.borrow().clone().filter(Chat::thread_inbox_available)
+    }
+
+    /// A Vibez account learns what its server offers after it is set, and no
+    /// event names the threads: they are read again when its sync cursor moves.
+    pub fn on_sync(self: &Rc<Self>, cursor: Option<String>) {
+        let available = self.available_source().is_some();
+        let appeared = available && !self.entry.is_visible();
+        self.entry.set_visible(available);
+        if self.sync_cursor.replace(cursor.clone()) != cursor || appeared {
+            self.schedule_refresh();
         }
     }
 
@@ -273,10 +289,10 @@ impl ThreadInbox {
     }
 
     fn refresh_totals(self: &Rc<Self>) {
-        let Some(session) = self.session.borrow().clone() else { return };
+        let Some(source) = self.available_source() else { return };
         let (weak, expected) = (Rc::downgrade(self), self.generation.get());
         glib::spawn_future_local(async move {
-            let totals = on_tokio(async move { session.thread_totals().await }).await;
+            let totals = on_tokio(async move { source.thread_totals().await }).await;
             let Some(this) = weak.upgrade() else { return };
             if this.generation.get() != expected {
                 return;
@@ -315,14 +331,14 @@ impl ThreadInbox {
     }
 
     fn load(self: &Rc<Self>, cursor: Option<String>) {
-        let Some(session) = self.session.borrow().clone() else { return };
+        let Some(source) = self.available_source() else { return };
         let generation = self.generation.get().wrapping_add(1);
         self.generation.set(generation);
         let filter = self.filter.get();
         let weak = Rc::downgrade(self);
         let appending = cursor.is_some();
         glib::spawn_future_local(async move {
-            let page = on_tokio(async move { session.thread_inbox(filter, cursor.as_deref()).await }).await;
+            let page = on_tokio(async move { source.thread_inbox(filter, cursor.as_deref()).await }).await;
             let Some(this) = weak.upgrade() else { return };
             if this.generation.get() != generation {
                 return;
@@ -357,10 +373,10 @@ impl ThreadInbox {
         while let Some(row) = self.list.row_at_index(0) {
             self.list.remove(&row);
         }
-        let session = self.session.borrow().clone();
+        let source = self.source.borrow().clone();
         let selected = self.selected.borrow().clone();
         for entry in self.entries.borrow().iter() {
-            let row = entry_row(entry, session.as_ref());
+            let row = entry_row(entry, source.as_ref());
             self.list.append(&row);
             if selected.as_deref() == Some(entry.root.id.as_str()) {
                 self.list.select_row(Some(&row));
@@ -389,11 +405,11 @@ impl ThreadInbox {
     }
 
     fn mark_all_read(self: &Rc<Self>) {
-        let Some(session) = self.session.borrow().clone() else { return };
+        let Some(source) = self.available_source() else { return };
         self.mark_all.set_sensitive(false);
         let weak = Rc::downgrade(self);
         glib::spawn_future_local(async move {
-            let done = on_tokio(async move { session.mark_all_threads_read().await }).await;
+            let done = on_tokio(async move { source.mark_all_threads_read().await }).await;
             let Some(this) = weak.upgrade() else { return };
             this.mark_all.set_sensitive(true);
             if done.is_err()
@@ -417,14 +433,18 @@ impl ThreadInbox {
     }
 }
 
-fn participant_tile(person: &Participant, session: Option<&Arc<Session>>) -> gtk::Widget {
+fn participant_tile(person: &Participant, source: Option<&Chat>) -> gtk::Widget {
     let name = if person.label.is_empty() { &person.username } else { &person.label };
     let tile = widgets::tile(&person.username, &widgets::initial(name), TileSize::Mini, false);
-    with_photo(tile, session, Some(avatar_path(AvatarTarget::User(&person.username), None)))
+    match source {
+        Some(source) => person_photo(tile, source, &person.username, person.photo.clone()),
+        None => tile,
+    }
 }
 
-fn entry_row(entry: &Entry, session: Option<&Arc<Session>>) -> gtk::ListBoxRow {
-    let author = session
+fn entry_row(entry: &Entry, source: Option<&Chat>) -> gtk::ListBoxRow {
+    let author = source
+        .and_then(Chat::legacy)
         .and_then(|s| s.person_label(&entry.root.author_id))
         .or_else(|| entry.root.author.clone())
         .unwrap_or_default();
@@ -451,7 +471,7 @@ fn entry_row(entry: &Entry, session: Option<&Arc<Session>>) -> gtk::ListBoxRow {
 
     let foot = gtk::Box::builder().spacing(4).build();
     for person in entry.participants.iter().take(AVATARS) {
-        foot.append(&participant_tile(person, session));
+        foot.append(&participant_tile(person, source));
     }
     let replies = label(&tn("message.replies", entry.replies), &["dim-label", "caption"]);
     replies.set_margin_start(4);

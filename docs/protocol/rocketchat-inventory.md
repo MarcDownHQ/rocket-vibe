@@ -2,7 +2,7 @@
 
 Command: `node scripts/inventory-rocketchat.mjs`. Check: add `--check`.
 
-757 production files scanned; 774 occurrences.
+758 production files scanned; 774 occurrences.
 Calls with a dynamic first argument remain visible: their resolution is
 recorded in [the parity contract](PARITY.md). The lines are source
 markers at the time of generation. The JSON keeps the scope and all the files.
@@ -349,7 +349,7 @@ markers at the time of generation. The JSON keeps the scope and all the files.
 | [apps/desktop/crates/rv-core/src/uploads.rs:626](../../apps/desktop/crates/rv-core/src/uploads.rs#L626) | endpoint | rooms.media/{…} |
 | [apps/desktop/crates/rv-core/src/uploads.rs:628](../../apps/desktop/crates/rv-core/src/uploads.rs#L628) | call:UPLOAD | &path, field, upload.bytes, &upload.name, &upload.mime, upload.texts, move \|sent, total\| { |
 | [apps/desktop/crates/rv-ffi/src/model.rs:282](../../apps/desktop/crates/rv-ffi/src/model.rs#L282) | endpoint | rooms.quoted_message |
-| [apps/desktop/crates/rv-gtk/src/chat_native.rs:1160](../../apps/desktop/crates/rv-gtk/src/chat_native.rs#L1160) | endpoint | rooms.new |
+| [apps/desktop/crates/rv-gtk/src/chat_native.rs:1195](../../apps/desktop/crates/rv-gtk/src/chat_native.rs#L1195) | endpoint | rooms.new |
 | [apps/desktop/crates/rv-gtk/src/chat_quotes.rs:98](../../apps/desktop/crates/rv-gtk/src/chat_quotes.rs#L98) | endpoint | spotlight |
 | [apps/desktop/crates/rv-gtk/src/details/native_favorites.rs:19](../../apps/desktop/crates/rv-gtk/src/details/native_favorites.rs#L19) | endpoint | rooms.favorite_add |
 | [apps/desktop/crates/rv-gtk/src/details/native_favorites.rs:19](../../apps/desktop/crates/rv-gtk/src/details/native_favorites.rs#L19) | endpoint | rooms.favorite_remove |

@@ -119,6 +119,7 @@
     "apps/desktop/crates/rv-core/src/native/store/room_operations.rs",
     "apps/desktop/crates/rv-core/src/native/store/threads.rs",
     "apps/desktop/crates/rv-core/src/native/store/threads/tests.rs",
+    "apps/desktop/crates/rv-core/src/native/thread_inbox.rs",
     "apps/desktop/crates/rv-core/src/native/voice.rs",
     "apps/desktop/crates/rv-core/src/native/workflows.rs",
     "apps/desktop/crates/rv-core/src/notes.rs",
@@ -2815,7 +2816,7 @@
     },
     {
       "file": "apps/desktop/crates/rv-gtk/src/chat_native.rs",
-      "line": 1160,
+      "line": 1195,
       "kind": "endpoint",
       "surface": "rooms.new"
     },
