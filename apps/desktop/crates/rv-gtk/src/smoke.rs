@@ -1641,7 +1641,7 @@ fn details_checks(
         } else if let Some(target) = what.strip_prefix("preview:") {
             rocket_chat::preview_checks(session, rid, target.to_owned()).await;
         } else if what == "thread-inbox" {
-            use rv_core::thread_inbox::Filter;
+            use rv_core::thread_inbox::{Filter, Scope};
             let s = session.clone();
             let followed = crate::on_tokio(async move { s.thread_inbox(Filter::Followed, None).await }).await;
             check(
@@ -1661,6 +1661,34 @@ fn details_checks(
             let inbox = chat.thread_inbox();
             inbox.open_first_for_smoke();
             glib::timeout_future(Duration::from_millis(2500)).await;
+            let loaded = followed.as_ref().map(|p| p.entries.clone()).unwrap_or_default();
+            for (scope, name) in [
+                (Scope::All, "all"),
+                (Scope::Participated, "participated"),
+                (Scope::Mentioned, "mentioned"),
+                (Scope::Others, "others"),
+            ] {
+                let wanted = loaded.iter().filter(|e| scope.matches(e)).count();
+                let (rows, empty) = inbox.scope_for_smoke(scope);
+                glib::timeout_future(Duration::from_millis(1500)).await;
+                check(
+                    &format!("the {name} chip shows its rows"),
+                    rows == wanted && (wanted > 0 || empty.is_some()),
+                    format!("rows {rows}, wanted {wanted}, empty {empty:?}"),
+                );
+            }
+            inbox.unread_for_smoke(true);
+            glib::timeout_future(Duration::from_millis(1500)).await;
+            let (rows, empty) = inbox.scope_for_smoke(Scope::Others);
+            glib::timeout_future(Duration::from_millis(1500)).await;
+            check(
+                "a chip keeps working inside the unread tab",
+                empty.is_some() || rows > 0,
+                format!("rows {rows}, empty {empty:?}"),
+            );
+            inbox.unread_for_smoke(false);
+            glib::timeout_future(Duration::from_millis(1500)).await;
+            inbox.scope_for_smoke(if loaded.iter().any(|e| e.participated) { Scope::Participated } else { Scope::All });
             inbox.pick_first_for_smoke();
             glib::timeout_future(Duration::from_millis(2500)).await;
             check("the thread opens beside the list", chat.thread().is_some(), "");

@@ -410,10 +410,10 @@ markers at the time of generation. The JSON keeps the scope and all the files.
 | [apps/desktop/crates/rv-gtk/src/smoke.rs:1147](../../apps/desktop/crates/rv-gtk/src/smoke.rs#L1147) | endpoint | chat.postMessage |
 | [apps/desktop/crates/rv-gtk/src/smoke.rs:1186](../../apps/desktop/crates/rv-gtk/src/smoke.rs#L1186) | call:GET | "subscriptions.getOne", options).await.ok()?; |
 | [apps/desktop/crates/rv-gtk/src/smoke.rs:1186](../../apps/desktop/crates/rv-gtk/src/smoke.rs#L1186) | endpoint | subscriptions.getOne |
-| [apps/desktop/crates/rv-gtk/src/smoke.rs:1906](../../apps/desktop/crates/rv-gtk/src/smoke.rs#L1906) | call:POST | "im.create", rv_core::rest::CallOptions::body(serde_json::json!({…}))).await |
-| [apps/desktop/crates/rv-gtk/src/smoke.rs:1906](../../apps/desktop/crates/rv-gtk/src/smoke.rs#L1906) | endpoint | im.create |
-| [apps/desktop/crates/rv-gtk/src/smoke.rs:1916](../../apps/desktop/crates/rv-gtk/src/smoke.rs#L1916) | call:POST | "chat.postMessage", rv_core::rest::CallOptions::body(serde_json::json!({…}))) |
-| [apps/desktop/crates/rv-gtk/src/smoke.rs:1917](../../apps/desktop/crates/rv-gtk/src/smoke.rs#L1917) | endpoint | chat.postMessage |
+| [apps/desktop/crates/rv-gtk/src/smoke.rs:1934](../../apps/desktop/crates/rv-gtk/src/smoke.rs#L1934) | call:POST | "im.create", rv_core::rest::CallOptions::body(serde_json::json!({…}))).await |
+| [apps/desktop/crates/rv-gtk/src/smoke.rs:1934](../../apps/desktop/crates/rv-gtk/src/smoke.rs#L1934) | endpoint | im.create |
+| [apps/desktop/crates/rv-gtk/src/smoke.rs:1944](../../apps/desktop/crates/rv-gtk/src/smoke.rs#L1944) | call:POST | "chat.postMessage", rv_core::rest::CallOptions::body(serde_json::json!({…}))) |
+| [apps/desktop/crates/rv-gtk/src/smoke.rs:1945](../../apps/desktop/crates/rv-gtk/src/smoke.rs#L1945) | endpoint | chat.postMessage |
 | [apps/desktop/crates/rv-gtk/src/smoke/rocket_chat.rs:196](../../apps/desktop/crates/rv-gtk/src/smoke/rocket_chat.rs#L196) | call:GET | "chat.getMessage", rv_core::rest::CallOptions::params([("msgId", id.as_str())])).await |
 | [apps/desktop/crates/rv-gtk/src/smoke/rocket_chat.rs:196](../../apps/desktop/crates/rv-gtk/src/smoke/rocket_chat.rs#L196) | endpoint | chat.getMessage |
 | [apps/desktop/crates/rv-gtk/src/smoke/rocket_chat.rs:420](../../apps/desktop/crates/rv-gtk/src/smoke/rocket_chat.rs#L420) | endpoint | rooms.quoted_message |

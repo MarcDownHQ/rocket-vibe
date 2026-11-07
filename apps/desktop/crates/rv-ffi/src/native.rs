@@ -351,7 +351,8 @@ impl NativeChat {
         use rv_core::thread_inbox::Filter;
         let filter = if unread { Filter::Unread } else { Filter::Followed };
         let s = self.session.clone();
-        let page = on_tokio(async move { s.thread_inbox(filter, cursor.as_deref()).await }).await.map_err(native_error)?;
+        let page =
+            on_tokio(async move { s.thread_inbox(filter, cursor.as_deref()).await }).await.map_err(native_error)?;
         let entries = page
             .entries
             .into_iter()

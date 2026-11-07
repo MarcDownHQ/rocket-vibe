@@ -105,15 +105,11 @@ async fn the_list_pages_dedupes_and_says_what_touches_me() {
         match path {
             "/api/v1/threads" if target.contains("before=40") => {
                 assert!(target.contains("filter=followed"), "{target}");
-                respond(
-                    200,
-                    &json!({"threads": [listed("other", "bob", "plain", "carol", "0", "0")]}).to_string(),
-                )
+                respond(200, &json!({"threads": [listed("other", "bob", "plain", "carol", "0", "0")]}).to_string())
             }
-            "/api/v1/threads" if target.contains("filter=unread") => respond(
-                200,
-                &json!({"threads": [listed("named", "bob", "ping", "carol", "3", "1")]}).to_string(),
-            ),
+            "/api/v1/threads" if target.contains("filter=unread") => {
+                respond(200, &json!({"threads": [listed("named", "bob", "ping", "carol", "3", "1")]}).to_string())
+            }
             "/api/v1/threads" => respond(
                 200,
                 &json!({
@@ -193,10 +189,8 @@ async fn the_list_pages_dedupes_and_says_what_touches_me() {
 
 #[tokio::test]
 async fn a_server_without_the_capability_is_never_asked() {
-    let server = FakeHttp::start(|req| {
-        common_route(req, false).unwrap_or_else(|| panic!("unexpected {}", req.target))
-    })
-    .await;
+    let server =
+        FakeHttp::start(|req| common_route(req, false).unwrap_or_else(|| panic!("unexpected {}", req.target))).await;
     let session = online(&server).await;
     assert!(!session.thread_inbox_available() && !session.thread_follow_available());
     assert!(session.thread_inbox(Filter::Followed, None).await.is_err());
@@ -205,4 +199,3 @@ async fn a_server_without_the_capability_is_never_asked() {
     assert_eq!(session.thread_totals().await.unwrap(), Default::default());
     common::close_native(session).await;
 }
-

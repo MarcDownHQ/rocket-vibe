@@ -751,7 +751,9 @@ fn slack_reply(channel: &str, root: &str, ts: &str, user: &str, text: &str) -> V
 }
 
 fn view_answer(threads: Vec<Value>, has_more: bool) -> Response {
-    ok(json!({"threads": threads, "has_more": has_more, "max_ts": "1700009999.000000", "new_threads_count": 0, "total_unread_replies": 1}))
+    ok(
+        json!({"threads": threads, "has_more": has_more, "max_ts": "1700009999.000000", "new_threads_count": 0, "total_unread_replies": 1}),
+    )
 }
 
 fn thread_people(request: &Request) -> Option<Response> {

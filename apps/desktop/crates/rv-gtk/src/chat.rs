@@ -2004,6 +2004,7 @@ impl ChatPage {
 
     /// Back to the window: what arrived meanwhile in the open room is now seen.
     pub fn window_activated(&self) {
+        self.thread_inbox.on_window_active();
         let unread = self
             .current_rid()
             .and_then(|rid| self.rooms.borrow().iter().find(|r| r.rid == rid).map(|r| r.unread > 0 || r.alert));

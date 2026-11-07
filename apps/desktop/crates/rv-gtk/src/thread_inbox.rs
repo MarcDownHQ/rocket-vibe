@@ -9,7 +9,7 @@ use std::time::Duration;
 use adw::prelude::*;
 use gtk::glib;
 use rv_core::provider::Chat;
-use rv_core::thread_inbox::{Entry, Filter, Participant};
+use rv_core::thread_inbox::{self, Entry, Filter, Participant, Scope};
 
 use crate::i18n::{t, tn};
 use crate::on_tokio;
@@ -18,6 +18,7 @@ use crate::widgets::{self, TileSize};
 
 const AVATARS: usize = 3;
 const REFRESH_DELAY: Duration = Duration::from_millis(400);
+const POLL_SECONDS: u32 = 30;
 
 type Handler<T> = RefCell<Option<Rc<dyn Fn(T)>>>;
 
@@ -33,11 +34,16 @@ pub struct ThreadInbox {
     empty: adw::StatusPage,
     source: RefCell<Option<Chat>>,
     filter: Cell<Filter>,
+    scope: Cell<Scope>,
+    chips: [(gtk::ToggleButton, Scope); 4],
     entries: RefCell<Vec<Entry>>,
     next: RefCell<Option<String>>,
     selected: RefCell<Option<String>>,
     sync_cursor: RefCell<Option<String>>,
     pages: Cell<u32>,
+    extra_pages: Cell<u32>,
+    account: Cell<u64>,
+    polling: Cell<u64>,
     generation: Cell<u64>,
     refresh_generation: Cell<u64>,
     shown: Cell<bool>,
@@ -95,6 +101,35 @@ impl ThreadInbox {
         tabs.append(&followed);
         tabs.append(&unread);
 
+        let scopes = gtk::Box::builder()
+            .spacing(4)
+            .homogeneous(false)
+            .css_classes(["thread-inbox-scopes"])
+            .margin_start(12)
+            .margin_end(12)
+            .margin_bottom(6)
+            .build();
+        let chip = |key: &str, active: bool| {
+            let chip = gtk::ToggleButton::builder()
+                .label(t(key))
+                .active(active)
+                .hexpand(true)
+                .css_classes(["flat", "caption"])
+                .build();
+            scopes.append(&chip);
+            chip
+        };
+        let chip_all = chip("thread_inbox.scope_all", true);
+        let chips = [
+            (chip_all.clone(), Scope::All),
+            (chip("thread_inbox.scope_participated", false), Scope::Participated),
+            (chip("thread_inbox.scope_mentioned", false), Scope::Mentioned),
+            (chip("thread_inbox.scope_others", false), Scope::Others),
+        ];
+        for (other, _) in &chips[1..] {
+            other.set_group(Some(&chip_all));
+        }
+
         let list = gtk::ListBox::builder()
             .selection_mode(gtk::SelectionMode::Single)
             .css_classes(["rooms", "thread-inbox"])
@@ -137,6 +172,7 @@ impl ThreadInbox {
         let root = gtk::Box::builder().orientation(gtk::Orientation::Vertical).margin_top(6).build();
         root.append(&top);
         root.append(&tabs);
+        root.append(&scopes);
         root.append(&stack);
 
         let this = Rc::new(ThreadInbox {
@@ -151,11 +187,16 @@ impl ThreadInbox {
             empty,
             source: RefCell::default(),
             filter: Cell::new(Filter::Followed),
+            scope: Cell::new(Scope::All),
+            chips: chips.clone(),
             entries: RefCell::default(),
             next: RefCell::default(),
             selected: RefCell::default(),
             sync_cursor: RefCell::default(),
             pages: Cell::new(0),
+            extra_pages: Cell::new(0),
+            account: Cell::new(0),
+            polling: Cell::new(0),
             generation: Cell::new(0),
             refresh_generation: Cell::new(0),
             shown: Cell::new(false),
@@ -183,6 +224,16 @@ impl ThreadInbox {
                 this.reload();
             }
         });
+        for (chip, scope) in chips {
+            let weak = Rc::downgrade(&this);
+            chip.connect_toggled(move |chip| {
+                if chip.is_active()
+                    && let Some(this) = weak.upgrade()
+                {
+                    this.set_scope(scope);
+                }
+            });
+        }
         let weak = Rc::downgrade(&this);
         retry.connect_clicked(move |_| {
             if let Some(this) = weak.upgrade() {
@@ -228,11 +279,13 @@ impl ThreadInbox {
         self.entry.set_visible(source.as_ref().is_some_and(Chat::thread_inbox_available));
         self.source.replace(source);
         self.sync_cursor.replace(None);
+        self.account.set(self.account.get().wrapping_add(1));
         self.generation.set(self.generation.get().wrapping_add(1));
         self.entries.borrow_mut().clear();
         self.next.replace(None);
         self.selected.replace(None);
         self.pages.set(0);
+        self.chips[0].0.set_active(true);
         self.entry_badge.set_visible(false);
         self.toggle(false);
         self.refresh_totals();
@@ -245,8 +298,63 @@ impl ThreadInbox {
         if let Some(f) = self.on_toggle.borrow().clone() {
             f(shown);
         }
+        self.polling.set(self.polling.get().wrapping_add(1));
         if shown {
             self.reload();
+            self.poll();
+        }
+    }
+
+    /// Where nothing tells that the list changed, it is read again while on screen.
+    fn poll(self: &Rc<Self>) {
+        if !self.source.borrow().as_ref().is_some_and(Chat::thread_inbox_polled) {
+            return;
+        }
+        let (weak, polling) = (Rc::downgrade(self), self.polling.get());
+        glib::timeout_add_seconds_local(POLL_SECONDS, move || {
+            let Some(this) = weak.upgrade() else { return glib::ControlFlow::Break };
+            if this.polling.get() != polling {
+                return glib::ControlFlow::Break;
+            }
+            this.schedule_refresh();
+            glib::ControlFlow::Continue
+        });
+    }
+
+    /// Back in the app: where no event told, what changed meanwhile is read.
+    pub fn on_window_active(self: &Rc<Self>) {
+        if self.source.borrow().as_ref().is_some_and(Chat::thread_inbox_polled) {
+            self.schedule_refresh();
+        }
+    }
+
+    fn set_scope(self: &Rc<Self>, scope: Scope) {
+        if self.scope.replace(scope) == scope {
+            return;
+        }
+        self.extra_pages.set(0);
+        self.show_page();
+    }
+
+    fn visible_entries(&self) -> Vec<Entry> {
+        let scope = self.scope.get();
+        self.entries.borrow().iter().filter(|e| scope.matches(e)).cloned().collect()
+    }
+
+    fn reads_on(&self, shown: usize) -> bool {
+        thread_inbox::keep_fetching(shown, self.next.borrow().is_some(), self.extra_pages.get())
+    }
+
+    /// Shows what the chip lets through, and reads on, within bounds, when that
+    /// does not fill the list. Past the bound the load-more button stays, so
+    /// nothing silently goes missing.
+    fn show_page(self: &Rc<Self>) {
+        self.render();
+        let shown = self.visible_entries().len();
+        if self.reads_on(shown) {
+            self.extra_pages.set(self.extra_pages.get() + 1);
+            self.more.set_sensitive(false);
+            self.load(self.next.borrow().clone());
         }
     }
 
@@ -290,11 +398,11 @@ impl ThreadInbox {
 
     fn refresh_totals(self: &Rc<Self>) {
         let Some(source) = self.available_source() else { return };
-        let (weak, expected) = (Rc::downgrade(self), self.generation.get());
+        let (weak, expected) = (Rc::downgrade(self), self.account.get());
         glib::spawn_future_local(async move {
             let totals = on_tokio(async move { source.thread_totals().await }).await;
             let Some(this) = weak.upgrade() else { return };
-            if this.generation.get() != expected {
+            if this.account.get() != expected {
                 return;
             }
             if let Ok(totals) = totals {
@@ -319,12 +427,14 @@ impl ThreadInbox {
     }
 
     fn reload_quietly(self: &Rc<Self>) {
+        self.extra_pages.set(0);
         self.load(None);
     }
 
     fn load_more(self: &Rc<Self>) {
         let next = self.next.borrow().clone();
         if next.is_some() {
+            self.extra_pages.set(0);
             self.more.set_sensitive(false);
             self.load(next);
         }
@@ -363,9 +473,9 @@ impl ThreadInbox {
                 this.pages.set(0);
             }
             this.pages.set(this.pages.get() + 1);
-            this.entries.borrow_mut().extend(page.entries);
+            thread_inbox::append(&mut this.entries.borrow_mut(), page.entries);
             this.next.replace(page.next);
-            this.render();
+            this.show_page();
         });
     }
 
@@ -375,7 +485,8 @@ impl ThreadInbox {
         }
         let source = self.source.borrow().clone();
         let selected = self.selected.borrow().clone();
-        for entry in self.entries.borrow().iter() {
+        let visible = self.visible_entries();
+        for entry in &visible {
             let row = entry_row(entry, source.as_ref());
             self.list.append(&row);
             if selected.as_deref() == Some(entry.root.id.as_str()) {
@@ -383,19 +494,21 @@ impl ThreadInbox {
             }
         }
         self.more.set_visible(self.next.borrow().is_some());
-        if self.entries.borrow().is_empty() {
-            let unread = self.filter.get() == Filter::Unread;
+        if !visible.is_empty() || (self.next.borrow().is_some() && !self.reads_on(0)) {
+            self.stack.set_visible_child_name("list");
+        } else if self.next.borrow().is_some() {
+            self.stack.set_visible_child_name("loading");
+        } else {
+            let unread = self.scope.get() == Scope::All && self.filter.get() == Filter::Unread;
             self.empty.set_icon_name(Some(if unread { "object-select-symbolic" } else { "chat-message-new-symbolic" }));
-            self.empty.set_title(t(if unread { "thread_inbox.none_unread" } else { "thread_inbox.none_followed" }));
+            self.empty.set_title(t(empty_title(self.filter.get(), self.scope.get())));
             self.empty.set_description(unread.then(|| t("thread_inbox.caught_up")));
             self.stack.set_visible_child_name("empty");
-        } else {
-            self.stack.set_visible_child_name("list");
         }
     }
 
     fn pick(self: &Rc<Self>, index: i32) {
-        let Some(entry) = usize::try_from(index).ok().and_then(|i| self.entries.borrow().get(i).cloned()) else {
+        let Some(entry) = usize::try_from(index).ok().and_then(|i| self.visible_entries().get(i).cloned()) else {
             return;
         };
         self.selected.replace(Some(entry.root.id.clone()));
@@ -430,6 +543,33 @@ impl ThreadInbox {
     /// For the smoke checks.
     pub(crate) fn pick_first_for_smoke(self: &Rc<Self>) {
         self.pick(0);
+    }
+
+    /// For the smoke checks: rows on screen through this chip, and the empty
+    /// page's title when it is the one shown.
+    pub(crate) fn scope_for_smoke(self: &Rc<Self>, scope: Scope) -> (usize, Option<String>) {
+        if let Some((chip, _)) = self.chips.iter().find(|(_, s)| *s == scope) {
+            chip.set_active(true);
+        }
+        let rows = std::iter::successors(self.list.row_at_index(0), |row| row.next_sibling()?.downcast().ok()).count();
+        let empty =
+            (self.stack.visible_child_name().as_deref() == Some("empty")).then(|| self.empty.title().to_string());
+        (rows, empty)
+    }
+
+    /// For the smoke checks: the unread tab, or the followed one.
+    pub(crate) fn unread_for_smoke(&self, on: bool) {
+        self.unread.set_active(on);
+    }
+}
+
+fn empty_title(filter: Filter, scope: Scope) -> &'static str {
+    match (scope, filter) {
+        (Scope::All, Filter::Followed) => "thread_inbox.none_followed",
+        (Scope::All, Filter::Unread) => "thread_inbox.none_unread",
+        (Scope::Participated, _) => "thread_inbox.none_participated",
+        (Scope::Mentioned, _) => "thread_inbox.none_mentioned",
+        (Scope::Others, _) => "thread_inbox.none_others",
     }
 }
 
