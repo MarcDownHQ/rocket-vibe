@@ -336,6 +336,57 @@ pub(crate) fn open_native(
 }
 #[uniffi::export]
 impl NativeChat {
+    /// Whether the server lists the account's threads across its rooms.
+    pub fn thread_inbox_available(&self) -> bool {
+        self.session.thread_inbox_available()
+    }
+    /// One page of the account's threads: those I follow, or (`unread`) those
+    /// with replies I have not read. A thread read goes through
+    /// `mark_observed_thread_read`, like any native read.
+    pub async fn thread_inbox(
+        &self,
+        unread: bool,
+        cursor: Option<String>,
+    ) -> Result<crate::people::ThreadInboxPage, RvError> {
+        use rv_core::thread_inbox::Filter;
+        let filter = if unread { Filter::Unread } else { Filter::Followed };
+        let s = self.session.clone();
+        let page = on_tokio(async move { s.thread_inbox(filter, cursor.as_deref()).await }).await.map_err(native_error)?;
+        let entries = page
+            .entries
+            .into_iter()
+            .map(|entry| {
+                crate::people::thread_inbox_row(entry, None, |person| {
+                    person.photo.as_ref().map(|id| format!("rv-avatar:{id}")).unwrap_or_default()
+                })
+            })
+            .collect();
+        Ok(crate::people::ThreadInboxPage { entries, next: page.next })
+    }
+    pub async fn thread_totals(&self) -> Result<crate::people::ThreadInboxTotals, RvError> {
+        let s = self.session.clone();
+        let totals = on_tokio(async move { s.thread_totals().await }).await.map_err(native_error)?;
+        Ok(crate::people::ThreadInboxTotals {
+            unread_threads: totals.unread_threads,
+            unread_mentions: totals.unread_mentions,
+        })
+    }
+    pub async fn mark_all_threads_read(&self) -> Result<(), RvError> {
+        let s = self.session.clone();
+        on_tokio(async move { s.mark_all_threads_read().await }).await.map_err(native_error)
+    }
+    /// Whether I can follow a thread and see that I do, from the thread itself.
+    pub fn thread_follow_available(&self) -> bool {
+        self.session.thread_follow_available()
+    }
+    pub async fn follow_thread(&self, root: String, on: bool) -> Result<(), RvError> {
+        let s = self.session.clone();
+        on_tokio(async move { s.follow_thread(&root, on).await }).await.map_err(native_error)
+    }
+    /// Whether I follow it, as the root stored here says.
+    pub fn thread_following(&self, root: String) -> Result<bool, RvError> {
+        self.session.thread_following(&root).map_err(native_error)
+    }
     pub fn typing(&self, room: String, root: Option<String>) -> Vec<String> {
         self.session.typing(&room, root.as_deref())
     }

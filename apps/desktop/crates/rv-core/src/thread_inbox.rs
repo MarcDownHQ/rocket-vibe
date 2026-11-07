@@ -25,11 +25,15 @@ pub enum Scope {
 impl Scope {
     /// Participated and Mentioned overlap; Others is neither.
     pub fn matches(self, entry: &Entry) -> bool {
+        self.allows(entry.participated, entry.mentioned)
+    }
+
+    pub fn allows(self, participated: bool, mentioned: bool) -> bool {
         match self {
             Scope::All => true,
-            Scope::Participated => entry.participated,
-            Scope::Mentioned => entry.mentioned,
-            Scope::Others => !entry.participated && !entry.mentioned,
+            Scope::Participated => participated,
+            Scope::Mentioned => mentioned,
+            Scope::Others => !participated && !mentioned,
         }
     }
 }

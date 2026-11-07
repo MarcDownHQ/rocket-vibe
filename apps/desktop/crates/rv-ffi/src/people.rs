@@ -81,6 +81,43 @@ pub struct ThreadInboxEntry {
     pub participants: Vec<ThreadInboxParticipant>,
     pub unread_replies: i64,
     pub unread_mentions: i64,
+    /// I wrote the root or replied, or the thread is in a direct conversation.
+    pub participated: bool,
+    /// The provider says so, or a text the listing returned names me.
+    pub mentioned: bool,
+}
+
+/// The chips inside a tab. Not persisted.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, uniffi::Enum)]
+pub enum ThreadInboxScope {
+    All,
+    Participated,
+    Mentioned,
+    Others,
+}
+
+impl From<ThreadInboxScope> for thread_inbox::Scope {
+    fn from(scope: ThreadInboxScope) -> Self {
+        match scope {
+            ThreadInboxScope::All => thread_inbox::Scope::All,
+            ThreadInboxScope::Participated => thread_inbox::Scope::Participated,
+            ThreadInboxScope::Mentioned => thread_inbox::Scope::Mentioned,
+            ThreadInboxScope::Others => thread_inbox::Scope::Others,
+        }
+    }
+}
+
+/// Whether the entry shows through the chip; the rule of `thread_inbox::Scope`.
+#[uniffi::export]
+pub fn thread_inbox_scope_matches(scope: ThreadInboxScope, participated: bool, mentioned: bool) -> bool {
+    thread_inbox::Scope::from(scope).allows(participated, mentioned)
+}
+
+/// Whether a list showing `shown` rows through its chip reads another page,
+/// `extra_pages` having been read on top of the one asked for by this user action.
+#[uniffi::export]
+pub fn thread_inbox_keep_fetching(shown: u32, has_next: bool, extra_pages: u32) -> bool {
+    thread_inbox::keep_fetching(shown as usize, has_next, extra_pages)
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
@@ -343,9 +380,15 @@ impl Chat {
         Ok(on_tokio(async move { s.follow_thread(&root, on).await }).await?)
     }
 
-    /// Whether the account lists its threads across its rooms (Mattermost, kChat).
+    /// Whether the account lists its threads across its rooms.
     pub fn thread_inbox_available(&self) -> bool {
         self.session.thread_inbox_available()
+    }
+
+    /// Whether nothing tells when the list changes: it is read again on
+    /// returning to the app and every 30 s while it is on screen (Slack).
+    pub fn thread_inbox_polled(&self) -> bool {
+        self.session.thread_inbox_polled()
     }
 
     /// One page of the account's threads: those I follow, or (`unread`) those
@@ -483,29 +526,40 @@ fn thread_preview(row: &rv_core::store::MessageRow) -> String {
     }
 }
 
+/// One row for the Swift app; `author` and `avatar` depend on the account's server.
+pub(crate) fn thread_inbox_row(
+    entry: thread_inbox::Entry,
+    author: Option<String>,
+    avatar: impl Fn(&thread_inbox::Participant) -> String,
+) -> ThreadInboxEntry {
+    ThreadInboxEntry {
+        author: author.or_else(|| entry.root.author.clone()).unwrap_or_default(),
+        preview: thread_preview(&entry.root),
+        root: entry.root.id,
+        rid: entry.root.rid,
+        room: entry.room,
+        last_reply: entry.last_reply,
+        replies: entry.replies,
+        participants: entry
+            .participants
+            .into_iter()
+            .map(|person| ThreadInboxParticipant {
+                avatar: avatar(&person),
+                name: if person.label.is_empty() { person.username.clone() } else { person.label },
+                username: person.username,
+            })
+            .collect(),
+        unread_replies: entry.unread_replies,
+        unread_mentions: entry.unread_mentions,
+        participated: entry.participated,
+        mentioned: entry.mentioned,
+    }
+}
+
 impl Chat {
     fn thread_inbox_entry(&self, entry: thread_inbox::Entry) -> ThreadInboxEntry {
-        let author = self.session.person_label(&entry.root.author_id).or_else(|| entry.root.author.clone());
-        ThreadInboxEntry {
-            author: author.unwrap_or_default(),
-            preview: thread_preview(&entry.root),
-            root: entry.root.id,
-            rid: entry.root.rid,
-            room: entry.room,
-            last_reply: entry.last_reply,
-            replies: entry.replies,
-            participants: entry
-                .participants
-                .into_iter()
-                .map(|person| ThreadInboxParticipant {
-                    avatar: media::avatar_path(AvatarTarget::User(&person.username), None),
-                    name: if person.label.is_empty() { person.username.clone() } else { person.label },
-                    username: person.username,
-                })
-                .collect(),
-            unread_replies: entry.unread_replies,
-            unread_mentions: entry.unread_mentions,
-        }
+        let author = self.session.person_label(&entry.root.author_id);
+        thread_inbox_row(entry, author, |person| media::avatar_path(AvatarTarget::User(&person.username), None))
     }
 
     /// A message of a list beside the room (pinned, starred, threads), opened when encrypted.
@@ -521,5 +575,27 @@ impl Chat {
         };
         let reactor = self.session.reactor_names();
         crate::model::message_named(d, &info.user_id, &info.username, None, &reactor)
+    }
+}
+
+#[cfg(test)]
+mod thread_inbox_tests {
+    use super::*;
+
+    #[test]
+    fn the_chips_keep_the_core_rule() {
+        use ThreadInboxScope::{All, Mentioned, Others, Participated};
+        let shown = |scope, participated, mentioned| thread_inbox_scope_matches(scope, participated, mentioned);
+        assert!(shown(All, false, false));
+        assert!(shown(Participated, true, true) && !shown(Participated, false, true));
+        assert!(shown(Mentioned, true, true) && !shown(Mentioned, true, false));
+        assert!(shown(Others, false, false) && !shown(Others, true, false) && !shown(Others, false, true));
+    }
+
+    #[test]
+    fn a_short_list_reads_four_more_pages_at_most() {
+        assert!(thread_inbox_keep_fetching(0, true, 3));
+        assert!(!thread_inbox_keep_fetching(0, true, 4));
+        assert!(!thread_inbox_keep_fetching(0, false, 0));
     }
 }
