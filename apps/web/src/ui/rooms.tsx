@@ -291,7 +291,7 @@ function RoomEntry({ app, room }: { app: App; room: Room }) {
 }
 
 /** Same local-day clock as GTK rows::short_time. */
-function roomTime(value: string): string {
+export function roomTime(value: string): string {
   const date = new Date(value),
     today = new Date();
   const day = (at: Date) =>

@@ -1184,16 +1184,7 @@ export class App implements RowActions {
     window.dispatchEvent(new Event("rv-profile-update"));
     window.dispatchEvent(new Event("rv-model-update"));
     this.renderRooms();
-    if (this.room && !this.model.rooms.has(this.room)) {
-      this.room = undefined;
-      this.root = undefined;
-      this.threadPane.hidden = true;
-      this.hideNotes();
-      stopMedia(this.timeline);
-      clearView(this.timeline);
-      this.composer.value = "";
-      this.quote = undefined;
-    }
+    if (this.room && !this.model.rooms.has(this.room)) this.clearRoom();
     if (this.privateChat && !this.privateChat.active) {
       void this.privateChat.close();
       this.privateChat = undefined;
@@ -1313,6 +1304,16 @@ export class App implements RowActions {
       command: match[1],
       params: (match[2] || "").trim(),
     });
+  }
+  clearRoom(): void {
+    this.room = undefined;
+    this.root = undefined;
+    this.threadPane.hidden = true;
+    this.hideNotes();
+    stopMedia(this.timeline);
+    clearView(this.timeline);
+    this.composer.value = "";
+    this.quote = undefined;
   }
   /** The header's notes button: each way is a state back and forward return to. */
   toggleNotes(): void {
@@ -2473,12 +2474,13 @@ export class App implements RowActions {
       await this.privateChat?.thread(message);
       return;
     }
+    await this.openThread(message.room_id, message.reply_to || message.id);
+  }
+  async openThread(id: string, root: string): Promise<void> {
     const room = this.room,
       account = this.account?.key;
-    if (!account || room !== message.room_id || !this.model.rooms.has(room))
-      return;
-    const root = message.reply_to || message.id,
-      opening = this.roomOpening,
+    if (!account || room !== id || !this.model.rooms.has(room)) return;
+    const opening = this.roomOpening,
       threadOpening = ++this.threadOpening,
       current = this.roomFence(room),
       active = () =>
