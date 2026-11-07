@@ -8,7 +8,7 @@ use serde_json::Value;
 
 use super::sync::MmSync;
 use crate::rest::{CallOptions, RestClient, RestError};
-use crate::thread_inbox::{Entry, Filter, Page, Participant, Totals};
+use crate::thread_inbox::{Entry, Filter, Page, Participant, Totals, names, participated};
 
 const PAGE: usize = 25;
 const TOTALS_PAGE: usize = 100;
@@ -88,9 +88,14 @@ fn participants(sync: &MmSync, thread: &Value) -> Vec<Participant> {
             let id = text(person, "id")?.to_owned();
             let username = text(person, "username").map(str::to_owned).or_else(|| sync.directory.username(&id))?;
             let label = sync.directory.display_name(&id).unwrap_or_default();
-            Some(Participant { id, username, label })
+            Some(Participant { id, username, label, photo: None })
         })
         .collect()
+}
+
+fn took_part(me: &str, author: &str, thread: &Value, room_kind: Option<&str>) -> bool {
+    let repliers = thread.get("participants").and_then(Value::as_array).into_iter().flatten();
+    participated(me, author, repliers.filter_map(|person| text(person, "id")), room_kind)
 }
 
 pub async fn page(sync: &MmSync, filter: Filter, cursor: Option<&str>) -> Result<Page, RestError> {
@@ -136,14 +141,21 @@ pub async fn page(sync: &MmSync, filter: Filter, cursor: Option<&str>) -> Result
         .filter_map(|thread| {
             let id = text(thread, "id")?;
             let root = rows.iter().find(|r| r.id == id)?.clone();
-            let room = sync.store().room_name(&root.rid).map(|(name, _)| name).unwrap_or_default();
+            let (room, kind) = sync.store().room_name(&root.rid).map_or((String::new(), None), |(n, k)| (n, Some(k)));
+            let people = participants(sync, thread);
+            let unread_mentions = int(thread, "unread_mentions");
+            let participated = took_part(sync.me(), &root.author_id, thread, kind.as_deref());
+            let mentioned = unread_mentions > 0
+                || sync.directory.username(sync.me()).is_some_and(|me| names(root.text.as_deref().unwrap_or(""), &me));
             Some(Entry {
                 room,
                 last_reply: int(thread, "last_reply_at"),
                 replies: int(thread, "reply_count"),
-                participants: participants(sync, thread),
+                participants: people,
                 unread_replies: int(thread, "unread_replies"),
-                unread_mentions: int(thread, "unread_mentions"),
+                unread_mentions,
+                participated,
+                mentioned,
                 root,
             })
         })
@@ -228,6 +240,15 @@ mod tests {
 
     fn team(team: &str, threads: Vec<Value>, full: bool) -> TeamPage {
         TeamPage { team: team.to_owned(), before: None, threads, full }
+    }
+
+    #[test]
+    fn a_replier_or_a_direct_conversation_counts_as_having_taken_part() {
+        let thread = json!({"participants": [{"id": "ann"}, {"id": "me"}]});
+        assert!(took_part("me", "bob", &thread, Some("c")));
+        assert!(!took_part("zoe", "bob", &thread, Some("c")));
+        assert!(took_part("zoe", "bob", &thread, Some("d")));
+        assert!(took_part("zoe", "zoe", &json!({}), None));
     }
 
     #[test]

@@ -208,9 +208,9 @@ markers at the time of generation. The JSON keeps the scope and all the files.
 | [apps/desktop/crates/rv-core/src/mattermost/sync.rs:833](../../apps/desktop/crates/rv-core/src/mattermost/sync.rs#L833) | call:GET | &format!("posts/{…}") |
 | [apps/desktop/crates/rv-core/src/mattermost/sync.rs:999](../../apps/desktop/crates/rv-core/src/mattermost/sync.rs#L999) | call:GET | &format!("posts/{…}") |
 | [apps/desktop/crates/rv-core/src/mattermost/threads.rs:25](../../apps/desktop/crates/rv-core/src/mattermost/threads.rs#L25) | call:GET | "users/me/teams" |
-| [apps/desktop/crates/rv-core/src/mattermost/threads.rs:115](../../apps/desktop/crates/rv-core/src/mattermost/threads.rs#L115) | call:GET | &format!("users/me/teams/{…}/threads") |
-| [apps/desktop/crates/rv-core/src/mattermost/threads.rs:162](../../apps/desktop/crates/rv-core/src/mattermost/threads.rs#L162) | call:GET | &format!("users/me/teams/{…}/threads") |
-| [apps/desktop/crates/rv-core/src/mattermost/threads.rs:189](../../apps/desktop/crates/rv-core/src/mattermost/threads.rs#L189) | call:PUT | &format!("users/me/teams/{…}/threads/read") |
+| [apps/desktop/crates/rv-core/src/mattermost/threads.rs:120](../../apps/desktop/crates/rv-core/src/mattermost/threads.rs#L120) | call:GET | &format!("users/me/teams/{…}/threads") |
+| [apps/desktop/crates/rv-core/src/mattermost/threads.rs:174](../../apps/desktop/crates/rv-core/src/mattermost/threads.rs#L174) | call:GET | &format!("users/me/teams/{…}/threads") |
+| [apps/desktop/crates/rv-core/src/mattermost/threads.rs:201](../../apps/desktop/crates/rv-core/src/mattermost/threads.rs#L201) | call:PUT | &format!("users/me/teams/{…}/threads/read") |
 | [apps/desktop/crates/rv-core/src/mattermost/translate.rs:11](../../apps/desktop/crates/rv-core/src/mattermost/translate.rs#L11) | url | /api/v4/files |
 | [apps/desktop/crates/rv-core/src/media.rs:42](../../apps/desktop/crates/rv-core/src/media.rs#L42) | resource | /avatar/{…} |
 | [apps/desktop/crates/rv-core/src/media.rs:43](../../apps/desktop/crates/rv-core/src/media.rs#L43) | resource | /avatar/uid/{…} |

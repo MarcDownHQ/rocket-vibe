@@ -1968,19 +1968,19 @@
     },
     {
       "file": "apps/desktop/crates/rv-core/src/mattermost/threads.rs",
-      "line": 115,
+      "line": 120,
       "kind": "call:GET",
       "surface": "&format!(\"users/me/teams/{…}/threads\")"
     },
     {
       "file": "apps/desktop/crates/rv-core/src/mattermost/threads.rs",
-      "line": 162,
+      "line": 174,
       "kind": "call:GET",
       "surface": "&format!(\"users/me/teams/{…}/threads\")"
     },
     {
       "file": "apps/desktop/crates/rv-core/src/mattermost/threads.rs",
-      "line": 189,
+      "line": 201,
       "kind": "call:PUT",
       "surface": "&format!(\"users/me/teams/{…}/threads/read\")"
     },
