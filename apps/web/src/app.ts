@@ -1377,18 +1377,21 @@ export class App implements RowActions {
       if (this.addressThread) {
         this.addressThread = undefined;
         if (this.root) this.closeThread();
+        this.renderRooms();
       }
       return;
     }
     if (this.addressThread === thread || !this.room) return;
     this.addressThread = thread;
     const room = this.room;
-    void this.openThread(room, thread).catch((error) => {
-      toast(error);
-      if (this.addressThread !== thread) return;
-      this.addressThread = undefined;
-      history.replaceState(null, "", inboxUrl(room, this.threadsTab));
-    });
+    void this.openThread(room, thread)
+      .catch((error) => {
+        toast(error);
+        if (this.addressThread !== thread) return;
+        this.addressThread = undefined;
+        history.replaceState(null, "", inboxUrl(room, this.threadsTab));
+      })
+      .then(() => this.renderRooms());
   }
   /** The thread's back button and Escape: a thread from the address leaves it too. */
   leaveThread(): void {

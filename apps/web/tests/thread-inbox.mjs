@@ -209,8 +209,14 @@ try {
   await page.locator(".thread-pane").getByText("Another reply").waitFor();
   await row(second).click();
   await page.locator(".thread-pane").getByText("a reply for you").waitFor();
+  await panel
+    .locator('.inbox-row.selected[data-thread="' + second.id + '"]')
+    .waitFor();
   await page.goBack();
   await page.locator(".thread-pane").getByText("Another reply").waitFor();
+  await panel
+    .locator('.inbox-row.selected[data-thread="' + first.id + '"]')
+    .waitFor();
   console.log("PASS one thread opens straight from another, across rooms");
   await waitFor(
     async () => (await totals()).unread_threads === "1",
@@ -223,6 +229,7 @@ try {
   await panel.waitFor();
   await page.locator(".thread-pane .thread-back").click();
   await page.locator(".thread-pane").waitFor({ state: "hidden" });
+  await panel.locator(".inbox-row.selected").waitFor({ state: "detached" });
   console.log("PASS a reload on a thread restores it beside the panel");
 
   // A room I leave drops out of the list, of the totals and of mark all.
