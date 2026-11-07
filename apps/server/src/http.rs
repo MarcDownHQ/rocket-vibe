@@ -367,6 +367,9 @@ pub fn router(app: App) -> Router {
             axum::routing::put(set_follow),
         )
         .route("/api/v1/rooms/{room}/threads", get(thread_list))
+        .route("/api/v1/threads", get(thread_inbox))
+        .route("/api/v1/threads/totals", get(thread_inbox_totals))
+        .route("/api/v1/threads/read", post(mark_threads_read))
         .route("/api/v1/rooms/{room}/pins", get(pins))
         .route("/api/v1/rooms/{room}/stars", get(stars))
         .route("/api/v1/rooms/{room}/join", post(join_public))
@@ -587,6 +590,7 @@ async fn discovery(State(app): State<App>) -> Result<Json<Discovery>> {
             workflows: true,
             scheduled_messages: true,
             thread_list: true,
+            thread_inbox: true,
             thread_follow: true,
             thread_also_in_room: true,
             social_cards: true,
@@ -2559,6 +2563,41 @@ async fn thread_list(
     let mut delivery_rooms = crate::quotes::delivery_rooms(&roots);
     delivery_rooms.push(room);
     proof.json(&app, &hash, &list, &delivery_rooms, None).await
+}
+async fn thread_inbox(
+    State(app): State<App>,
+    headers: HeaderMap,
+    Query(input): Query<ThreadListQuery>,
+) -> Result<Response> {
+    let unread = match input.filter.as_deref() {
+        None | Some("followed") => false,
+        Some("unread") => true,
+        Some(_) => return Err(Error::invalid()),
+    };
+    let before = input.before.map(|p| room_reads::position(&p)).transpose()?;
+    let limit = input.limit.unwrap_or(50);
+    if !(1..=100).contains(&limit) {
+        return Err(Error::invalid());
+    }
+    let (actor, hash, proof) = read_access(&app, &headers, Scope::All).await?;
+    let inbox = crate::threads::inbox(&app, &actor, unread, before, limit).await?;
+    let roots: Vec<_> = inbox.threads.iter().map(|t| t.root.clone()).collect();
+    let rooms = crate::quotes::delivery_rooms(&roots);
+    proof.json(&app, &hash, &inbox, &rooms, None).await
+}
+async fn thread_inbox_totals(State(app): State<App>, headers: HeaderMap) -> Result<Response> {
+    let (actor, hash, proof) = read_access(&app, &headers, Scope::All).await?;
+    let totals = crate::threads::inbox_totals(&app, &actor).await?;
+    proof.json(&app, &hash, &totals, &[], None).await
+}
+async fn mark_threads_read(
+    State(app): State<App>,
+    headers: HeaderMap,
+    input: Input<rv_protocol::MarkThreadsRead>,
+) -> Result<Response> {
+    let actor = account(&app, &headers).await?;
+    let receipt = crate::threads::mark_inbox_read(&app, &actor, body(input)?).await?;
+    Ok(Json(receipt).into_response())
 }
 async fn set_follow(
     State(app): State<App>,

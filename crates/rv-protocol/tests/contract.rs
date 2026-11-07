@@ -268,6 +268,7 @@ fn additive_capabilities_default_to_unavailable_on_an_older_server() {
     let contract: Contract =
         serde_json::from_str(include_str!("../../../docs/protocol/v1.fixture.json")).unwrap();
     assert!(!contract.discovery.capabilities.editing);
+    assert!(!contract.discovery.capabilities.thread_inbox);
     assert!(!contract.discovery.capabilities.typing);
     assert!(!contract.discovery.capabilities.room_discovery);
     assert!(!contract.discovery.capabilities.second_factors);

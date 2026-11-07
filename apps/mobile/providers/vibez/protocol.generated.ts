@@ -46,7 +46,7 @@ export type BotScope = "rooms:read" | "messages:write" | "files:write" | "reacti
 export type BotScopeRoutes = { "routes": (BotRoute)[]; "scope"?: BotScope | null; };
 export type BotsContract = { "bot": Bot; "bot_key": BotKey; "bot_key_created": BotKeyCreated; "bot_key_list": BotKeyList; "bot_list": BotList; "bot_reference": BotReference; "create_bot": CreateBot; "create_bot_key": CreateBotKey; "instance_settings": InstanceSettings; "update_bot": UpdateBot; "update_instance_settings": UpdateInstanceSettings; };
 export type CallSummary = { "duration_seconds"?: number | null; "state": RingState; };
-export type Capabilities = { "account_invitations"?: boolean; "account_recovery"?: boolean; "admin_invitations"?: boolean; "administration"?: boolean; "bots"?: boolean; "calls": boolean; "custom_emoji_admin"?: boolean; "custom_emojis"?: boolean; "deletion"?: boolean; "device_sessions"?: boolean; "direct_messages": boolean; "durable_sync": boolean; "e2ee": boolean; "editing"?: boolean; "email_factor_delivery"?: boolean; "email_factors"?: boolean; "email_recovery"?: boolean; "email_removal"?: boolean; "email_verification"?: boolean; "favorites"?: boolean; "fine_permissions"?: boolean; "giphy"?: boolean; "idempotent_room_creation"?: boolean; "instance_icon"?: boolean; "link_previews"?: boolean; "pins"?: boolean; "presence"?: boolean; "private_rooms": boolean; "profile_avatars"?: boolean; "profiles"?: boolean; "push": boolean; "quotes"?: boolean; "reactions": boolean; "read_markers"?: boolean; "reauthentication"?: boolean; "reauthentication_retirement"?: boolean; "reports"?: boolean; "room_avatars"?: boolean; "room_discovery"?: boolean; "room_info"?: boolean; "room_leave"?: boolean; "room_notes"?: boolean; "room_roles"?: boolean; "room_settings"?: boolean; "scheduled_messages"?: boolean; "search"?: boolean; "second_factors"?: boolean; "session_rotation"?: boolean; "slash_commands"?: boolean; "snapshot_paging"?: boolean; "social_cards"?: boolean; "stars"?: boolean; "sticker_shelf"?: boolean; "structured_cards"?: boolean; "text_messages": boolean; "thread_also_in_room"?: boolean; "thread_follow"?: boolean; "thread_list"?: boolean; "threads": boolean; "typing"?: boolean; "uploads": boolean; "voice"?: boolean; "voice_reactions"?: boolean; "workflows"?: boolean; };
+export type Capabilities = { "account_invitations"?: boolean; "account_recovery"?: boolean; "admin_invitations"?: boolean; "administration"?: boolean; "bots"?: boolean; "calls": boolean; "custom_emoji_admin"?: boolean; "custom_emojis"?: boolean; "deletion"?: boolean; "device_sessions"?: boolean; "direct_messages": boolean; "durable_sync": boolean; "e2ee": boolean; "editing"?: boolean; "email_factor_delivery"?: boolean; "email_factors"?: boolean; "email_recovery"?: boolean; "email_removal"?: boolean; "email_verification"?: boolean; "favorites"?: boolean; "fine_permissions"?: boolean; "giphy"?: boolean; "idempotent_room_creation"?: boolean; "instance_icon"?: boolean; "link_previews"?: boolean; "pins"?: boolean; "presence"?: boolean; "private_rooms": boolean; "profile_avatars"?: boolean; "profiles"?: boolean; "push": boolean; "quotes"?: boolean; "reactions": boolean; "read_markers"?: boolean; "reauthentication"?: boolean; "reauthentication_retirement"?: boolean; "reports"?: boolean; "room_avatars"?: boolean; "room_discovery"?: boolean; "room_info"?: boolean; "room_leave"?: boolean; "room_notes"?: boolean; "room_roles"?: boolean; "room_settings"?: boolean; "scheduled_messages"?: boolean; "search"?: boolean; "second_factors"?: boolean; "session_rotation"?: boolean; "slash_commands"?: boolean; "snapshot_paging"?: boolean; "social_cards"?: boolean; "stars"?: boolean; "sticker_shelf"?: boolean; "structured_cards"?: boolean; "text_messages": boolean; "thread_also_in_room"?: boolean; "thread_follow"?: boolean; "thread_inbox"?: boolean; "thread_list"?: boolean; "threads": boolean; "typing"?: boolean; "uploads": boolean; "voice"?: boolean; "voice_reactions"?: boolean; "workflows"?: boolean; };
 export type CardField = { "short"?: boolean; "title": string; "value": string; };
 export type Change = { "data": Room; "type": "room_upsert"; } | { "data": Message; "type": "message_upsert"; } | { "data": { "room_id": string; }; "type": "room_removed"; };
 export type ChangeEmailFactor = { "context": ReauthenticationContext; "email_version": string; "factor_version"?: string | null; "operation_id": string; };
@@ -144,6 +144,7 @@ export type LiveState = { "emoji_catalog_revision"?: string | null; "limited": b
 export type Login = { "password": string; "username": string; };
 export type MarkRead = { "reply_position": string; "root_position": string; };
 export type MarkThreadRead = { "position": string; };
+export type MarkThreadsRead = { "operation_id": string; };
 export type Message = { "also_in_room"?: boolean; "author": User; "body"?: Document | null; "call"?: CallSummary | null; "cards"?: (IntegrationCard)[]; "created_at": string; "deleted"?: boolean; "edited_at"?: string | null; "files"?: (FileDescriptor)[]; "form"?: WorkflowForm | null; "id": string; "personal_follow"?: PersonalFollow | null; "personal_mention"?: boolean | null; "personal_star"?: PersonalStar | null; "pinned"?: boolean; "position": string; "previews"?: (LinkPreview)[]; "quotes"?: (MessageQuote)[]; "reactions"?: (MessageReaction)[]; "reply_to"?: string | null; "revision": string; "room_id": string; "social"?: SocialCard | null; "system"?: SystemMessage | null; "text": string; "thread"?: ThreadSummary | null; };
 export type MessageContent = { "files": (string)[]; "kind": "plain"; "markdown": string; "mentions": (string)[]; "quotes": (QuoteReference)[]; } | { "format": string; "key_version": string; "kind": "encrypted"; "payload": string; };
 export type MessagePage = { "has_more": boolean; "messages": (Message)[]; };
@@ -250,10 +251,15 @@ export type StickerList = { "stickers": (Sticker)[]; };
 export type SyncBatch = { "changes": (Change)[]; "cursor": string; "has_more": boolean; "protocol_version": number; };
 export type SystemMessage = { "kind": "call_started"; "meeting_id": string; } | { "kind": "room_created"; "name": string; } | { "kind": "room_renamed"; "name": string; } | { "kind": "topic_changed"; "topic": string; } | { "description": string; "kind": "description_changed"; } | { "announcement": string; "kind": "announcement_changed"; } | { "kind": "privacy_changed"; "private": boolean; } | { "kind": "read_only_changed"; "read_only": boolean; } | { "kind": "member_joined"; } | { "kind": "member_left"; } | { "kind": "member_added"; "user": User; } | { "kind": "member_removed"; "user": User; } | { "kind": "role_changed"; "previous_role": RoomRole; "role": RoomRole; "user": User; };
 export type ThreadEntry = { "following": boolean; "last_reply_position": string; "root": Message; "unread": string; };
+export type ThreadInbox = { "next"?: string | null; "threads": (ThreadInboxEntry)[]; };
+export type ThreadInboxEntry = { "following": boolean; "last_reply_at": string; "last_reply_position": string; "mentions": string; "participants": (ThreadParticipant)[]; "replies": string; "room_id": string; "root": Message; "unread": string; };
+export type ThreadInboxTotals = { "unread_mentions": string; "unread_threads": string; };
 export type ThreadList = { "next"?: string | null; "threads": (ThreadEntry)[]; };
 export type ThreadPage = { "has_more": boolean; "messages": (Message)[]; "read_state": ThreadReadState; "root": Message; };
+export type ThreadParticipant = { "avatar_file_id"?: string | null; "deleted"?: boolean; "display_name": string; "id": string; "username": string; };
 export type ThreadReadState = { "membership_version": string; "position": string; "revision": string; "room_id": string; "root_id": string; "unread": string; };
 export type ThreadSummary = { "last_reply_at"?: string | null; "replies": string; };
+export type ThreadsReadReceipt = { "applied_revision": string; "operation_id": string; "threads": string; };
 export type Trigger = { "kind": "command"; "name": string; } | { "days"?: (number)[]; "every": Every; "kind": "schedule"; "room": string; "time": string; "timezone": string; } | { "kind": "member_joined"; "room": string; } | { "emoji"?: string | null; "kind": "reaction_added"; "room": string; } | { "contains": string; "kind": "message_posted"; "room": string; } | { "kind": "webhook"; };
 export type Typist = { "root_id"?: string | null; "user": User; };
 export type UpdateAdminUser = { "admin"?: boolean | null; "disabled"?: boolean | null; "operation_id": string; "revision": string; };
@@ -284,7 +290,7 @@ export type WorkflowRun = { "created_at": string; "error"?: string | null; "id":
 export type WorkflowRunList = { "runs": (WorkflowRun)[]; };
 export type WorkflowsContract = { "answer_form": AnswerForm; "create_workflow": CreateWorkflow; "run_started": RunStarted; "update_workflow": UpdateWorkflow; "webhook_secret": WebhookSecret; "workflow": Workflow; "workflow_form": WorkflowForm; "workflow_list": WorkflowList; "workflow_run_list": WorkflowRunList; };
 
-export type NativeTypes = { AcceptInvitation: AcceptInvitation; AccountInvitation: AccountInvitation; AccountPermissions: AccountPermissions; AdminContract: AdminContract; AdminMessageCounts: AdminMessageCounts; AdminOperation: AdminOperation; AdminOverview: AdminOverview; AdminReport: AdminReport; AdminReportCounts: AdminReportCounts; AdminReportedMessage: AdminReportedMessage; AdminReportedMessagePage: AdminReportedMessagePage; AdminReportedUser: AdminReportedUser; AdminReportedUserPage: AdminReportedUserPage; AdminRoom: AdminRoom; AdminRoomCounts: AdminRoomCounts; AdminRoomPage: AdminRoomPage; AdminUploadCounts: AdminUploadCounts; AdminUser: AdminUser; AdminUserCounts: AdminUserCounts; AdminUserPage: AdminUserPage; AnswerForm: AnswerForm; AnswerRing: AnswerRing; AnswerSocial: AnswerSocial; ApiError: ApiError; ApplicationCancellation: ApplicationCancellation; ApplicationMessage: ApplicationMessage; ApplicationReceipt: ApplicationReceipt; ApplicationSettlement: ApplicationSettlement; ApplicationSubmission: ApplicationSubmission; AuthChallenge: AuthChallenge; AuthenticationStep: AuthenticationStep; AvailableKeyPackage: AvailableKeyPackage; AvatarCommand: AvatarCommand; BeginEmailVerification: BeginEmailVerification; BeginFactorSetup: BeginFactorSetup; BeginReauthentication: BeginReauthentication; Bot: Bot; BotKey: BotKey; BotKeyCreated: BotKeyCreated; BotKeyList: BotKeyList; BotList: BotList; BotReference: BotReference; BotRoute: BotRoute; BotScope: BotScope; BotScopeRoutes: BotScopeRoutes; BotsContract: BotsContract; CallSummary: CallSummary; Capabilities: Capabilities; CardField: CardField; Change: Change; ChangeEmailFactor: ChangeEmailFactor; ChangeRoomRole: ChangeRoomRole; ClosePoll: ClosePoll; CommandList: CommandList; CommitHistoryShare: CommitHistoryShare; CompleteUpload: CompleteUpload; ConfirmEmailVerification: ConfirmEmailVerification; CreateAccountInvitation: CreateAccountInvitation; CreateBot: CreateBot; CreateBotKey: CreateBotKey; CreateEmoji: CreateEmoji; CreateRoom: CreateRoom; CreateSocial: CreateSocial; CreateWorkflow: CreateWorkflow; CustomEmoji: CustomEmoji; DeleteAdminUser: DeleteAdminUser; DeleteMessage: DeleteMessage; DeliveryContent: DeliveryContent; DeliveryEvent: DeliveryEvent; DeliveryPage: DeliveryPage; DesktopNotifications: DesktopNotifications; Device: Device; DeviceSession: DeviceSession; DirectMessage: DirectMessage; Directory: Directory; DisableFactor: DisableFactor; Discovery: Discovery; Document: Document; EditMessage: EditMessage; EmailDeliveryState: EmailDeliveryState; EmailFactorChange: EmailFactorChange; EmailRecoveryRequested: EmailRecoveryRequested; EmailRemovalReceipt: EmailRemovalReceipt; EmailStatus: EmailStatus; EmailVerificationStep: EmailVerificationStep; EmojiCatalog: EmojiCatalog; EnableFactor: EnableFactor; EncryptedFile: EncryptedFile; EncryptedKeyBackup: EncryptedKeyBackup; Every: Every; FactorBackupCodes: FactorBackupCodes; FactorEmailDelivery: FactorEmailDelivery; FactorSetup: FactorSetup; FactorStatus: FactorStatus; FileDescriptor: FileDescriptor; FinishFactor: FinishFactor; FinishReauthentication: FinishReauthentication; FormAnswer: FormAnswer; FormField: FormField; FormFieldKind: FormFieldKind; FormRecipient: FormRecipient; Format: Format; GifItem: GifItem; GifList: GifList; GroupCancellation: GroupCancellation; GroupEvent: GroupEvent; GroupEventPage: GroupEventPage; GroupMember: GroupMember; GroupReceipt: GroupReceipt; GroupRoster: GroupRoster; GroupSettlement: GroupSettlement; GroupState: GroupState; GroupSubmission: GroupSubmission; GroupWelcome: GroupWelcome; HistoryBackupPage: HistoryBackupPage; HistoryBackupPeriod: HistoryBackupPeriod; HistoryBackupPeriods: HistoryBackupPeriods; HistoryBackupReceipt: HistoryBackupReceipt; HistoryKeyCancellation: HistoryKeyCancellation; HistoryKeyReceipt: HistoryKeyReceipt; HistoryKeySettlement: HistoryKeySettlement; HistoryKeyState: HistoryKeyState; HistoryKeyVersion: HistoryKeyVersion; HistoryRecordsPage: HistoryRecordsPage; HistoryRecordsReceipt: HistoryRecordsReceipt; HistoryRequestEntry: HistoryRequestEntry; HistoryRequests: HistoryRequests; HistoryShareState: HistoryShareState; HttpHeader: HttpHeader; HttpMethod: HttpMethod; IconCommand: IconCommand; Identity: Identity; InstanceIcon: InstanceIcon; InstanceSettings: InstanceSettings; IntegrationCard: IntegrationCard; IssuedAccountInvitation: IssuedAccountInvitation; JoinVoice: JoinVoice; LeaveRoom: LeaveRoom; LinkPreview: LinkPreview; LiveFrame: LiveFrame; LiveRoom: LiveRoom; LiveState: LiveState; Login: Login; MarkRead: MarkRead; MarkThreadRead: MarkThreadRead; Message: Message; MessageContent: MessageContent; MessagePage: MessagePage; MessagePermissions: MessagePermissions; MessageQuote: MessageQuote; MessageReaction: MessageReaction; Node: Node; OperationReceipt: OperationReceipt; OwnProfile: OwnProfile; ParityContract: ParityContract; PersonalFollow: PersonalFollow; PersonalStar: PersonalStar; PollOption: PollOption; PrepareUpload: PrepareUpload; PresenceEntry: PresenceEntry; PresenceStatus: PresenceStatus; PreviewImage: PreviewImage; PreviewKind: PreviewKind; ProfileReceipt: ProfileReceipt; ProfileStamp: ProfileStamp; PublicDeviceKey: PublicDeviceKey; PublicRoom: PublicRoom; PublicRoomPage: PublicRoomPage; PublishHistoryKey: PublishHistoryKey; PublishHistoryRequest: PublishHistoryRequest; PublishKeyPackages: PublishKeyPackages; PublishRootBackup: PublishRootBackup; PushContent: PushContent; PushRegistration: PushRegistration; QuietHours: QuietHours; QuoteExcerpt: QuoteExcerpt; QuoteReference: QuoteReference; ReactVoice: ReactVoice; ReadMark: ReadMark; ReadState: ReadState; ReauthenticationContext: ReauthenticationContext; ReauthenticationGrant: ReauthenticationGrant; ReauthenticationStatus: ReauthenticationStatus; ReauthenticationStep: ReauthenticationStep; RecoverAccount: RecoverAccount; RegenerateFactorBackups: RegenerateFactorBackups; RegisterDevice: RegisterDevice; RegisterPush: RegisterPush; RemoveEmoji: RemoveEmoji; RemoveVerifiedEmail: RemoveVerifiedEmail; RenameDevice: RenameDevice; RenewSession: RenewSession; ReportInput: ReportInput; RequestEmailRecovery: RequestEmailRecovery; RequestFactorEmail: RequestFactorEmail; ResumeEmailRemoval: ResumeEmailRemoval; ResumeEmailVerification: ResumeEmailVerification; ResumeReauthentication: ResumeReauthentication; RetireEmailRemoval: RetireEmailRemoval; RetireEmailVerification: RetireEmailVerification; RetireReauthentication: RetireReauthentication; Revocation: Revocation; RevokeDevice: RevokeDevice; RingState: RingState; Room: Room; RoomCommandReceipt: RoomCommandReceipt; RoomDetails: RoomDetails; RoomKeyEnvelope: RoomKeyEnvelope; RoomKind: RoomKind; RoomMember: RoomMember; RoomMemberPage: RoomMemberPage; RoomNotes: RoomNotes; RoomPermissions: RoomPermissions; RoomRole: RoomRole; RootBackupCancellation: RootBackupCancellation; RootBackupReceipt: RootBackupReceipt; RootBackupSettlement: RootBackupSettlement; RootBackupState: RootBackupState; RootBackupVersion: RootBackupVersion; RunCommand: RunCommand; RunStarted: RunStarted; RunState: RunState; SaveSticker: SaveSticker; ScheduleMessage: ScheduleMessage; ScheduledMessage: ScheduledMessage; ScheduledMessages: ScheduledMessages; ScheduledState: ScheduledState; Scope: Scope; SearchMessages: SearchMessages; SearchPage: SearchPage; SecondFactor: SecondFactor; SendImage: SendImage; SendMessage: SendMessage; Session: Session; SetMark: SetMark; SetPresence: SetPresence; SetReaction: SetReaction; SetRoomFavorite: SetRoomFavorite; SetTyping: SetTyping; SlashCommand: SlashCommand; Snapshot: Snapshot; SnapshotPage: SnapshotPage; SocialCard: SocialCard; SocialContract: SocialContract; SocketTicket: SocketTicket; Step: Step; Sticker: Sticker; StickerList: StickerList; SyncBatch: SyncBatch; SystemMessage: SystemMessage; ThreadEntry: ThreadEntry; ThreadList: ThreadList; ThreadPage: ThreadPage; ThreadReadState: ThreadReadState; ThreadSummary: ThreadSummary; Trigger: Trigger; Typist: Typist; UpdateAdminUser: UpdateAdminUser; UpdateBot: UpdateBot; UpdateInstanceSettings: UpdateInstanceSettings; UpdatePreferences: UpdatePreferences; UpdateProfile: UpdateProfile; UpdateRoom: UpdateRoom; UpdateRoomNotes: UpdateRoomNotes; UpdateWorkflow: UpdateWorkflow; Upload: Upload; UploadHistoryBackup: UploadHistoryBackup; UploadHistoryRecords: UploadHistoryRecords; UploadState: UploadState; User: User; UserPreferences: UserPreferences; UserProfile: UserProfile; VerifyFactor: VerifyFactor; VoiceGrant: VoiceGrant; VoiceParticipant: VoiceParticipant; VoiceReaction: VoiceReaction; VoiceRing: VoiceRing; WebhookSecret: WebhookSecret; Workflow: Workflow; WorkflowForm: WorkflowForm; WorkflowList: WorkflowList; WorkflowRun: WorkflowRun; WorkflowRunList: WorkflowRunList; WorkflowsContract: WorkflowsContract; };
+export type NativeTypes = { AcceptInvitation: AcceptInvitation; AccountInvitation: AccountInvitation; AccountPermissions: AccountPermissions; AdminContract: AdminContract; AdminMessageCounts: AdminMessageCounts; AdminOperation: AdminOperation; AdminOverview: AdminOverview; AdminReport: AdminReport; AdminReportCounts: AdminReportCounts; AdminReportedMessage: AdminReportedMessage; AdminReportedMessagePage: AdminReportedMessagePage; AdminReportedUser: AdminReportedUser; AdminReportedUserPage: AdminReportedUserPage; AdminRoom: AdminRoom; AdminRoomCounts: AdminRoomCounts; AdminRoomPage: AdminRoomPage; AdminUploadCounts: AdminUploadCounts; AdminUser: AdminUser; AdminUserCounts: AdminUserCounts; AdminUserPage: AdminUserPage; AnswerForm: AnswerForm; AnswerRing: AnswerRing; AnswerSocial: AnswerSocial; ApiError: ApiError; ApplicationCancellation: ApplicationCancellation; ApplicationMessage: ApplicationMessage; ApplicationReceipt: ApplicationReceipt; ApplicationSettlement: ApplicationSettlement; ApplicationSubmission: ApplicationSubmission; AuthChallenge: AuthChallenge; AuthenticationStep: AuthenticationStep; AvailableKeyPackage: AvailableKeyPackage; AvatarCommand: AvatarCommand; BeginEmailVerification: BeginEmailVerification; BeginFactorSetup: BeginFactorSetup; BeginReauthentication: BeginReauthentication; Bot: Bot; BotKey: BotKey; BotKeyCreated: BotKeyCreated; BotKeyList: BotKeyList; BotList: BotList; BotReference: BotReference; BotRoute: BotRoute; BotScope: BotScope; BotScopeRoutes: BotScopeRoutes; BotsContract: BotsContract; CallSummary: CallSummary; Capabilities: Capabilities; CardField: CardField; Change: Change; ChangeEmailFactor: ChangeEmailFactor; ChangeRoomRole: ChangeRoomRole; ClosePoll: ClosePoll; CommandList: CommandList; CommitHistoryShare: CommitHistoryShare; CompleteUpload: CompleteUpload; ConfirmEmailVerification: ConfirmEmailVerification; CreateAccountInvitation: CreateAccountInvitation; CreateBot: CreateBot; CreateBotKey: CreateBotKey; CreateEmoji: CreateEmoji; CreateRoom: CreateRoom; CreateSocial: CreateSocial; CreateWorkflow: CreateWorkflow; CustomEmoji: CustomEmoji; DeleteAdminUser: DeleteAdminUser; DeleteMessage: DeleteMessage; DeliveryContent: DeliveryContent; DeliveryEvent: DeliveryEvent; DeliveryPage: DeliveryPage; DesktopNotifications: DesktopNotifications; Device: Device; DeviceSession: DeviceSession; DirectMessage: DirectMessage; Directory: Directory; DisableFactor: DisableFactor; Discovery: Discovery; Document: Document; EditMessage: EditMessage; EmailDeliveryState: EmailDeliveryState; EmailFactorChange: EmailFactorChange; EmailRecoveryRequested: EmailRecoveryRequested; EmailRemovalReceipt: EmailRemovalReceipt; EmailStatus: EmailStatus; EmailVerificationStep: EmailVerificationStep; EmojiCatalog: EmojiCatalog; EnableFactor: EnableFactor; EncryptedFile: EncryptedFile; EncryptedKeyBackup: EncryptedKeyBackup; Every: Every; FactorBackupCodes: FactorBackupCodes; FactorEmailDelivery: FactorEmailDelivery; FactorSetup: FactorSetup; FactorStatus: FactorStatus; FileDescriptor: FileDescriptor; FinishFactor: FinishFactor; FinishReauthentication: FinishReauthentication; FormAnswer: FormAnswer; FormField: FormField; FormFieldKind: FormFieldKind; FormRecipient: FormRecipient; Format: Format; GifItem: GifItem; GifList: GifList; GroupCancellation: GroupCancellation; GroupEvent: GroupEvent; GroupEventPage: GroupEventPage; GroupMember: GroupMember; GroupReceipt: GroupReceipt; GroupRoster: GroupRoster; GroupSettlement: GroupSettlement; GroupState: GroupState; GroupSubmission: GroupSubmission; GroupWelcome: GroupWelcome; HistoryBackupPage: HistoryBackupPage; HistoryBackupPeriod: HistoryBackupPeriod; HistoryBackupPeriods: HistoryBackupPeriods; HistoryBackupReceipt: HistoryBackupReceipt; HistoryKeyCancellation: HistoryKeyCancellation; HistoryKeyReceipt: HistoryKeyReceipt; HistoryKeySettlement: HistoryKeySettlement; HistoryKeyState: HistoryKeyState; HistoryKeyVersion: HistoryKeyVersion; HistoryRecordsPage: HistoryRecordsPage; HistoryRecordsReceipt: HistoryRecordsReceipt; HistoryRequestEntry: HistoryRequestEntry; HistoryRequests: HistoryRequests; HistoryShareState: HistoryShareState; HttpHeader: HttpHeader; HttpMethod: HttpMethod; IconCommand: IconCommand; Identity: Identity; InstanceIcon: InstanceIcon; InstanceSettings: InstanceSettings; IntegrationCard: IntegrationCard; IssuedAccountInvitation: IssuedAccountInvitation; JoinVoice: JoinVoice; LeaveRoom: LeaveRoom; LinkPreview: LinkPreview; LiveFrame: LiveFrame; LiveRoom: LiveRoom; LiveState: LiveState; Login: Login; MarkRead: MarkRead; MarkThreadRead: MarkThreadRead; MarkThreadsRead: MarkThreadsRead; Message: Message; MessageContent: MessageContent; MessagePage: MessagePage; MessagePermissions: MessagePermissions; MessageQuote: MessageQuote; MessageReaction: MessageReaction; Node: Node; OperationReceipt: OperationReceipt; OwnProfile: OwnProfile; ParityContract: ParityContract; PersonalFollow: PersonalFollow; PersonalStar: PersonalStar; PollOption: PollOption; PrepareUpload: PrepareUpload; PresenceEntry: PresenceEntry; PresenceStatus: PresenceStatus; PreviewImage: PreviewImage; PreviewKind: PreviewKind; ProfileReceipt: ProfileReceipt; ProfileStamp: ProfileStamp; PublicDeviceKey: PublicDeviceKey; PublicRoom: PublicRoom; PublicRoomPage: PublicRoomPage; PublishHistoryKey: PublishHistoryKey; PublishHistoryRequest: PublishHistoryRequest; PublishKeyPackages: PublishKeyPackages; PublishRootBackup: PublishRootBackup; PushContent: PushContent; PushRegistration: PushRegistration; QuietHours: QuietHours; QuoteExcerpt: QuoteExcerpt; QuoteReference: QuoteReference; ReactVoice: ReactVoice; ReadMark: ReadMark; ReadState: ReadState; ReauthenticationContext: ReauthenticationContext; ReauthenticationGrant: ReauthenticationGrant; ReauthenticationStatus: ReauthenticationStatus; ReauthenticationStep: ReauthenticationStep; RecoverAccount: RecoverAccount; RegenerateFactorBackups: RegenerateFactorBackups; RegisterDevice: RegisterDevice; RegisterPush: RegisterPush; RemoveEmoji: RemoveEmoji; RemoveVerifiedEmail: RemoveVerifiedEmail; RenameDevice: RenameDevice; RenewSession: RenewSession; ReportInput: ReportInput; RequestEmailRecovery: RequestEmailRecovery; RequestFactorEmail: RequestFactorEmail; ResumeEmailRemoval: ResumeEmailRemoval; ResumeEmailVerification: ResumeEmailVerification; ResumeReauthentication: ResumeReauthentication; RetireEmailRemoval: RetireEmailRemoval; RetireEmailVerification: RetireEmailVerification; RetireReauthentication: RetireReauthentication; Revocation: Revocation; RevokeDevice: RevokeDevice; RingState: RingState; Room: Room; RoomCommandReceipt: RoomCommandReceipt; RoomDetails: RoomDetails; RoomKeyEnvelope: RoomKeyEnvelope; RoomKind: RoomKind; RoomMember: RoomMember; RoomMemberPage: RoomMemberPage; RoomNotes: RoomNotes; RoomPermissions: RoomPermissions; RoomRole: RoomRole; RootBackupCancellation: RootBackupCancellation; RootBackupReceipt: RootBackupReceipt; RootBackupSettlement: RootBackupSettlement; RootBackupState: RootBackupState; RootBackupVersion: RootBackupVersion; RunCommand: RunCommand; RunStarted: RunStarted; RunState: RunState; SaveSticker: SaveSticker; ScheduleMessage: ScheduleMessage; ScheduledMessage: ScheduledMessage; ScheduledMessages: ScheduledMessages; ScheduledState: ScheduledState; Scope: Scope; SearchMessages: SearchMessages; SearchPage: SearchPage; SecondFactor: SecondFactor; SendImage: SendImage; SendMessage: SendMessage; Session: Session; SetMark: SetMark; SetPresence: SetPresence; SetReaction: SetReaction; SetRoomFavorite: SetRoomFavorite; SetTyping: SetTyping; SlashCommand: SlashCommand; Snapshot: Snapshot; SnapshotPage: SnapshotPage; SocialCard: SocialCard; SocialContract: SocialContract; SocketTicket: SocketTicket; Step: Step; Sticker: Sticker; StickerList: StickerList; SyncBatch: SyncBatch; SystemMessage: SystemMessage; ThreadEntry: ThreadEntry; ThreadInbox: ThreadInbox; ThreadInboxEntry: ThreadInboxEntry; ThreadInboxTotals: ThreadInboxTotals; ThreadList: ThreadList; ThreadPage: ThreadPage; ThreadParticipant: ThreadParticipant; ThreadReadState: ThreadReadState; ThreadSummary: ThreadSummary; ThreadsReadReceipt: ThreadsReadReceipt; Trigger: Trigger; Typist: Typist; UpdateAdminUser: UpdateAdminUser; UpdateBot: UpdateBot; UpdateInstanceSettings: UpdateInstanceSettings; UpdatePreferences: UpdatePreferences; UpdateProfile: UpdateProfile; UpdateRoom: UpdateRoom; UpdateRoomNotes: UpdateRoomNotes; UpdateWorkflow: UpdateWorkflow; Upload: Upload; UploadHistoryBackup: UploadHistoryBackup; UploadHistoryRecords: UploadHistoryRecords; UploadState: UploadState; User: User; UserPreferences: UserPreferences; UserProfile: UserProfile; VerifyFactor: VerifyFactor; VoiceGrant: VoiceGrant; VoiceParticipant: VoiceParticipant; VoiceReaction: VoiceReaction; VoiceRing: VoiceRing; WebhookSecret: WebhookSecret; Workflow: Workflow; WorkflowForm: WorkflowForm; WorkflowList: WorkflowList; WorkflowRun: WorkflowRun; WorkflowRunList: WorkflowRunList; WorkflowsContract: WorkflowsContract; };
 
 export const nativeSchema = {
   "$defs": {
@@ -2001,6 +2007,11 @@ export const nativeSchema = {
         "thread_follow": {
           "default": false,
           "description": "`PUT /api/v1/messages/{id}/follow` and `Message.personal_follow`.",
+          "type": "boolean"
+        },
+        "thread_inbox": {
+          "default": false,
+          "description": "`GET /api/v1/threads`, `GET /api/v1/threads/totals` and\n`POST /api/v1/threads/read`: the account's followed threads in every room.",
           "type": "boolean"
         },
         "thread_list": {
@@ -4601,6 +4612,18 @@ export const nativeSchema = {
       },
       "required": [
         "position"
+      ],
+      "type": "object"
+    },
+    "MarkThreadsRead": {
+      "description": "`POST /api/v1/threads/read`.",
+      "properties": {
+        "operation_id": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "operation_id"
       ],
       "type": "object"
     },
@@ -8969,6 +8992,100 @@ export const nativeSchema = {
       ],
       "type": "object"
     },
+    "ThreadInbox": {
+      "description": "`GET /api/v1/threads?filter=followed|unread&before=&limit=`.",
+      "properties": {
+        "next": {
+          "description": "The next page's `before`, absent on the last page.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "threads": {
+          "description": "Latest reply first.",
+          "items": {
+            "$ref": "#/$defs/ThreadInboxEntry"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "threads"
+      ],
+      "type": "object"
+    },
+    "ThreadInboxEntry": {
+      "description": "One followed thread in `ThreadInbox`.",
+      "properties": {
+        "following": {
+          "type": "boolean"
+        },
+        "last_reply_at": {
+          "type": "string"
+        },
+        "last_reply_position": {
+          "description": "Highest non-deleted reply position: the list's order and its cursor.",
+          "type": "string"
+        },
+        "mentions": {
+          "description": "Those of `unread` that mention the reader by name.",
+          "type": "string"
+        },
+        "participants": {
+          "description": "Up to five distinct repliers, the most recent first.",
+          "items": {
+            "$ref": "#/$defs/ThreadParticipant"
+          },
+          "type": "array"
+        },
+        "replies": {
+          "description": "Non-deleted replies.",
+          "type": "string"
+        },
+        "room_id": {
+          "type": "string"
+        },
+        "root": {
+          "$ref": "#/$defs/Message",
+          "description": "The root, with its `thread` summary and the reader's `personal_follow`."
+        },
+        "unread": {
+          "description": "Replies by others after the reader's thread read position.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "root",
+        "room_id",
+        "last_reply_position",
+        "last_reply_at",
+        "replies",
+        "participants",
+        "following",
+        "unread",
+        "mentions"
+      ],
+      "type": "object"
+    },
+    "ThreadInboxTotals": {
+      "description": "`GET /api/v1/threads/totals`.",
+      "properties": {
+        "unread_mentions": {
+          "description": "The sum of those threads' `mentions`.",
+          "type": "string"
+        },
+        "unread_threads": {
+          "description": "Followed threads with at least one unread reply.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "unread_threads",
+        "unread_mentions"
+      ],
+      "type": "object"
+    },
     "ThreadList": {
       "description": "`GET /api/v1/rooms/{id}/threads?filter=all|following&before=&limit=`.",
       "properties": {
@@ -9019,6 +9136,36 @@ export const nativeSchema = {
       ],
       "type": "object"
     },
+    "ThreadParticipant": {
+      "description": "Someone who replied in a thread of `ThreadInbox`.",
+      "properties": {
+        "avatar_file_id": {
+          "description": "`/api/v1/avatars/{id}`; absent without a photo, and for a disabled or\ndeleted account.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "deleted": {
+          "type": "boolean"
+        },
+        "display_name": {
+          "type": "string"
+        },
+        "id": {
+          "type": "string"
+        },
+        "username": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "username",
+        "display_name"
+      ],
+      "type": "object"
+    },
     "ThreadReadState": {
       "properties": {
         "membership_version": {
@@ -9064,6 +9211,27 @@ export const nativeSchema = {
       },
       "required": [
         "replies"
+      ],
+      "type": "object"
+    },
+    "ThreadsReadReceipt": {
+      "properties": {
+        "applied_revision": {
+          "description": "The highest revision it published, `\"0\"` when nothing was unread.",
+          "type": "string"
+        },
+        "operation_id": {
+          "type": "string"
+        },
+        "threads": {
+          "description": "Threads this operation advanced, the same on a replay.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "operation_id",
+        "threads",
+        "applied_revision"
       ],
       "type": "object"
     },
@@ -10188,6 +10356,9 @@ export const nativeSchema = {
     "mark_thread_read": {
       "$ref": "#/$defs/MarkThreadRead"
     },
+    "mark_threads_read": {
+      "$ref": "#/$defs/MarkThreadsRead"
+    },
     "message": {
       "$ref": "#/$defs/Message"
     },
@@ -10260,11 +10431,20 @@ export const nativeSchema = {
     "sync_batch": {
       "$ref": "#/$defs/SyncBatch"
     },
+    "thread_inbox": {
+      "$ref": "#/$defs/ThreadInbox"
+    },
+    "thread_inbox_totals": {
+      "$ref": "#/$defs/ThreadInboxTotals"
+    },
     "thread_list": {
       "$ref": "#/$defs/ThreadList"
     },
     "thread_page": {
       "$ref": "#/$defs/ThreadPage"
+    },
+    "threads_read_receipt": {
+      "$ref": "#/$defs/ThreadsReadReceipt"
     },
     "update_preferences": {
       "$ref": "#/$defs/UpdatePreferences"
@@ -10315,7 +10495,11 @@ export const nativeSchema = {
     "message_page",
     "thread_page",
     "thread_list",
+    "thread_inbox",
+    "thread_inbox_totals",
     "mark_thread_read",
+    "mark_threads_read",
+    "threads_read_receipt",
     "snapshot",
     "snapshot_page",
     "sync_batch",
