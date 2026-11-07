@@ -182,6 +182,7 @@ public final class RoomModel {
     }
     /// The room's thread list and following a thread: Rocket.Chat only.
     public var supportsThreads: Bool { active && chat?.threadsAvailable() == true }
+    public var supportsThreadFollow: Bool { active && threadId != nil && chat?.threadFollowAvailable() == true }
     /// "Also send to the room" (Rocket.Chat): a thread's next reply only, unchecked once it goes.
     public var alsoInRoom = false
     public var supportsAlsoInRoom: Bool { active && threadId != nil && !privateMode && chat?.alsoInRoomAvailable() == true }
@@ -480,7 +481,7 @@ public final class RoomModel {
         if let native = provider.native, let threadId {
             threadWriteAllowed = (try? native.threadWritable(room:room.rid,root:threadId)) == true
         }
-        if let chat, let threadId {
+        if let chat, let threadId, chat.threadsAvailable() {
             let following = chat.threadFollowing(root: threadId)
             if following != followingThread { followingThread = following }
         }
@@ -656,13 +657,30 @@ public final class RoomModel {
         if let chat {
             let rid = room.rid
             Task { await chat.prepareActions(rid: rid) }
+            Task { await refreshThreadFollowing() }
         }
         loading = true
         defer { loading = false }
-        if let more = try? await provider.load(room: room, thread: threadId), active {
-            hasOlder = more
+        let peeked = peeking
+        let more: Bool?
+        if peeked, let chat {
+            more = try? await chat.peekRoom(rid: room.rid, kind: room.kind)
+        } else {
+            more = try? await provider.load(room: room, thread: threadId)
         }
+        if let more, active { hasOlder = more }
         reload()
+        if peeked && !peeking { Task { await load() } }
+    }
+
+    /// Shown behind a thread of the account's list. Opening a room marks it
+    /// read in rv-core, so that waits until the thread is left for the room.
+    @ObservationIgnored var peeking = false
+
+    func stopPeeking() {
+        guard peeking else { return }
+        peeking = false
+        if !loading { Task { await load() } }
     }
 
     /// One more page of history. False when there is none or one is coming.
@@ -1100,8 +1118,15 @@ public final class RoomModel {
     }
 
     /// Follows a thread or stops following it; this thread's bell moves at once.
+    /// Where the root does not say whether I follow it, the server does.
+    public func refreshThreadFollowing() async {
+        guard active, let chat, let threadId, !chat.threadsAvailable(), chat.threadFollowAvailable() else { return }
+        let following = try? await chat.fetchThreadFollowing(rid: room.rid, root: threadId)
+        if active, let following { followingThread = following }
+    }
+
     public func followThread(_ root: String, _ on: Bool) async throws {
-        guard supportsThreads else { throw RvError.Local(message: L("native.error")) }
+        guard active, chat?.threadFollowAvailable() == true else { throw RvError.Local(message: L("native.error")) }
         try await editableChat().followThread(root: root, on: on)
         if root == threadId { followingThread = on }
     }
