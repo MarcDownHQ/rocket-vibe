@@ -13,12 +13,18 @@ first release: everything before it is under that section.
 
 ### Added
 
+- The account's threads across its rooms, as the `thread_inbox` capability: `GET /api/v1/threads` (`filter=followed|unread`, paged by latest reply), `GET /api/v1/threads/totals` for a badge, and `POST /api/v1/threads/read` to mark every followed thread read, idempotent per operation and told to the account's other sessions. Plaintext threads only (`docs/protocol/THREADS.md`).
+- Web client: a Threads row at the top of the sidebar with an unread badge opens a panel of the threads you follow, with Followed and Unread tabs and "Mark all as read". A row opens the thread beside the panel without marking its room read, and the panel and the thread are states of the address, so back, forward and a reload keep them.
 - Web client: notes open beside the conversation instead of in a dialog, the room list hidden meanwhile, with the browser's back and forward moving between the two and an address of their own; the editor has a formatting bar, and an unsaved edit comes back when they reopen.
 - Web client: Shift+Up / Shift+Down opens the previous or next room in the list, skipping folded sections; inside a text field holding text they still select text.
 
 ### Changed
 
 - The project moved to `MarcDownHQ/rocket-vibe` on GitHub: the Docker image is now published to `ghcr.io/marcdownhq/vibez` (versions up to 0.11.0 stay at `ghcr.io/guillaume69/vibez`), and the administration's update check reads the new repository.
+
+### Fixed
+
+- Web client: opening a thread after moving to another room with a thread still open no longer blanks the whole app.
 
 ## [0.11.0] - 2026-11-02
 
