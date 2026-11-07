@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
-import { coalesced, ThreadReadPacer, ThreadTotalsStore } from './threadInbox.ts';
+import { coalesced, shouldFillThreads, THREAD_FILL_PAGES, THREAD_FILL_TARGET, ThreadReadPacer, ThreadTotalsStore } from './threadInbox.ts';
 
 const settle = () => new Promise<void>((resolve) => setImmediate(resolve));
 const wait = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
@@ -147,4 +147,24 @@ test('a failed read goes out again at the next chance', async () => {
   pacer.note('r1');
   await wait(5);
   assert.equal(sends, 2);
+});
+
+test('a short filtered list reads on while pages and budget remain', () => {
+  const list = { shown: 0, next: 'c', busy: false, budget: THREAD_FILL_PAGES };
+  assert.equal(shouldFillThreads(list), true);
+  assert.equal(shouldFillThreads({ ...list, shown: THREAD_FILL_TARGET - 1 }), true);
+  assert.equal(shouldFillThreads({ ...list, shown: THREAD_FILL_TARGET }), false, 'the view is filled');
+  assert.equal(shouldFillThreads({ ...list, next: null }), false, 'the list ended');
+  assert.equal(shouldFillThreads({ ...list, busy: true }), false, 'a page is on its way or failed');
+  assert.equal(shouldFillThreads({ ...list, budget: 0 }), false, 'the user decides what comes next');
+});
+
+test('walking a list that never matches stops after the budget', () => {
+  let budget = THREAD_FILL_PAGES;
+  let fetched = 0;
+  while (shouldFillThreads({ shown: 0, next: 'c', busy: false, budget })) {
+    budget--;
+    fetched++;
+  }
+  assert.equal(fetched, 4);
 });

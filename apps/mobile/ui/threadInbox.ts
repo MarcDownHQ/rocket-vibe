@@ -24,12 +24,35 @@ const none = () => null;
 
 /** The account's unread counts, read again on each change and each connection; null until known. */
 export function useThreadTotals(actions: ProviderActions, generation: number): ThreadTotals | null {
-  const store = useMemo(() => totalsStore(actions), [actions]);
+  // A provider's methods can appear with its server's capabilities, on the same object.
+  const available = actions.threadTotals !== undefined && actions.onThreadsChanged !== undefined;
+  const store = useMemo(() => (available ? totalsStore(actions) : null), [actions, available]);
   const totals = useSyncExternalStore(store?.subscribe ?? nothing, store?.current ?? none);
   useEffect(() => {
     store?.schedule();
   }, [store, generation]);
   return totals;
+}
+
+/** Reads again on the provider's clock while the screen shows, and on coming back to the app. */
+export function useThreadPoll(actions: ProviderActions, refresh: () => void): void {
+  const every = actions.threadPollMs;
+  useFocusEffect(
+    useCallback(() => {
+      if (every === undefined) return;
+      const read = () => {
+        if (AppState.currentState !== 'active') return;
+        totalsStore(actions)?.schedule();
+        refresh();
+      };
+      const timer = setInterval(read, every);
+      const listener = AppState.addEventListener('change', read);
+      return () => {
+        clearInterval(timer);
+        listener.remove();
+      };
+    }, [actions, every, refresh]),
+  );
 }
 
 /**

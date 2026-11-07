@@ -1,11 +1,12 @@
 import { Redirect, Stack, useRouter } from 'expo-router';
-import { useCallback, useEffect, useRef, useState } from 'react';
-import { ActivityIndicator, Alert, FlatList, StyleSheet, Text, View } from 'react-native';
+import { inThreadScope, THREAD_SCOPES, type ThreadScope } from '@rocket-vibe/provider-api/threadScope';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { ActivityIndicator, Alert, FlatList, ScrollView, StyleSheet, Text, View } from 'react-native';
 
 import { textPreview } from '../lib/markdown.ts';
 import type { ProviderActions, ThreadInboxEntry, ThreadInboxFilter, ThreadInboxPage, ThreadParticipant } from '../lib/provider.ts';
 import type { RestClient } from '../lib/rest.ts';
-import { coalesced, THREAD_REFRESH_MS } from '../lib/threadInbox.ts';
+import { coalesced, shouldFillThreads, THREAD_FILL_PAGES, THREAD_REFRESH_MS } from '../lib/threadInbox.ts';
 import { avatarUrl } from '../lib/upload.ts';
 import { useListTimeFormatter, useT } from '../ui/i18n.ts';
 import { Icon } from '../ui/icon.tsx';
@@ -15,7 +16,7 @@ import { useSession } from '../ui/session.tsx';
 import { useSync } from '../ui/sync.tsx';
 import { Tappable } from '../ui/tappable.tsx';
 import { type Colors, FONTS, useColors } from '../ui/theme.ts';
-import { useThreadTotals } from '../ui/threadInbox.ts';
+import { useThreadPoll, useThreadTotals } from '../ui/threadInbox.ts';
 
 /**
  * The account's threads across its rooms: those I follow, or those with replies
@@ -24,6 +25,19 @@ import { useThreadTotals } from '../ui/threadInbox.ts';
  */
 
 const AVATARS = 3;
+
+const SCOPE_LABEL = {
+  all: 'threadInbox.scopeAll',
+  participated: 'threadInbox.scopeParticipated',
+  mentioned: 'threadInbox.scopeMentioned',
+  others: 'threadInbox.scopeOthers',
+} as const;
+
+const SCOPE_EMPTY = {
+  participated: 'threadInbox.noneParticipated',
+  mentioned: 'threadInbox.noneMentioned',
+  others: 'threadInbox.noneOthers',
+} as const;
 
 type ListState =
   | { phase: 'loading' }
@@ -63,7 +77,10 @@ function ThreadInbox({
   const t = useT();
   const router = useRouter();
   const [filter, setFilter] = useState<ThreadInboxFilter>('followed');
+  const [scope, setScope] = useState<ThreadScope>('all');
   const [list, setList] = useState<ListState>({ phase: 'loading' });
+  const fillBudget = useRef(THREAD_FILL_PAGES);
+  const endReachedAt = useRef(-1);
   const totals = useThreadTotals(actions, generation);
   const request = useRef(0);
 
@@ -76,15 +93,21 @@ function ThreadInbox({
       },
       () => {
         if (asked !== request.current) return;
-        setList((now) => (now.phase === 'ready' ? now : { phase: 'failed' }));
+        setList((now) => (now.phase === 'ready' ? { ...now, more: false } : { phase: 'failed' }));
       },
     );
   }, [actions, filter]);
 
+  const newAction = useCallback(() => {
+    fillBudget.current = THREAD_FILL_PAGES;
+    endReachedAt.current = -1;
+  }, []);
+
   const reload = useCallback(() => {
+    newAction();
     setList({ phase: 'loading' });
     void first();
-  }, [first]);
+  }, [first, newAction]);
 
   useEffect(() => {
     void first();
@@ -107,6 +130,11 @@ function ThreadInbox({
       release?.();
     };
   }, [actions, first]);
+
+  const pollFirst = useCallback(() => {
+    if (onePage.current) void first();
+  }, [first]);
+  useThreadPoll(actions, pollFirst);
 
   const lastGeneration = useRef(generation);
   useEffect(() => {
@@ -139,6 +167,32 @@ function ThreadInbox({
       );
     },
     [list, actions, filter],
+  );
+
+  const shown = useMemo(
+    () => (list.phase === 'ready' ? list.entries.filter((entry) => inThreadScope(entry, scope)) : []),
+    [list, scope],
+  );
+
+  useEffect(() => {
+    if (list.phase !== 'ready') return;
+    if (!shouldFillThreads({ shown: shown.length, next: list.next, busy: list.more || list.moreFailed, budget: fillBudget.current })) return;
+    fillBudget.current -= 1;
+    loadMore();
+  }, [list, shown.length, loadMore]);
+
+  const onEndReached = useCallback(() => {
+    if (endReachedAt.current === shown.length) return;
+    endReachedAt.current = shown.length;
+    loadMore();
+  }, [shown.length, loadMore]);
+
+  const askMore = useCallback(
+    (retrying: boolean) => {
+      newAction();
+      loadMore(retrying);
+    },
+    [newAction, loadMore],
   );
 
   const open = useCallback(
@@ -195,6 +249,7 @@ function ThreadInbox({
               key={option}
               onPress={() => {
                 if (active) return;
+                newAction();
                 setList({ phase: 'loading' });
                 setFilter(option);
               }}
@@ -216,6 +271,27 @@ function ThreadInbox({
           );
         })}
       </View>
+      <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.scopes} contentContainerStyle={styles.scopesContent} accessibilityRole="radiogroup">
+        {THREAD_SCOPES.map((option) => {
+          const active = option === scope;
+          return (
+            <Tappable
+              key={option}
+              onPress={() => {
+                if (active) return;
+                newAction();
+                setScope(option);
+              }}
+              accessibilityRole="radio"
+              accessibilityState={{ checked: active }}
+              android_ripple={{ color: c.ripple, borderless: false }}
+              style={[styles.scope, { borderColor: active ? c.accent : c.border, backgroundColor: active ? c.surfaceActive : 'transparent' }]}
+            >
+              <Text style={[styles.scopeText, { color: active ? c.text : c.dimmed }]}>{t(SCOPE_LABEL[option])}</Text>
+            </Tappable>
+          );
+        })}
+      </ScrollView>
       {list.phase === 'loading' ? (
         <View style={styles.center}>
           <ActivityIndicator />
@@ -227,26 +303,45 @@ function ThreadInbox({
             <Text style={[styles.retry, { color: c.accent }]}>{t('common.retry')}</Text>
           </Tappable>
         </View>
-      ) : list.entries.length === 0 ? (
+      ) : shown.length === 0 ? (
         <View style={styles.center}>
-          <Text style={[styles.emptyTitle, { color: c.text }]}>
-            {t(filter === 'followed' ? 'threadInbox.noneFollowed' : 'threadInbox.noneUnread')}
-          </Text>
-          {filter === 'unread' && <Text style={[styles.empty, { color: c.dimmed }]}>{t('threadInbox.caughtUp')}</Text>}
+          {list.more ? (
+            <ActivityIndicator />
+          ) : (
+            <>
+              <Text style={[styles.emptyTitle, { color: c.text }]}>
+                {t(scope !== 'all' ? SCOPE_EMPTY[scope] : filter === 'followed' ? 'threadInbox.noneFollowed' : 'threadInbox.noneUnread')}
+              </Text>
+              {scope === 'all' && filter === 'unread' && list.next === null && <Text style={[styles.empty, { color: c.dimmed }]}>{t('threadInbox.caughtUp')}</Text>}
+              {list.moreFailed ? (
+                <Tappable onPress={() => askMore(true)} hitSlop={8}>
+                  <Text style={[styles.retry, { color: c.accent }]}>{t('common.retry')}</Text>
+                </Tappable>
+              ) : list.next !== null ? (
+                <Tappable onPress={() => askMore(false)} hitSlop={8}>
+                  <Text style={[styles.retry, { color: c.accent }]}>{t('threadInbox.loadMore')}</Text>
+                </Tappable>
+              ) : null}
+            </>
+          )}
         </View>
       ) : (
         <FlatList
-          data={list.entries}
+          data={shown}
           keyExtractor={(entry) => entry.root.id}
           renderItem={({ item }) => <EntryRow c={c} client={client} entry={item} onOpen={open} />}
-          onEndReached={() => loadMore()}
+          onEndReached={onEndReached}
           onEndReachedThreshold={0.5}
           ListFooterComponent={
             list.more ? (
               <ActivityIndicator style={styles.more} />
             ) : list.moreFailed ? (
-              <Tappable onPress={() => loadMore(true)} hitSlop={8} style={styles.more}>
+              <Tappable onPress={() => askMore(true)} hitSlop={8} style={styles.more}>
                 <Text style={[styles.retry, styles.centered, { color: c.accent }]}>{t('common.retry')}</Text>
+              </Tappable>
+            ) : list.next !== null ? (
+              <Tappable onPress={() => askMore(false)} hitSlop={8} style={styles.more}>
+                <Text style={[styles.retry, styles.centered, { color: c.accent }]}>{t('threadInbox.loadMore')}</Text>
               </Tappable>
             ) : null
           }
@@ -328,6 +423,10 @@ const styles = StyleSheet.create({
   tabs: { flexDirection: 'row', gap: 8, paddingHorizontal: 16, paddingVertical: 12 },
   tab: { borderWidth: 1, borderRadius: 999, paddingHorizontal: 16, paddingVertical: 7, overflow: 'hidden' },
   tabText: { fontFamily: FONTS.bodySemi, fontSize: 13.5 },
+  scopes: { flexGrow: 0 },
+  scopesContent: { gap: 6, paddingHorizontal: 16, paddingBottom: 10 },
+  scope: { borderWidth: 1, borderRadius: 999, paddingHorizontal: 12, paddingVertical: 4, overflow: 'hidden' },
+  scopeText: { fontFamily: FONTS.body, fontSize: 12.5 },
   content: { paddingBottom: 24 },
   row: { paddingHorizontal: 16, paddingVertical: 10, gap: 4, borderBottomWidth: 1 },
   head: { flexDirection: 'row', alignItems: 'center', gap: 8 },

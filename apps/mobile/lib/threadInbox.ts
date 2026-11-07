@@ -3,6 +3,15 @@ import type { ThreadTotals } from './provider.ts';
 /** Bursts of `changes` read the account's totals once. */
 export const THREAD_REFRESH_MS = 400;
 
+/** A filtered list shorter than this reads on, the view being unfilled. */
+export const THREAD_FILL_TARGET = 12;
+/** Pages read on per user action, so a rare filter never walks the whole account. */
+export const THREAD_FILL_PAGES = 4;
+
+export function shouldFillThreads(list: { shown: number; next: string | null; busy: boolean; budget: number }): boolean {
+  return list.next !== null && !list.busy && list.budget > 0 && list.shown < THREAD_FILL_TARGET;
+}
+
 /** Calls `run` once, `delayMs` after the last `call` of a burst. */
 export function coalesced(run: () => void, delayMs: number): { call: () => void; cancel: () => void } {
   let timer: ReturnType<typeof setTimeout> | null = null;
