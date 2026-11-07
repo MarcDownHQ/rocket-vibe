@@ -6,6 +6,7 @@ public protocol ThreadInboxSource: AnyObject, Sendable {
     func threadInbox(unread: Bool, cursor: String?) async throws -> ThreadInboxPage
     func threadTotals() async throws -> ThreadInboxTotals
     func markAllThreadsRead() async throws
+    func threadInboxPolled() -> Bool
 }
 
 extension Chat: ThreadInboxSource {}
@@ -20,6 +21,7 @@ public final class ThreadInboxModel {
 
     public private(set) var shown = false
     public private(set) var unreadOnly = false
+    public private(set) var scope = ThreadInboxScope.all
     public private(set) var entries: [ThreadInboxEntry] = []
     public private(set) var next: String?
     public private(set) var phase = Phase.loading
@@ -30,15 +32,35 @@ public final class ThreadInboxModel {
 
     @ObservationIgnored private let source: any ThreadInboxSource
     @ObservationIgnored private let refreshDelay: UInt64
+    @ObservationIgnored private let pollInterval: UInt64
     @ObservationIgnored private var pages = 0
+    @ObservationIgnored private var extraPages: UInt32 = 0
+    @ObservationIgnored private var filling = 0
+    @ObservationIgnored private var poll: Task<Void, Never>?
     @ObservationIgnored private var generation = 0
     @ObservationIgnored private var totalsGeneration = 0
     @ObservationIgnored private var refresh: Task<Void, Never>?
 
-    public init(source: any ThreadInboxSource, refreshDelay: UInt64 = 400_000_000) {
+    public init(source: any ThreadInboxSource, refreshDelay: UInt64 = 400_000_000, pollInterval: UInt64 = 30_000_000_000) {
         self.source = source
         self.refreshDelay = refreshDelay
+        self.pollInterval = pollInterval
     }
+
+    public var visible: [ThreadInboxEntry] {
+        entries.filter { threadInboxScopeMatches(scope: scope, participated: $0.participated, mentioned: $0.mentioned) }
+    }
+
+    public var emptyTitle: String {
+        switch scope {
+        case .all: unreadOnly ? "thread_inbox.none_unread" : "thread_inbox.none_followed"
+        case .participated: "thread_inbox.none_participated"
+        case .mentioned: "thread_inbox.none_mentioned"
+        case .others: "thread_inbox.none_others"
+        }
+    }
+
+    public var caughtUp: Bool { unreadOnly && scope == .all }
 
     public var badge: String? {
         let count = totals.unreadThreads
@@ -50,11 +72,27 @@ public final class ThreadInboxModel {
     public func open() async {
         guard !shown else { return }
         shown = true
+        startPolling()
         await reload()
     }
 
     public func close() {
         shown = false
+        poll?.cancel()
+        poll = nil
+    }
+
+    public func appBecameActive() {
+        if source.threadInboxPolled() { scheduleRefresh() }
+    }
+
+    public func setScope(_ scope: ThreadInboxScope) async {
+        guard scope != self.scope else { return }
+        self.scope = scope
+        extraPages = 0
+        guard phase == .list || phase == .empty else { return }
+        settle()
+        await fill()
     }
 
     public func setUnreadOnly(_ on: Bool) async {
@@ -67,14 +105,16 @@ public final class ThreadInboxModel {
         entries = []
         next = nil
         pages = 0
+        extraPages = 0
         phase = .loading
-        await load(cursor: nil)
+        if await load(cursor: nil) { await fill() }
     }
 
     public func loadMore() async {
         guard let next, !loadingMore else { return }
         loadingMore = true
-        await load(cursor: next)
+        extraPages = 0
+        if await load(cursor: next) { await fill() }
     }
 
     public func markAllRead() async {
@@ -87,7 +127,7 @@ public final class ThreadInboxModel {
             onNotice?(L("info.failed"))
         }
         await refreshTotals()
-        if shown { await load(cursor: nil) }
+        if shown { await readAgain() }
     }
 
     /// Something changed on the server: a burst of events reads once. A list
@@ -100,7 +140,7 @@ public final class ThreadInboxModel {
             try? await Task.sleep(nanoseconds: delay)
             guard !Task.isCancelled, let self else { return }
             await self.refreshTotals()
-            if self.shown, self.pages <= 1 { await self.load(cursor: nil) }
+            if self.shown, self.pages <= 1 { await self.readAgain() }
         }
     }
 
@@ -114,6 +154,9 @@ public final class ThreadInboxModel {
     public func stop() {
         refresh?.cancel()
         refresh = nil
+        poll?.cancel()
+        poll = nil
+        filling &+= 1
         generation &+= 1
         totalsGeneration &+= 1
     }
@@ -125,31 +168,72 @@ public final class ThreadInboxModel {
         if fresh != totals { totals = fresh }
     }
 
-    private func load(cursor: String?) async {
+    private func startPolling() {
+        poll?.cancel()
+        guard source.threadInboxPolled() else { return }
+        let interval = pollInterval
+        poll = Task { [weak self] in
+            while true {
+                try? await Task.sleep(nanoseconds: interval)
+                guard !Task.isCancelled, let self, self.shown else { return }
+                self.scheduleRefresh()
+            }
+        }
+    }
+
+    private func readAgain() async {
+        extraPages = 0
+        if await load(cursor: nil) { await fill() }
+    }
+
+    /// Where the chip leaves the list short, the next pages are read, at most
+    /// four per user action; past that the load-more button stays.
+    private func fill() async {
+        filling &+= 1
+        let expected = filling
+        while expected == filling,
+              threadInboxKeepFetching(shown: UInt32(visible.count), hasNext: next != nil, extraPages: extraPages) {
+            extraPages += 1
+            loadingMore = true
+            if visible.isEmpty { phase = .loading }
+            guard await load(cursor: next) else { return }
+        }
+    }
+
+    private func settle() {
+        phase = visible.isEmpty && next == nil ? .empty : .list
+    }
+
+    @discardableResult
+    private func load(cursor: String?) async -> Bool {
         generation &+= 1
         let expected = generation
         do {
             let page = try await source.threadInbox(unread: unreadOnly, cursor: cursor)
-            guard expected == generation else { return }
+            guard expected == generation else { return false }
             loadingMore = false
+            var seen = cursor == nil ? Set<String>() : Set(entries.map(\.root))
+            let fresh = page.entries.filter { seen.insert($0.root).inserted }
             if cursor == nil {
-                entries = page.entries
+                entries = fresh
                 pages = 1
             } else {
-                let known = Set(entries.map(\.root))
-                entries += page.entries.filter { !known.contains($0.root) }
+                entries += fresh
                 pages += 1
             }
             next = page.next
-            phase = entries.isEmpty ? .empty : .list
+            settle()
+            return true
         } catch {
-            guard expected == generation else { return }
+            guard expected == generation else { return false }
             loadingMore = false
             if entries.isEmpty {
                 phase = .failed
             } else {
+                settle()
                 onNotice?(L("info.failed"))
             }
+            return false
         }
     }
 }

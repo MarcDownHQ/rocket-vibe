@@ -4,11 +4,15 @@ import XCTest
 
 @testable import RocketVibeKit
 
-private func entry(_ root: String, unread: Int64 = 0) -> ThreadInboxEntry {
+private func entry(_ root: String, unread: Int64 = 0, participated: Bool = false, mentioned: Bool = false) -> ThreadInboxEntry {
     ThreadInboxEntry(
         root: root, rid: "room", author: "ann", preview: "hello", room: "general", lastReply: 1, replies: 2,
-        participants: [], unreadReplies: unread, unreadMentions: unread
+        participants: [], unreadReplies: unread, unreadMentions: unread, participated: participated, mentioned: mentioned
     )
+}
+
+private func full(_ prefix: String) -> [String] {
+    (0..<12).map { "\(prefix)\($0)" }
 }
 
 @MainActor
@@ -21,6 +25,7 @@ private final class FakeSource: ThreadInboxSource, @unchecked Sendable {
     var markedAll = 0
     var held: CheckedContinuation<Void, Never>?
     var holdNext = false
+    var polled = false
 
     private static func key(_ unread: Bool, _ cursor: String?) -> String { "\(unread)/\(cursor ?? "")" }
 
@@ -43,6 +48,10 @@ private final class FakeSource: ThreadInboxSource, @unchecked Sendable {
         totalsAsked += 1
         if failing { throw RvError.Local(message: "down") }
         return totals
+    }
+
+    nonisolated func threadInboxPolled() -> Bool {
+        MainActor.assumeIsolated { polled }
     }
 
     func markAllThreadsRead() async throws {
@@ -89,13 +98,13 @@ final class ThreadInboxTests: XCTestCase {
 
     func testAListReadFurtherStaysWhereItIs() async {
         let source = FakeSource()
-        source.set(["a", "b"], next: "2")
-        source.set(cursor: "2", ["b", "c"])
+        source.set(full("a"), next: "2")
+        source.set(cursor: "2", ["a11", "c"])
         let inbox = ThreadInboxModel(source: source, refreshDelay: 1_000_000)
         await inbox.open()
-        XCTAssertEqual(inbox.next, "2")
+        XCTAssertEqual(inbox.next, "2", "a full page reads no further by itself")
         await inbox.loadMore()
-        XCTAssertEqual(inbox.entries.map(\.root), ["a", "b", "c"], "a thread on both pages shows once")
+        XCTAssertEqual(inbox.entries.map(\.root), full("a") + ["c"], "a thread on both pages shows once")
         XCTAssertNil(inbox.next)
         let asked = source.asked.count
         inbox.scheduleRefresh()
@@ -132,13 +141,13 @@ final class ThreadInboxTests: XCTestCase {
         source.failing = false
         await inbox.reload()
         XCTAssertEqual(inbox.phase, .empty)
-        source.set(["a"], next: "2")
+        source.set(full("a"), next: "2")
         await inbox.reload()
         XCTAssertEqual(inbox.phase, .list)
         source.failing = true
         await inbox.loadMore()
         XCTAssertEqual(inbox.phase, .list)
-        XCTAssertEqual(inbox.entries.map(\.root), ["a"])
+        XCTAssertEqual(inbox.entries.map(\.root), full("a"))
         XCTAssertEqual(notices.count, 1)
         XCTAssertFalse(inbox.loadingMore)
     }

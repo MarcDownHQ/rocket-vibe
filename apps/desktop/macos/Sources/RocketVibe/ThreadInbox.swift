@@ -1,8 +1,16 @@
+import AppKit
 import RocketVibeCore
 import RocketVibeKit
 import SwiftUI
 
 private let shownParticipants = 3
+
+private let scopes: [(ThreadInboxScope, String)] = [
+    (.all, "thread_inbox.scope_all"),
+    (.participated, "thread_inbox.scope_participated"),
+    (.mentioned, "thread_inbox.scope_mentioned"),
+    (.others, "thread_inbox.scope_others"),
+]
 
 private struct ThreadCountBadge: View {
     let text: String
@@ -39,6 +47,34 @@ struct ThreadInboxEntryRow: View {
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
+        .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
+            inbox.appBecameActive()
+        }
+    }
+}
+
+private struct ThreadScopeChips: View {
+    let inbox: ThreadInboxModel
+
+    var body: some View {
+        HStack(spacing: 4) {
+            ForEach(Array(scopes.enumerated()), id: \.offset) { _, item in
+                let (scope, key) = item
+                let on = inbox.scope == scope
+                Button { Task { await inbox.setScope(scope) } } label: {
+                    Text(L(key))
+                        .font(.vibe(11.5, on ? .heavy : .semibold))
+                        .lineLimit(1)
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 3)
+                        .frame(maxWidth: .infinity)
+                        .background(on ? Vibe.raised : Color.clear, in: Capsule())
+                        .foregroundStyle(on ? Vibe.text : Vibe.soft)
+                        .contentShape(Capsule())
+                }
+                .buttonStyle(.plain)
+            }
+        }
     }
 }
 
@@ -75,7 +111,13 @@ struct ThreadInboxPanel: View {
             .labelsHidden()
             .padding(.horizontal, 14)
             .padding(.bottom, 6)
+            ThreadScopeChips(inbox: inbox)
+                .padding(.horizontal, 14)
+                .padding(.bottom, 6)
             content
+        }
+        .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
+            inbox.appBecameActive()
         }
     }
 
@@ -94,13 +136,13 @@ struct ThreadInboxPanel: View {
             .frame(maxWidth: .infinity, maxHeight: .infinity)
         case .empty:
             VStack(spacing: 10) {
-                Image(systemName: inbox.unreadOnly ? "checkmark.circle" : "bubble.left.and.bubble.right")
+                Image(systemName: inbox.caughtUp ? "checkmark.circle" : "bubble.left.and.bubble.right")
                     .font(.system(size: 26))
                     .foregroundStyle(Vibe.muted)
-                Text(L(inbox.unreadOnly ? "thread_inbox.none_unread" : "thread_inbox.none_followed"))
+                Text(L(inbox.emptyTitle))
                     .font(.vibeTitle(15, .bold))
                     .multilineTextAlignment(.center)
-                if inbox.unreadOnly {
+                if inbox.caughtUp {
                     Text(L("thread_inbox.caught_up")).foregroundStyle(Vibe.muted)
                 }
             }
@@ -115,11 +157,11 @@ struct ThreadInboxPanel: View {
         let selection = Binding<String?>(
             get: { app.thread?.threadId },
             set: { root in
-                if let entry = inbox.entries.first(where: { $0.root == root }) { app.openInboxThread(entry) }
+                if let entry = inbox.visible.first(where: { $0.root == root }) { app.openInboxThread(entry) }
             }
         )
         return List(selection: selection) {
-            ForEach(inbox.entries, id: \.root) { entry in
+            ForEach(inbox.visible, id: \.root) { entry in
                 ThreadInboxRow(entry: entry).tag(entry.root)
             }
             if inbox.next != nil {
