@@ -208,7 +208,7 @@ struct ServerRail: View {
                 .overlay(alignment: .topTrailing) {
                     if !open && app.unreadAccounts.contains(account.key) && !app.mutedAccounts.contains(account.key)
                         && !app.isDisabled(account.key) {
-                        Circle().fill(Vibe.sun).frame(width: 12, height: 12)
+                        Circle().fill(app.attentionAccounts.contains(account.key) ? Vibe.alert : Vibe.sun).frame(width: 12, height: 12)
                             .overlay(Circle().strokeBorder(Vibe.ink, lineWidth: 2))
                             .offset(x: 3, y: -3)
                     }

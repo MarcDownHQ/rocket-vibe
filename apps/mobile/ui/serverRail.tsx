@@ -14,6 +14,7 @@ import { Alert, AppState, Image, type ImageSourcePropType, ScrollView, StyleShee
 import { dismissible } from './alerts.ts';
 import { disabledServers, setServerDisabled } from './disabledServerStore.ts';
 
+import type { AccountUnread } from '@rocket-vibe/provider-api/session';
 import type { Session } from '../lib/auth.ts';
 import { providerMark, type ProviderMark } from '../lib/providerMark.ts';
 import { serverIconUri } from '../lib/serverIcon.ts';
@@ -53,7 +54,14 @@ const POLL_MS = 60_000;
 const TILE = 44;
 
 /** One read of an account that is not open. Its token is never revoked from here. */
-async function accountUnread(session: Session): Promise<boolean> {
+function unreadWithout(old: ReadonlyMap<string, AccountUnread>, host: string): ReadonlyMap<string, AccountUnread> {
+  if (!old.has(host)) return old;
+  const next = new Map(old);
+  next.delete(host);
+  return next;
+}
+
+async function accountUnread(session: Session): Promise<AccountUnread> {
   if (session.kind === 'vibez') {
     const fresh = await prepareNativeSession(session);
     return nativeRoomsUnread(await transportFor(fresh).rooms());
@@ -61,7 +69,7 @@ async function accountUnread(session: Session): Promise<boolean> {
   if (session.kind === 'mattermost' || session.kind === 'kchat') return mattermostUnread(session);
   if (session.kind === 'slack') return slackUnread(session);
   // No server to ask: its engine counts in the app itself, shown once open.
-  if (session.kind === 'whatsapp') return false;
+  if (session.kind === 'whatsapp') return 'none';
   return subscriptionsUnread(await clientForSession(session, () => {}).get('subscriptions.get'));
 }
 
@@ -71,7 +79,7 @@ export function ServerRail({ c }: { c: Colors }) {
   const { state, switchServer } = useSession();
   const active = state.phase === 'connected' ? serverHost(state.session.baseUrl) : null;
   const [accounts, setAccounts] = useState<Session[]>([]);
-  const [unread, setUnread] = useState<ReadonlySet<string>>(new Set());
+  const [unread, setUnread] = useState<ReadonlyMap<string, AccountUnread>>(new Map());
   const [switching, setSwitching] = useState<string | null>(null);
   const [disabled, setDisabled] = useState<ReadonlySet<string>>(disabledServers());
   /** Each server's own icon (`lib/serverIcon.ts`), by host; absent keeps the provider's mark. */
@@ -82,9 +90,12 @@ export function ServerRail({ c }: { c: Colors }) {
   const activeRef = useRef(active);
   const admin = useServerAdmin();
 
-  const mark = useCallback((host: string, on: boolean) => {
+  const mark = useCallback((host: string, state: AccountUnread) => {
     if (host === activeRef.current) return;
-    setUnread((old) => (on ? (old.has(host) ? old : new Set(old).add(host)) : without(old, host)));
+    setUnread((old) => {
+      if (state === 'none') return unreadWithout(old, host);
+      return old.get(host) === state ? old : new Map(old).set(host, state);
+    });
   }, []);
 
   const poll = useCallback(() => {
@@ -92,7 +103,7 @@ export function ServerRail({ c }: { c: Colors }) {
       const host = serverHost(session.baseUrl);
       if (host === activeRef.current || disabledServers().has(host)) continue;
       // A failure (offline, a server refusing for a moment) leaves the dot as it was.
-      accountUnread(session).then((on) => mark(host, on), () => {});
+      accountUnread(session).then((state) => mark(host, state), () => {});
     }
   }, [mark]);
 
@@ -139,7 +150,7 @@ export function ServerRail({ c }: { c: Colors }) {
       const back = AppState.addEventListener('change', (next) => {
         if (next === 'active') poll();
       });
-      const pushed = onServerUnread((host) => mark(host, true));
+      const pushed = onServerUnread((host) => setUnread((old) => (old.has(host) || host === activeRef.current ? old : new Map(old).set(host, 'unread'))));
       return () => {
         clearInterval(timer);
         back.remove();
@@ -161,13 +172,13 @@ export function ServerRail({ c }: { c: Colors }) {
           return;
         }
         setServerDisabled(host, true);
-        setUnread((old) => without(old, host));
+        setUnread((old) => unreadWithout(old, host));
         void load().catch(() => {});
         switchServer(next.baseUrl).catch(() => {});
         return;
       }
       setServerDisabled(host, disable);
-      if (disable) setUnread((old) => without(old, host));
+      if (disable) setUnread((old) => unreadWithout(old, host));
       void load().catch(() => {});
       if (!disable) switchServer(session.baseUrl).catch(() => {});
     },
@@ -188,7 +199,7 @@ export function ServerRail({ c }: { c: Colors }) {
       if (host === activeRef.current || switching !== null) return;
       setSwitching(host);
       // Its unread now shows in its own room list.
-      setUnread((old) => without(old, host));
+      setUnread((old) => unreadWithout(old, host));
       switchServer(session.baseUrl).finally(() => setSwitching(null));
     },
     [switchServer, switching, t, toggleDisabled],
@@ -231,7 +242,7 @@ export function ServerRail({ c }: { c: Colors }) {
                 child={<Image source={fallbackIcon(session.kind)} style={[StyleSheet.absoluteFill, styles.appIcon]} />}
               />
               {!isOpen && !off && unread.has(host) && (
-                <View style={[styles.dot, { backgroundColor: c.yellow, borderColor: c.deepCard }]} />
+                <View style={[styles.dot, { backgroundColor: unread.get(host) === 'attention' ? c.alert : c.yellow, borderColor: c.deepCard }]} />
               )}
             </Tappable>
           );
@@ -249,13 +260,6 @@ export function ServerRail({ c }: { c: Colors }) {
       </ScrollView>
     </View>
   );
-}
-
-function without(set: ReadonlySet<string>, host: string): ReadonlySet<string> {
-  if (!set.has(host)) return set;
-  const next = new Set(set);
-  next.delete(host);
-  return next;
 }
 
 const styles = StyleSheet.create({

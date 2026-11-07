@@ -5,7 +5,7 @@
  * revoking the browser session would also sign the browser out.
  */
 
-import type { Session } from '@rocket-vibe/provider-api/session';
+import type { AccountUnread, Session } from '@rocket-vibe/provider-api/session';
 import { SlackClient, SlackError, validateCredentials, type SlackAccount, type SlackClientOptions } from './client.ts';
 
 export type SlackLoginOptions = { fetch?: typeof fetch };
@@ -48,14 +48,21 @@ export async function resumeSlack(session: Session, options: SlackLoginOptions =
 }
 
 /** Does an account that is not open have something unread? One `client.counts`, the session never refused from here. */
-export async function slackUnread(session: Session, options: SlackLoginOptions = {}): Promise<boolean> {
+export async function slackUnread(session: Session, options: SlackLoginOptions = {}): Promise<AccountUnread> {
   const client = slackClientFor(session, { fetch: options.fetch });
   try {
     const body = await client.call('client.counts');
-    return (['channels', 'mpims', 'ims'] as const).some((list) => {
+    let state: AccountUnread = 'none';
+    for (const list of ['channels', 'mpims', 'ims'] as const) {
       const entries = body[list];
-      return Array.isArray(entries) && entries.some((e) => typeof e === 'object' && e !== null && ((e as Record<string, unknown>).has_unreads === true || Number((e as Record<string, unknown>).mention_count) > 0));
-    });
+      for (const raw of Array.isArray(entries) ? entries : []) {
+        if (typeof raw !== 'object' || raw === null) continue;
+        const entry = raw as Record<string, unknown>;
+        if (Number(entry.mention_count) > 0 || (list === 'ims' && entry.has_unreads === true)) return 'attention';
+        if (entry.has_unreads === true) state = 'unread';
+      }
+    }
+    return state;
   } finally {
     client.close();
   }

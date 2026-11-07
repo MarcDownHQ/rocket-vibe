@@ -108,6 +108,8 @@ public final class AppModel {
     /// Accounts with unread messages: the dots of the server rail on the
     /// accounts not open. Every account stays connected (`keepAccountsConnected`).
     public private(set) var unreadAccounts: Set<String> = []
+    /// Those with a mention or a direct message: their dots are red.
+    public private(set) var attentionAccounts: Set<String> = []
     /// What calls for me on each account, for the dock's count.
     @ObservationIgnored private var accountAttention: [String: Int64] = [:]
     @ObservationIgnored private var watchingAccounts = false
@@ -393,6 +395,7 @@ public final class AppModel {
         do { try await client.signOutAccount(account: target.key) }
         catch { notice = L("rail.logout_failed"); return }
         unreadAccounts.remove(target.key)
+        attentionAccounts.remove(target.key)
         accountAttention[target.key] = nil
         accounts = await client.accounts()
         refreshMutes()
@@ -403,6 +406,7 @@ public final class AppModel {
         case let .unread(key, unread, attention):
             if unread { unreadAccounts.insert(key) } else { unreadAccounts.remove(key) }
             accountAttention[key] = attention
+            if attention > 0 { attentionAccounts.insert(key) } else { attentionAccounts.remove(key) }
             showAttention()
         case let .incoming(key, scope, incoming):
             guard key != account?.key, !isMuted(key) else { return }
@@ -418,6 +422,7 @@ public final class AppModel {
             onBackgroundCall?(backgroundCall)
         case let .expired(key):
             unreadAccounts.remove(key)
+            attentionAccounts.remove(key)
             accountAttention[key] = nil
             showAttention()
             if backgroundCall?.account == key { endBackgroundCall() }

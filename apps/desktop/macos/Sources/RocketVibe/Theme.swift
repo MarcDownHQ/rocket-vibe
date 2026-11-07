@@ -18,6 +18,7 @@ enum Vibe {
     static let sky = Color(hex: 0x5CC8FF)
     static let mint = Color(hex: 0x34E1D0)
     static let sun = Color(hex: 0xFFD34E)
+    static let alert = Color(hex: 0xFF3B4E)
     static let ink = Color(hex: 0x0B0913)
 
     static let brand = LinearGradient(colors: [pink, violet, mint], startPoint: .leading, endPoint: .trailing)

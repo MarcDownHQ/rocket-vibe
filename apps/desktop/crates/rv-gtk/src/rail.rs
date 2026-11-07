@@ -12,6 +12,7 @@ use std::rc::Rc;
 
 use gtk::glib;
 use gtk::prelude::*;
+use rv_core::rooms::Badge;
 use rv_core::server_icon::Icon;
 use rv_core::session::SessionInfo;
 
@@ -35,7 +36,7 @@ pub struct Rail {
     photo_sources: RefCell<std::collections::HashMap<String, usize>>,
     /// Each button's account, key, overlay and fallback tile, to read the icons again.
     slots: RefCell<Vec<Slot>>,
-    unread: RefCell<HashMap<String, bool>>,
+    unread: RefCell<HashMap<String, Badge>>,
     /// The muted accounts (`rv_core::account_mute`): dimmed, a muted mark, no dot.
     muted: RefCell<std::collections::HashSet<String>>,
     /// Each account's button and its muted mark, for the muted look.
@@ -186,6 +187,13 @@ pub(crate) fn icon_image(texture: Option<&gtk::gdk::Texture>) -> gtk::Image {
     image
 }
 
+fn dot_classes(badge: Badge) -> &'static [&'static str] {
+    match badge {
+        Badge::Count(_) => &["rail-dot", "rail-dot-attention"],
+        _ => &["rail-dot"],
+    }
+}
+
 /// What an account's tile shows while its server's icon is unknown, absent
 /// or unreadable: its provider's mark, the app's icon for a Vibez server.
 pub(crate) fn fallback_icon(info: &SessionInfo) -> gtk::Widget {
@@ -296,11 +304,11 @@ impl Rail {
             let server = host(info);
             let tile = fallback_icon(info);
             let dot = gtk::Box::builder()
-                .css_classes(["rail-dot"])
                 .halign(gtk::Align::End)
                 .valign(gtk::Align::Start)
-                .visible(!open && !muted && !disabled && self.unread.borrow().get(&key).copied().unwrap_or(false))
+                .visible(!open && !muted && !disabled && self.badge_of(&key) != Badge::None)
                 .build();
+            dot.set_css_classes(dot_classes(self.badge_of(&key)));
             let mark = gtk::Image::builder()
                 .icon_name("notifications-disabled-symbolic")
                 .pixel_size(14)
@@ -435,21 +443,26 @@ impl Rail {
 
     /// Whether the account has unread rooms; the open account's own shows in
     /// its room list, not here.
-    pub fn set_unread(&self, key: &str, unread: bool) {
-        self.unread.borrow_mut().insert(key.to_owned(), unread);
+    pub fn set_unread(&self, key: &str, badge: Badge) {
+        self.unread.borrow_mut().insert(key.to_owned(), badge);
         let open = self.active.borrow().as_deref() == Some(key);
         let muted = self.muted.borrow().contains(key) || self.disabled.borrow().contains(key);
         if let Some(dot) = self.dots.borrow().get(key) {
-            dot.set_visible(unread && !open && !muted);
+            dot.set_visible(badge != Badge::None && !open && !muted);
+            dot.set_css_classes(dot_classes(badge));
         }
+    }
+
+    fn badge_of(&self, key: &str) -> Badge {
+        self.unread.borrow().get(key).copied().unwrap_or(Badge::None)
     }
 
     /// The muted accounts now: dimmed, marked, their dot held back.
     pub fn set_muted(&self, keys: std::collections::HashSet<String>) {
         self.muted.replace(keys);
-        let unread: Vec<(String, bool)> = self.unread.borrow().iter().map(|(k, u)| (k.clone(), *u)).collect();
-        for (key, unread) in unread {
-            self.set_unread(&key, unread);
+        let unread: Vec<(String, Badge)> = self.unread.borrow().iter().map(|(k, u)| (k.clone(), *u)).collect();
+        for (key, badge) in unread {
+            self.set_unread(&key, badge);
         }
         let muted = self.muted.borrow();
         for (key, (button, mark)) in self.muted_looks.borrow().iter() {
@@ -464,7 +477,7 @@ impl Rail {
     }
 
     pub fn forget_unread(&self, key: &str) {
-        self.set_unread(key, false);
+        self.set_unread(key, Badge::None);
         self.unread.borrow_mut().remove(key);
     }
 

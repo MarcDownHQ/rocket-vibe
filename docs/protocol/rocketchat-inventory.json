@@ -3665,37 +3665,37 @@
     },
     {
       "file": "apps/desktop/macos/Sources/RocketVibeKit/AppModel.swift",
-      "line": 1121,
+      "line": 1126,
       "kind": "endpoint",
       "surface": "rooms.nothing_unread"
     },
     {
       "file": "apps/desktop/macos/Sources/RocketVibeKit/AppModel.swift",
-      "line": 1123,
+      "line": 1128,
       "kind": "endpoint",
       "surface": "rooms.mark_failed"
     },
     {
       "file": "apps/desktop/macos/Sources/RocketVibeKit/AppModel.swift",
-      "line": 1149,
+      "line": 1154,
       "kind": "endpoint",
       "surface": "e2e.wrong"
     },
     {
       "file": "apps/desktop/macos/Sources/RocketVibeKit/AppModel.swift",
-      "line": 1150,
+      "line": 1155,
       "kind": "endpoint",
       "surface": "e2e.no_keys"
     },
     {
       "file": "apps/desktop/macos/Sources/RocketVibeKit/AppModel.swift",
-      "line": 1151,
+      "line": 1156,
       "kind": "endpoint",
       "surface": "e2e.failed"
     },
     {
       "file": "apps/desktop/macos/Sources/RocketVibeKit/AppModel.swift",
-      "line": 1154,
+      "line": 1159,
       "kind": "endpoint",
       "surface": "e2e.failed"
     },
@@ -5081,7 +5081,7 @@
     },
     {
       "file": "apps/mobile/ui/serverRail.tsx",
-      "line": 65,
+      "line": 73,
       "kind": "endpoint",
       "surface": "subscriptions.get"
     },

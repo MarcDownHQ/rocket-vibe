@@ -1552,7 +1552,7 @@ impl AppWindow {
         let key = notice.key();
         match notice.notice {
             Notice::Unread(badge) => {
-                self.rail.set_unread(&key, badge != rv_core::rooms::Badge::None);
+                self.rail.set_unread(&key, badge);
                 crate::badge::set_account(&key, Some(badge));
             }
             // Opened meanwhile: its window speaks for it now.
