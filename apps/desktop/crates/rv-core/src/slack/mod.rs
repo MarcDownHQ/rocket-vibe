@@ -4,6 +4,7 @@
 pub use rv_slack::*;
 
 pub mod sync;
+pub mod threads;
 
 use serde_json::Value;
 

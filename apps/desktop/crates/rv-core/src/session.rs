@@ -810,10 +810,14 @@ impl Session {
             tokio::spawn(async move { slack.apply_event(&name, &frame).await });
             return;
         }
+        let thread = (name == "message").then(|| crate::slack::threads::frame_root(frame)).flatten();
         if let Some(m) = slack.apply_event(name, frame).await
             && let Some(incoming) = self.incoming_message(&m)
         {
             let _ = self.events.send(SessionEvent::Incoming(Box::new(incoming)));
+        }
+        if thread.is_some() {
+            let _ = self.events.send(SessionEvent::Threads(thread));
         }
     }
 
@@ -2291,22 +2295,41 @@ impl Session {
     /// Follows a thread or stops following it. The root's followers change
     /// locally at once; the server's copy of the root follows on the stream.
     pub async fn follow_thread(&self, root: &str, on: bool) -> Result<(), RestError> {
-        if let Backend::Mattermost(mm) = self.backend() {
-            let rows = self.store.messages_by_id(&[root.to_owned()]);
-            let rid = rows.first().map(|r| r.rid.clone()).unwrap_or_default();
-            return mattermost::threads::follow(mm, &rid, root, on).await;
+        match self.backend() {
+            Backend::Mattermost(mm) => {
+                let rows = self.store.messages_by_id(&[root.to_owned()]);
+                let rid = rows.first().map(|r| r.rid.clone()).unwrap_or_default();
+                mattermost::threads::follow(mm, &rid, root, on).await
+            }
+            Backend::Slack(slack) => {
+                crate::slack::threads::follow(slack, root, on).await?;
+                let _ = self.events.send(SessionEvent::Threads(None));
+                Ok(())
+            }
+            Backend::RocketChat => {
+                actions::follow_thread(&self.rest, root, on).await?;
+                self.store.write(|w| w.set_thread_follower(root, &self.info.user_id, on));
+                Ok(())
+            }
+            Backend::Teams(_) => Err(RestError::incomplete("follow: not on this server")),
         }
-        if !self.threads_available() {
-            return Err(RestError::incomplete("follow: not on this server"));
-        }
-        actions::follow_thread(&self.rest, root, on).await?;
-        self.store.write(|w| w.set_thread_follower(root, &self.info.user_id, on));
-        Ok(())
     }
 
     /// Whether the account lists its threads across its rooms.
     pub fn thread_inbox_available(&self) -> bool {
-        matches!(self.backend(), Backend::Mattermost(_))
+        match self.backend() {
+            Backend::Mattermost(_) | Backend::Slack(_) => true,
+            Backend::RocketChat | Backend::Teams(_) => false,
+        }
+    }
+
+    /// Whether the list is read again by itself, no event telling that it
+    /// changed: on returning to the app, and on a timer while it is on screen.
+    pub fn thread_inbox_polled(&self) -> bool {
+        match self.backend() {
+            Backend::Slack(_) => true,
+            Backend::Mattermost(_) | Backend::RocketChat | Backend::Teams(_) => false,
+        }
     }
 
     pub async fn thread_inbox(
@@ -2314,22 +2337,24 @@ impl Session {
         filter: thread_inbox::Filter,
         cursor: Option<&str>,
     ) -> Result<thread_inbox::Page, RestError> {
-        match self.backend() {
-            Backend::Mattermost(mm) => {
-                let mut page = mattermost::threads::page(mm, filter, cursor).await?;
-                for person in page.entries.iter_mut().flat_map(|e| e.participants.iter_mut()) {
-                    person.label = self.person_label(&person.id).unwrap_or_default();
-                }
-                Ok(page)
+        let mut page = match self.backend() {
+            Backend::Mattermost(mm) => mattermost::threads::page(mm, filter, cursor).await?,
+            Backend::Slack(slack) => crate::slack::threads::page(slack, filter, cursor).await?,
+            Backend::RocketChat | Backend::Teams(_) => {
+                return Err(RestError::incomplete("thread inbox: not on this server"));
             }
-            _ => Err(RestError::incomplete("thread inbox: not on this server")),
+        };
+        for person in page.entries.iter_mut().flat_map(|e| e.participants.iter_mut()) {
+            person.label = self.person_label(&person.id).unwrap_or_default();
         }
+        Ok(page)
     }
 
     pub async fn thread_totals(&self) -> Result<thread_inbox::Totals, RestError> {
         match self.backend() {
             Backend::Mattermost(_) => mattermost::threads::totals(&self.rest).await,
-            _ => Ok(thread_inbox::Totals::default()),
+            Backend::Slack(slack) => crate::slack::threads::totals(slack).await,
+            Backend::RocketChat | Backend::Teams(_) => Ok(thread_inbox::Totals::default()),
         }
     }
 
@@ -2341,27 +2366,38 @@ impl Session {
                 let at = at.unwrap_or_default().max(chrono::Utc::now().timestamp_millis());
                 mattermost::threads::mark_read(mm, rid, root, at).await
             }
-            _ => Ok(()),
+            Backend::Slack(slack) => {
+                if crate::slack::threads::mark_read(slack, rid, root).await? {
+                    let _ = self.events.send(SessionEvent::Threads(None));
+                }
+                Ok(())
+            }
+            Backend::RocketChat | Backend::Teams(_) => Ok(()),
         }
     }
 
     pub async fn mark_all_threads_read(&self) -> Result<(), RestError> {
         match self.backend() {
             Backend::Mattermost(_) => mattermost::threads::mark_all_read(&self.rest).await,
-            _ => Ok(()),
+            Backend::Slack(slack) => crate::slack::threads::mark_all_read(slack).await,
+            Backend::RocketChat | Backend::Teams(_) => Ok(()),
         }
     }
 
     /// Whether I can follow a thread and see that I do, from the thread itself.
     pub fn thread_follow_available(&self) -> bool {
-        matches!(self.backend(), Backend::RocketChat | Backend::Mattermost(_))
+        match self.backend() {
+            Backend::RocketChat | Backend::Mattermost(_) | Backend::Slack(_) => true,
+            Backend::Teams(_) => false,
+        }
     }
 
     /// Whether I follow it, by the server's answer where the root does not say.
     pub async fn thread_following(&self, rid: &str, root: &str) -> Result<bool, RestError> {
         match self.backend() {
             Backend::Mattermost(mm) => mattermost::threads::following(mm, rid, root).await,
-            _ => Ok(self
+            Backend::Slack(slack) => crate::slack::threads::following(slack, root).await,
+            Backend::RocketChat | Backend::Teams(_) => Ok(self
                 .store
                 .messages_by_id(&[root.to_owned()])
                 .first()
