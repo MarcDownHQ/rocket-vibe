@@ -1,6 +1,6 @@
 // The account's Threads view: the row and its badge, Followed and Unread across
 // two rooms, opening a thread without reading its room, mark all, a room left,
-// and back and forward through the address.
+// back and forward through the address, and the chips with their page bound.
 import assert from "node:assert/strict";
 import { mkdir } from "node:fs/promises";
 import { chromium } from "playwright";
@@ -93,6 +93,7 @@ const rows = () =>
 const row = (root) => panel.locator('[data-thread="' + root.id + '"]');
 const badge = page.locator(".threads-row .badge");
 const tab = (name) => panel.getByRole("tab", { name, exact: true });
+const chip = (name) => panel.getByRole("button", { name, exact: true });
 const waitFor = async (check, what) => {
   for (let tries = 0; tries < 60; tries++) {
     if (await check()) return;
@@ -276,6 +277,129 @@ try {
   await page.goBack();
   await panel.waitFor();
 
+  // The chips, over real threads of every kind.
+  const chipRoom = await newRoom("inbox-chips");
+  const followedRoot = async (token, room, text, reply) => {
+    const root = await say(token, room, text);
+    if (token !== me.token) await follow(root);
+    await say(peer.token, room, reply, root.id);
+    return root;
+  };
+  const wrote = await followedRoot(me.token, chipRoom, "Mine", "Answering you");
+  const answered = await say(peer.token, chipRoom, "One I answered");
+  await say(me.token, chipRoom, "My answer", answered.id);
+  await say(peer.token, chipRoom, "After my answer", answered.id);
+  const named = await followedRoot(
+    peer.token,
+    chipRoom,
+    "Naming nobody",
+    "@" + username + " this reply names you",
+  );
+  const rootNamed = await followedRoot(
+    peer.token,
+    chipRoom,
+    "@" + username + " this root names you",
+    "A plain reply",
+  );
+  const both = await followedRoot(
+    me.token,
+    chipRoom,
+    "Mine again",
+    "@" + username + " on your own root",
+  );
+  const plain = await followedRoot(
+    peer.token,
+    chipRoom,
+    "Nothing to do with me",
+    "A plain reply",
+  );
+  const dm = await call("/api/v1/direct-messages", me.token, {
+    user_id: peer.user.id,
+  });
+  const direct = await followedRoot(
+    peer.token,
+    dm,
+    "In our conversation",
+    "A plain reply",
+  );
+  const chipThreads = [wrote, answered, named, rootNamed, both, plain, direct];
+  const expectRows = async (expected) => {
+    const ids = expected.map((root) => root.id);
+    await waitFor(
+      async () => {
+        const listed = await rows();
+        return chipThreads.every(
+          (root) => listed.includes(root.id) === ids.includes(root.id),
+        );
+      },
+      "the rows of " + JSON.stringify(ids),
+    );
+  };
+  await tab("Followed").click();
+  await expectRows(chipThreads);
+  assert.equal(await chip("All").getAttribute("aria-pressed"), "true");
+  await chip("Participated").click();
+  await expectRows([wrote, answered, both, direct]);
+  await chip("Mentioned").click();
+  await expectRows([named, rootNamed, both]);
+  await chip("Others").click();
+  await expectRows([plain]);
+  await chip("All").click();
+  await expectRows(chipThreads);
+  console.log("PASS the chips sort real threads, a direct one included");
+
+  await chip("Mentioned").click();
+  await expectRows([named, rootNamed, both]);
+  const filterInAddress = () =>
+    new URL(page.url()).searchParams.get("threadsFilter");
+  assert.equal(filterInAddress(), "mentioned");
+  await tab("Unread").click();
+  await expectRows([named, rootNamed, both]);
+  assert.equal(filterInAddress(), "mentioned");
+  assert.equal(await chip("Mentioned").getAttribute("aria-pressed"), "true");
+  await tab("Followed").click();
+  await row(rootNamed).click();
+  await page.locator(".thread-pane").getByText("A plain reply").waitFor();
+  assert.equal(filterInAddress(), "mentioned");
+  assert.equal(new URL(page.url()).searchParams.get("thread"), rootNamed.id);
+  assert.equal(await chip("Mentioned").getAttribute("aria-pressed"), "true");
+  await panel
+    .locator('.inbox-row.selected[data-thread="' + rootNamed.id + '"]')
+    .waitFor();
+  await page.reload();
+  await page.locator(".thread-pane").getByText("A plain reply").waitFor();
+  await panel.waitFor();
+  assert.equal(await chip("Mentioned").getAttribute("aria-pressed"), "true");
+  await expectRows([named, rootNamed, both]);
+  await page.locator(".thread-pane .thread-back").click();
+  await page.locator(".thread-pane").waitFor({ state: "hidden" });
+  assert.equal(filterInAddress(), "mentioned");
+  await expectRows([named, rootNamed, both]);
+  console.log("PASS a chip survives a tab, a thread opened and a reload");
+
+  // Read, a reply's mention is gone from the listing: the known limit.
+  await row(named).click();
+  await page
+    .locator(".thread-pane")
+    .getByText("this reply names you")
+    .waitFor();
+  await expectRows([rootNamed, both]);
+  await page.locator(".thread-pane .thread-back").click();
+  await page.locator(".thread-pane").waitFor({ state: "hidden" });
+  await chip("Others").click();
+  await expectRows([plain, named]);
+  await panel.locator(".threads-back").click();
+  await page.locator(".threads-row").waitFor();
+  assert.equal(filterInAddress(), null);
+  await page.locator(".threads-row").click();
+  await panel.waitFor();
+  assert.equal(await chip("All").getAttribute("aria-pressed"), "true");
+  await expectRows(chipThreads);
+  console.log("PASS leaving the panel forgets the chip");
+  await call("/api/v1/threads/read", me.token, {
+    operation_id: crypto.randomUUID(),
+  });
+
   // An account following nothing sees the Followed empty state.
   const lonely = await browser.newPage({ locale: "en-US" });
   await lonely.route("**/api/v1/threads?filter=followed*", (route) =>
@@ -286,6 +410,20 @@ try {
   await lonely.getByLabel("Password", { exact: true }).fill(password);
   await lonely.getByRole("button", { name: "Sign in", exact: true }).click();
   await lonely.getByText("You follow no thread", { exact: true }).waitFor();
+  const lonelyPanel = lonely.locator(".threads-panel");
+  const lonelyChip = (name) =>
+    lonelyPanel.getByRole("button", { name, exact: true });
+  await lonelyChip("Participated").click();
+  await lonely
+    .getByText("No thread you took part in", { exact: true })
+    .waitFor();
+  await lonelyChip("Mentioned").click();
+  await lonely.getByText("No thread mentions you", { exact: true }).waitFor();
+  await lonelyChip("Others").click();
+  await lonely.getByText("No other thread", { exact: true }).waitFor();
+  await lonelyChip("All").click();
+  await lonely.getByText("You follow no thread", { exact: true }).waitFor();
+  console.log("PASS each chip says why it is empty");
   await lonely.unroute("**/api/v1/threads?filter=followed*");
   // A failed load offers a retry that works.
   await lonely.route("**/api/v1/threads?filter=unread*", (route) =>
@@ -342,8 +480,83 @@ try {
   await lonely.locator(".threads-panel .inbox-list > .inbox-retry").click();
   await loaded.nth(54).waitFor();
   assert.equal(await loaded.count(), 55);
-  await lonely.close();
   console.log("PASS the next page loads on scroll and retries");
+
+  // A chip matching nothing reads on, four pages per action, then asks.
+  const plainEntry = (
+    await call("/api/v1/threads?filter=followed&limit=100", me.token)
+  ).threads.find((entry) => entry.root.id === plain.id);
+  assert.ok(plainEntry, "the plain thread is listed");
+  const quiet = { ...plainEntry, unread: "0", mentions: "0" };
+  const farRow = (page, index) => ({
+    ...quiet,
+    root: { ...quiet.root, id: "far-" + page + "-" + index },
+    last_reply_position: String(100000 - page * 100 - index),
+  });
+  let extra = 0;
+  await lonely.unroute("**/api/v1/threads?filter=followed*");
+  await lonely.route("**/api/v1/threads?filter=followed*", (route) => {
+    const before = new URL(route.request().url()).searchParams.get("before");
+    if (!before)
+      return route.fulfill({
+        json: {
+          threads: Array.from({ length: 50 }, (_, i) => farRow(0, i)),
+          next: "page-1",
+        },
+      });
+    extra++;
+    return route.fulfill({
+      json:
+        extra === 9
+          ? {
+              threads: [
+                {
+                  ...farRow(extra, 0),
+                  root: { ...quiet.root, id: "far-match" },
+                  unread: "1",
+                  mentions: "1",
+                },
+              ],
+              next: null,
+            }
+          : {
+              threads: Array.from({ length: 50 }, (_, i) => farRow(extra, i)),
+              next: "page-" + (extra + 1),
+            },
+    });
+  });
+  await lonelyPanel.getByRole("tab", { name: "Unread", exact: true }).click();
+  await lonelyPanel.getByRole("tab", { name: "Followed", exact: true }).click();
+  await loaded.nth(49).waitFor();
+  await lonely.waitForTimeout(500);
+  assert.equal(extra, 0, "All fills the view with its first page");
+  await lonelyChip("Mentioned").click();
+  const loadMore = lonelyPanel.locator(".inbox-more");
+  await loadMore.waitFor();
+  assert.equal(extra, 4, "four extra pages for the chip");
+  await lonely.waitForTimeout(800);
+  assert.equal(extra, 4, "and no more without asking");
+  assert.equal(await loaded.count(), 0);
+  await lonely.getByText("No thread mentions you", { exact: true }).waitFor();
+  await lonely.getByText("Older threads may match", { exact: true }).waitFor();
+  await loadMore.click();
+  await waitFor(
+    async () => extra === 8 && (await loadMore.isVisible()),
+    "four more pages for the button",
+  );
+  await lonely.waitForTimeout(800);
+  assert.equal(extra, 8);
+  await loadMore.click();
+  await lonelyPanel.locator('[data-thread="far-match"]').waitFor();
+  assert.equal(extra, 9);
+  assert.equal(await loaded.count(), 1);
+  assert.equal(await loadMore.count(), 0, "the last page leaves no button");
+  await lonelyChip("Others").click();
+  await loaded.nth(49).waitFor();
+  await lonely.waitForTimeout(300);
+  assert.equal(extra, 9);
+  await lonely.close();
+  console.log("PASS a chip reads on, bounded, and nothing silently vanishes");
 
   assert.deepEqual(failures, [], "no page error");
 } catch (error) {
