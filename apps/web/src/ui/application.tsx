@@ -153,7 +153,11 @@ function Shell({ app }: { app: App }) {
           />
         </header>
         {app.threadsTab ? (
-          <ThreadsPanel app={app} tab={app.threadsTab} />
+          <ThreadsPanel
+            app={app}
+            tab={app.threadsTab}
+            filter={app.threadsFilter}
+          />
         ) : (
           app.info?.capabilities.thread_inbox && <ThreadsRow app={app} />
         )}

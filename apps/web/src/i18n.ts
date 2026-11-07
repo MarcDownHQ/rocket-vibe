@@ -85,6 +85,20 @@ const phrases = {
   threadsNoFollowed: ["You follow no thread", "Vous ne suivez aucun fil"],
   threadsNoUnread: ["No unread threads", "Aucun fil non lu"],
   threadsCaughtUp: ["You're all caught up", "Vous êtes à jour"],
+  threadsFilter: ["Filter threads", "Filtrer les fils"],
+  threadsParticipated: ["Participated", "Participé"],
+  threadsMentioned: ["Mentioned", "Mentionné"],
+  threadsOthers: ["Others", "Autres"],
+  threadsNoParticipated: [
+    "No thread you took part in",
+    "Aucun fil auquel vous avez participé",
+  ],
+  threadsNoMentioned: ["No thread mentions you", "Aucun fil ne vous mentionne"],
+  threadsNoOthers: ["No other thread", "Aucun autre fil"],
+  threadsMayMatch: [
+    "Older threads may match",
+    "Des fils plus anciens peuvent correspondre",
+  ],
   threadsFailed: [
     "The threads could not be loaded",
     "Impossible de charger les fils",

@@ -4,7 +4,12 @@ import { pickTimeDialog } from "./time-picker";
 import { gifs } from "./social";
 import { messageMenu, type MenuAction } from "./ui/menu";
 import { showThread } from "./ui/thread";
-import { inboxAddress, inboxUrl, type InboxTab } from "./thread-inbox";
+import {
+  inboxAddress,
+  inboxUrl,
+  type InboxFilter,
+  type InboxTab,
+} from "./thread-inbox";
 import { emptyTimeline, timelineBanner } from "./ui/banners";
 import { paintTimeline } from "./ui/messages";
 import { clearView } from "./ui/portals";
@@ -250,6 +255,7 @@ export class App implements RowActions {
   threadPane = el("aside", "thread-pane");
   /** The sidebar's Threads panel, as the address says. */
   threadsTab?: InboxTab;
+  threadsFilter: InboxFilter = "all";
   /** The thread the address opened, not one opened from the room's timeline. */
   addressThread?: string;
   threadTotals?: ThreadInboxTotals;
@@ -1340,7 +1346,10 @@ export class App implements RowActions {
     });
   }
   /** The sidebar's Threads row and panel: each step is a state back and forward return to. */
-  showThreads(tab: InboxTab | undefined): void {
+  showThreads(
+    tab: InboxTab | undefined,
+    filter: InboxFilter = this.threadsFilter,
+  ): void {
     history.pushState(
       null,
       "",
@@ -1349,6 +1358,7 @@ export class App implements RowActions {
         tab,
         // Leaving the panel keeps a thread open; the room behind it stays unread.
         inboxAddress(location.search).thread,
+        filter,
       ),
     );
     this.followThreadsUrl();
@@ -1358,7 +1368,7 @@ export class App implements RowActions {
     history.pushState(
       { threadFromInbox: true },
       "",
-      inboxUrl(room, this.threadsTab, root),
+      inboxUrl(room, this.threadsTab, root, this.threadsFilter),
     );
     if (room !== this.room) void this.openRoom(room, false, false).catch(toast);
     this.followThreadsUrl();
@@ -1367,9 +1377,11 @@ export class App implements RowActions {
   followThreadsUrl(): void {
     const enabled = !!this.info?.capabilities.thread_inbox;
     const address = inboxAddress(location.search),
-      tab = enabled ? address.tab : undefined;
-    if (tab !== this.threadsTab) {
+      tab = enabled ? address.tab : undefined,
+      filter = tab ? address.filter : "all";
+    if (tab !== this.threadsTab || filter !== this.threadsFilter) {
       this.threadsTab = tab;
+      this.threadsFilter = filter;
       this.renderRooms();
     }
     const thread = enabled ? address.thread : undefined;
@@ -1389,7 +1401,11 @@ export class App implements RowActions {
         toast(error);
         if (this.addressThread !== thread) return;
         this.addressThread = undefined;
-        history.replaceState(null, "", inboxUrl(room, this.threadsTab));
+        history.replaceState(
+          null,
+          "",
+          inboxUrl(room, this.threadsTab, undefined, this.threadsFilter),
+        );
       })
       .then(() => this.renderRooms());
   }
@@ -1403,7 +1419,11 @@ export class App implements RowActions {
       history.back();
       return;
     }
-    history.replaceState(null, "", inboxUrl(this.room, this.threadsTab));
+    history.replaceState(
+      null,
+      "",
+      inboxUrl(this.room, this.threadsTab, undefined, this.threadsFilter),
+    );
     this.followThreadsUrl();
   }
   /** At most one read per second, and only once the account's journal moved. */

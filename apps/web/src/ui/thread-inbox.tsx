@@ -8,8 +8,13 @@ import { personName, previewText } from "../presentation";
 import {
   appendPage,
   countLabel,
+  EXTRA_PAGES,
+  INBOX_FILTERS,
+  matchesFilter,
   refreshHead,
   refreshLimit,
+  threadTraits,
+  type InboxFilter,
   type InboxTab,
 } from "../thread-inbox";
 import { ActionButton, Avatar, IconButton, Symbol } from "./controls";
@@ -17,6 +22,23 @@ import { roomTime } from "./rooms";
 import "../thread-inbox.css";
 
 const SHOWN_PARTICIPANTS = 3;
+const NEAR_END = 120;
+
+const CHIP_LABELS = {
+  all: "threadsAll",
+  participated: "threadsParticipated",
+  mentioned: "threadsMentioned",
+  others: "threadsOthers",
+} as const;
+
+const CHIP_EMPTY = {
+  participated: "threadsNoParticipated",
+  mentioned: "threadsNoMentioned",
+  others: "threadsNoOthers",
+} as const;
+
+const nearEnd = (node: HTMLElement) =>
+  node.scrollHeight - node.scrollTop - node.clientHeight < NEAR_END;
 
 export function ThreadsRow({ app }: { app: App }) {
   const totals = app.threadTotals;
@@ -87,13 +109,24 @@ function ThreadRow({ app, entry }: { app: App; entry: ThreadInboxEntry }) {
   );
 }
 
-export function ThreadsPanel({ app, tab }: { app: App; tab: InboxTab }) {
+export function ThreadsPanel({
+  app,
+  tab,
+  filter,
+}: {
+  app: App;
+  tab: InboxTab;
+  filter: InboxFilter;
+}) {
   const [rows, setRows] = useState<ThreadInboxEntry[]>([]);
   const [next, setNext] = useState<string | null>();
   const [status, setStatus] = useState<"loading" | "ready" | "failed">(
     "loading",
   );
   const [moreFailed, setMoreFailed] = useState(false);
+  const [spent, setSpent] = useState(false);
+  const budget = useRef(EXTRA_PAGES);
+  const lastScroll = useRef(0);
   const list = useRef<HTMLDivElement>(null);
   const epoch = useRef(0);
   const loadingMore = useRef(false);
@@ -110,9 +143,14 @@ export function ThreadsPanel({ app, tab }: { app: App; tab: InboxTab }) {
       ),
     [app, tab],
   );
+  const grantPages = useCallback(() => {
+    budget.current = EXTRA_PAGES;
+    setSpent(false);
+  }, []);
   const first = useCallback(async () => {
     const current = ++epoch.current;
-    loadingMore.current = false;
+    loadingMore.current = true;
+    grantPages();
     setStatus("loading");
     setRows([]);
     setNext(undefined);
@@ -120,15 +158,19 @@ export function ThreadsPanel({ app, tab }: { app: App; tab: InboxTab }) {
     try {
       const page = await request(50);
       if (current !== epoch.current) return;
+      loadingMore.current = false;
       setRows(page.threads);
       setNext(page.next);
       setStatus("ready");
     } catch {
-      if (current === epoch.current) setStatus("failed");
+      if (current !== epoch.current) return;
+      loadingMore.current = false;
+      setStatus("failed");
     }
-  }, [request]);
+  }, [grantPages, request]);
   const more = useCallback(async () => {
-    if (loadingMore.current || !next) return;
+    if (loadingMore.current || !next || budget.current <= 0) return;
+    budget.current--;
     const current = epoch.current;
     loadingMore.current = true;
     setMoreFailed(false);
@@ -137,12 +179,17 @@ export function ThreadsPanel({ app, tab }: { app: App; tab: InboxTab }) {
       if (current !== epoch.current) return;
       setRows((rows) => appendPage(rows, page.threads));
       setNext(page.next);
+      setSpent(budget.current <= 0);
     } catch {
       if (current === epoch.current) setMoreFailed(true);
     } finally {
       if (current === epoch.current) loadingMore.current = false;
     }
   }, [next, request]);
+  const moreOnRequest = useCallback(() => {
+    grantPages();
+    return more();
+  }, [grantPages, more]);
   useEffect(() => {
     void first();
     return () => {
@@ -165,11 +212,24 @@ export function ThreadsPanel({ app, tab }: { app: App; tab: InboxTab }) {
     return () => window.removeEventListener("rv-thread-inbox", refresh);
   }, [request]);
   useEffect(() => {
+    grantPages();
+    lastScroll.current = 0;
+    if (list.current) list.current.scrollTop = 0;
+  }, [filter, grantPages]);
+  useEffect(() => {
     const node = list.current;
-    if (node && next && !moreFailed && node.scrollHeight <= node.clientHeight)
-      void more();
-  }, [rows, next, moreFailed, more]);
+    if (node && next && !moreFailed && nearEnd(node)) void more();
+  }, [rows, filter, next, moreFailed, more]);
   const totals = app.threadTotals;
+  const me = app.account?.session.user;
+  const visible = me
+    ? rows.filter((entry) =>
+        matchesFilter(
+          filter,
+          threadTraits(entry, me, app.model.rooms.get(entry.room_id)?.kind),
+        ),
+      )
+    : rows;
   return (
     <div className="threads-panel" data-tab={tab}>
       <header className="threads-header">
@@ -208,15 +268,34 @@ export function ThreadsPanel({ app, tab }: { app: App; tab: InboxTab }) {
         ))}
       </div>
       <div
+        className="threads-filter"
+        role="group"
+        aria-label={t("threadsFilter")}
+      >
+        {INBOX_FILTERS.map((value) => (
+          <ActionButton
+            key={value}
+            className="threads-chip"
+            aria-pressed={filter === value}
+            action={() => {
+              if (filter !== value) app.showThreads(tab, value);
+            }}
+          >
+            {t(CHIP_LABELS[value])}
+          </ActionButton>
+        ))}
+      </div>
+      <div
         className="inbox-list"
         ref={list}
         onScroll={(event) => {
           const node = event.currentTarget;
-          if (node.scrollHeight - node.scrollTop - node.clientHeight < 120)
-            void more();
+          const down = node.scrollTop > lastScroll.current;
+          lastScroll.current = node.scrollTop;
+          if (down && nearEnd(node)) void moreOnRequest();
         }}
       >
-        {rows.map((entry) => (
+        {visible.map((entry) => (
           <ThreadRow key={entry.root.id} app={app} entry={entry} />
         ))}
         {status === "failed" && (
@@ -227,18 +306,39 @@ export function ThreadsPanel({ app, tab }: { app: App; tab: InboxTab }) {
             </ActionButton>
           </div>
         )}
-        {status === "ready" && !rows.length && (
-          <div className="inbox-empty">
-            <Symbol name="threads" />
-            <p>
-              {t(tab === "unread" ? "threadsNoUnread" : "threadsNoFollowed")}
-            </p>
-            {tab === "unread" && <p className="dim">{t("threadsCaughtUp")}</p>}
-          </div>
-        )}
+        {status === "ready" &&
+          !visible.length &&
+          !moreFailed &&
+          (!next || spent) && (
+            <div className="inbox-empty">
+              <Symbol name="threads" />
+              <p>
+                {t(
+                  filter !== "all"
+                    ? CHIP_EMPTY[filter]
+                    : tab === "unread"
+                      ? "threadsNoUnread"
+                      : "threadsNoFollowed",
+                )}
+              </p>
+              {next ? (
+                <p className="dim">{t("threadsMayMatch")}</p>
+              ) : (
+                filter === "all" &&
+                tab === "unread" && (
+                  <p className="dim">{t("threadsCaughtUp")}</p>
+                )
+              )}
+            </div>
+          )}
         {moreFailed && (
-          <ActionButton className="inbox-retry" action={more}>
+          <ActionButton className="inbox-retry" action={moreOnRequest}>
             {t("retry")}
+          </ActionButton>
+        )}
+        {next && spent && !moreFailed && (
+          <ActionButton className="inbox-more" action={moreOnRequest}>
+            {t("loadMore")}
           </ActionButton>
         )}
       </div>

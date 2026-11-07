@@ -45,6 +45,29 @@
 .threads-tabs button {
   flex: 1;
 }
+.threads-filter {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin: 0 8px 6px;
+}
+.threads-chip {
+  min-height: 0;
+  padding: 3px 10px;
+  border: 1px solid #2c2946;
+  border-radius: 999px;
+  background: transparent;
+  color: #8f89ab;
+  font-size: 12px;
+  font-weight: 700;
+}
+.threads-chip:hover {
+  border-color: #a78bfa;
+}
+.threads-chip[aria-pressed="true"] {
+  border-color: #a78bfa;
+  color: #a78bfa;
+}
 .inbox-list {
   flex: 1;
   min-height: 0;
@@ -133,7 +156,8 @@
 .inbox-empty p {
   margin: 0;
 }
-.inbox-retry {
+.inbox-retry,
+.inbox-more {
   display: block;
   margin: 8px auto;
 }

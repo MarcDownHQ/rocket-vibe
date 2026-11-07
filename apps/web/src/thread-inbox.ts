@@ -1,16 +1,32 @@
-import type { ThreadInboxEntry } from "./protocol";
+import { mentionsMe } from "./activity-feed.ts";
+import type { RoomKind, ThreadInboxEntry } from "./protocol";
 
 export type InboxTab = "followed" | "unread";
+
+export const INBOX_FILTERS = [
+  "all",
+  "participated",
+  "mentioned",
+  "others",
+] as const;
+export type InboxFilter = (typeof INBOX_FILTERS)[number];
+
+/** Pages read beyond the visible ones for one user action. */
+export const EXTRA_PAGES = 4;
 
 export function inboxAddress(search: string): {
   tab?: InboxTab;
   thread?: string;
+  filter: InboxFilter;
 } {
   const params = new URLSearchParams(search),
-    tab = params.get("threads");
+    tab = params.get("threads"),
+    known = tab === "followed" || tab === "unread",
+    filter = INBOX_FILTERS.find((f) => f === params.get("threadsFilter"));
   return {
-    tab: tab === "followed" || tab === "unread" ? tab : undefined,
+    tab: known ? tab : undefined,
     thread: params.get("thread") || undefined,
+    filter: known && filter ? filter : "all",
   };
 }
 
@@ -18,15 +34,45 @@ export function inboxUrl(
   room: string | undefined,
   tab: InboxTab | undefined,
   thread?: string,
+  filter: InboxFilter = "all",
 ): string {
   const params = new URLSearchParams();
   if (tab) params.set("threads", tab);
+  if (tab && filter !== "all") params.set("threadsFilter", filter);
   if (thread) params.set("thread", thread);
   const query = params.toString();
   return (
     (room ? "/room/" + encodeURIComponent(room) : "/") +
     (query ? "?" + query : "")
   );
+}
+
+export interface ThreadTraits {
+  participated: boolean;
+  mentioned: boolean;
+}
+
+export function threadTraits(
+  entry: ThreadInboxEntry,
+  me: { id: string; username: string },
+  roomKind: RoomKind | undefined,
+): ThreadTraits {
+  return {
+    participated:
+      entry.root.author.id === me.id ||
+      entry.participants.some((person) => person.id === me.id) ||
+      roomKind === "direct",
+    mentioned: entry.mentions !== "0" || mentionsMe(entry.root, me.username),
+  };
+}
+
+export function matchesFilter(
+  filter: InboxFilter,
+  { participated, mentioned }: ThreadTraits,
+): boolean {
+  if (filter === "participated") return participated;
+  if (filter === "mentioned") return mentioned;
+  return filter === "all" || (!participated && !mentioned);
 }
 
 const newestFirst = (a: ThreadInboxEntry, b: ThreadInboxEntry) => {
