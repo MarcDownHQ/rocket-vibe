@@ -55,6 +55,7 @@ pub mod supervisor;
 pub mod sync;
 pub mod teams;
 pub mod teams_call;
+pub mod thread_inbox;
 pub mod timeline;
 pub use rv_provider::tls;
 pub mod update;

@@ -132,6 +132,9 @@ pub enum Event {
     Voice,
     /// The call ringing here changed: `Chat::incoming_call`.
     CallRing,
+    Threads {
+        root: Option<String>,
+    },
 }
 
 #[uniffi::export(with_foreign)]
@@ -447,6 +450,7 @@ fn event(e: SessionEvent, session: Option<&Session>) -> Event {
             }
         }
         SessionEvent::CallRing => Event::CallRing,
+        SessionEvent::Threads(root) => Event::Threads { root },
     }
 }
 

@@ -14,6 +14,7 @@ pub mod oauth;
 pub mod pusher;
 pub mod socket;
 pub mod sync;
+pub mod threads;
 pub mod translate;
 
 use std::time::Duration;

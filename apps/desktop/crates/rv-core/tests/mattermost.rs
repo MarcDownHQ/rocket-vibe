@@ -350,3 +350,73 @@ async fn a_live_reply_reads_its_cached_root_again() {
     assert!(!server.requests().iter().any(|r| r.path() == "/api/v4/posts/old"));
     assert!(store.messages_by_id(&["old".to_owned()]).is_empty());
 }
+
+fn thread_bench() -> impl Fn(&common::Request) -> common::Response + Send + Sync + 'static {
+    |r| {
+        match r.path() {
+        "/api/v4/users/me/teams" => respond(200, r#"[{"id": "T"}]"#),
+        "/api/v4/users/me/teams/T/threads" => respond(
+            200,
+            &json!({
+                "total": 1, "total_unread_threads": 1, "total_unread_mentions": 2,
+                "threads": [{
+                    "id": "root", "reply_count": 3, "last_reply_at": 900, "unread_replies": 2, "unread_mentions": 1,
+                    "participants": [{"id": "u-bob", "username": "bob"}],
+                    "post": {"id": "root", "channel_id": "ch1", "user_id": "u-bob", "message": "a root", "create_at": 100, "update_at": 100, "reply_count": 3, "last_reply_at": 900},
+                }],
+            })
+            .to_string(),
+        ),
+        _ => respond(200, r#"{"status": "OK"}"#),
+    }
+    }
+}
+
+#[tokio::test]
+async fn the_account_threads_are_read_from_the_team_list() {
+    use rv_core::thread_inbox::Filter;
+    let server = FakeHttp::start(thread_bench()).await;
+    let (_, sync) = sync(&server);
+
+    let page = mattermost::threads::page(&sync, Filter::Unread, None).await.unwrap();
+
+    assert_eq!(page.next, None);
+    let entry = &page.entries[0];
+    assert_eq!((entry.root.id.as_str(), entry.root.rid.as_str()), ("root", "ch1"));
+    assert_eq!((entry.replies, entry.last_reply, entry.unread_replies, entry.unread_mentions), (3, 900, 2, 1));
+    assert_eq!(entry.participants[0].username, "bob");
+    let list = server.requests().into_iter().find(|r| r.path().ends_with("/threads")).unwrap();
+    assert!(list.target.contains("unread=true") && list.target.contains("extended=true"), "{}", list.target);
+}
+
+#[tokio::test]
+async fn the_totals_count_each_thread_once_whatever_the_teams() {
+    let server = FakeHttp::start(|r| match r.path() {
+        "/api/v4/users/me/teams" => respond(200, r#"[{"id": "A"}, {"id": "B"}]"#),
+        "/api/v4/users/me/teams/A/threads" => {
+            respond(200, r#"{"threads": [{"id": "dm", "unread_mentions": 1}, {"id": "a1", "unread_mentions": 0}]}"#)
+        }
+        "/api/v4/users/me/teams/B/threads" => respond(200, r#"{"threads": [{"id": "dm", "unread_mentions": 1}]}"#),
+        _ => respond(404, "{}"),
+    })
+    .await;
+    let rest = RestClient::mattermost(server.url.clone());
+
+    let totals = mattermost::threads::totals(&rest).await.unwrap();
+
+    assert_eq!((totals.unread_threads, totals.unread_mentions), (2, 1));
+}
+
+#[tokio::test]
+async fn a_thread_is_not_followed_when_the_server_does_not_know_it() {
+    let server = FakeHttp::start(|r| match r.path() {
+        "/api/v4/users/me/teams" => respond(200, r#"[{"id": "T"}]"#),
+        "/api/v4/users/me/teams/T/threads/mine" => respond(200, r#"{"id": "mine"}"#),
+        _ => respond(404, r#"{"id": "app.user.get_threads_for_user.not_found", "message": "x", "status_code": 404}"#),
+    })
+    .await;
+    let (_, sync) = sync(&server);
+
+    assert!(mattermost::threads::following(&sync, "dm", "mine").await.unwrap());
+    assert!(!mattermost::threads::following(&sync, "dm", "other").await.unwrap());
+}
