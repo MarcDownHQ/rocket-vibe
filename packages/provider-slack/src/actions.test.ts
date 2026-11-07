@@ -20,7 +20,7 @@ function setup(route: (call: SlackCall) => SlackAnswer | undefined = () => ({ bo
   live.remember({ id: 'C001', name: 'general' }, { id: 'C001', latest: '1780000000.000500' });
   const saved = new SlackSaved(client, history);
   const translator = new SlackTranslator(directory, 'U000', new Map(), saved.ids);
-  return { actions: new SlackActions({ client, directory, history, live, translator, saved }), server, saved, live, directory };
+  return { actions: new SlackActions({ client, directory, history, live, translator, saved, myId: 'U000' }), server, saved, live, directory };
 }
 
 const MID = 'C001:1780000000.000100';

@@ -251,6 +251,8 @@ export interface ProviderActions {
   threadFollowing?(rid: string, root: string): Promise<boolean>;
   /** Told when the account's threads may have changed; returns the unsubscribe function. */
   onThreadsChanged?(listener: () => void): () => void;
+  /** How often an open list reads again, where `onThreadsChanged` cannot be trusted to tell. */
+  readonly threadPollMs?: number;
   /**
    * A page of a channel's or group's members from `offset`, owners and
    * moderators first, `filter` searched by the server. Absent where the
