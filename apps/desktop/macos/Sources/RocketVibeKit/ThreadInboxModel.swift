@@ -11,6 +11,10 @@ public protocol ThreadInboxSource: AnyObject, Sendable {
 
 extension Chat: ThreadInboxSource {}
 
+extension NativeChat: ThreadInboxSource {
+    public func threadInboxPolled() -> Bool { false }
+}
+
 /// The account's threads, in place of the room list: those I follow, those
 /// with replies I have not read, and the totals of the room list's row.
 @MainActor @Observable

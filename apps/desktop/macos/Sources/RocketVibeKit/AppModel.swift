@@ -532,12 +532,7 @@ public final class AppModel {
             voice.isDirect = { [weak self] rid in self?.rooms.first(where: { $0.rid == rid })?.kind == "d" }
             self.voice = voice
         }
-        if let chat, chat.threadInboxAvailable() {
-            let inbox = ThreadInboxModel(source: chat)
-            inbox.onNotice = { [weak self] in self?.notice = $0 }
-            inbox.scheduleRefresh()
-            threadInbox = inbox
-        }
+        offerThreadInbox()
         connection = .connecting
         let expected = sessionId
         provider.listen(Relay { [weak self] event in
@@ -646,6 +641,7 @@ public final class AppModel {
         case .resync:
             voice?.refresh()
             for key in native?.withdrawnNotifications() ?? [] { onWithdraw?(key) }
+            offerThreadInbox()
             threadInbox?.scheduleRefresh()
             later(everything: true)
         case let .connection(state):
@@ -1031,8 +1027,23 @@ public final class AppModel {
         openThread(entry.root)
     }
 
+    /// A Vibez account learns what its server offers after it opens.
+    func offerThreadInbox() {
+        guard threadInbox == nil else { return }
+        let source: (any ThreadInboxSource)? =
+            if let chat, chat.threadInboxAvailable() { chat }
+            else if let native, native.threadInboxAvailable() { native }
+            else { nil }
+        guard let source else { return }
+        let inbox = ThreadInboxModel(source: source)
+        inbox.onNotice = { [weak self] in self?.notice = $0 }
+        inbox.scheduleRefresh()
+        threadInbox = inbox
+    }
+
     /// The open thread is on screen in the active app: its replies are read.
     public func readOpenThread() {
+        if native != nil, appIsActive(), let root = thread?.threadId { threadInbox?.noteRead(root) }
         guard let chat, chat.threadInboxAvailable(), appIsActive(), let thread, let root = thread.threadId else { return }
         let rid = thread.rid
         let inbox = threadInbox

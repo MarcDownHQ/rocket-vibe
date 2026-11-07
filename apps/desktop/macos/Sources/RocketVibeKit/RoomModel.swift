@@ -182,7 +182,11 @@ public final class RoomModel {
     }
     /// The room's thread list and following a thread: Rocket.Chat only.
     public var supportsThreads: Bool { active && chat?.threadsAvailable() == true }
-    public var supportsThreadFollow: Bool { active && threadId != nil && chat?.threadFollowAvailable() == true }
+    public var supportsThreadFollow: Bool {
+        guard active, threadId != nil else { return false }
+        if let native = provider.native { return !privateMode && native.threadFollowAvailable() }
+        return chat?.threadFollowAvailable() == true
+    }
     /// "Also send to the room" (Rocket.Chat): a thread's next reply only, unchecked once it goes.
     public var alsoInRoom = false
     public var supportsAlsoInRoom: Bool { active && threadId != nil && !privateMode && chat?.alsoInRoomAvailable() == true }
@@ -483,6 +487,10 @@ public final class RoomModel {
         }
         if let chat, let threadId, chat.threadsAvailable() {
             let following = chat.threadFollowing(root: threadId)
+            if following != followingThread { followingThread = following }
+        }
+        if let native = provider.native, let threadId, native.threadFollowAvailable() {
+            let following = (try? native.threadFollowing(root: threadId)) ?? false
             if following != followingThread { followingThread = following }
         }
         closeQuoteReader()
@@ -1126,8 +1134,14 @@ public final class RoomModel {
     }
 
     public func followThread(_ root: String, _ on: Bool) async throws {
-        guard active, chat?.threadFollowAvailable() == true else { throw RvError.Local(message: L("native.error")) }
-        try await editableChat().followThread(root: root, on: on)
+        guard active else { throw RvError.Local(message: L("native.error")) }
+        if let native = provider.native {
+            guard !privateMode, native.threadFollowAvailable() else { throw RvError.Local(message: L("native.error")) }
+            try await native.followThread(root: root, on: on)
+        } else {
+            guard chat?.threadFollowAvailable() == true else { throw RvError.Local(message: L("native.error")) }
+            try await editableChat().followThread(root: root, on: on)
+        }
         if root == threadId { followingThread = on }
     }
 
