@@ -3,6 +3,8 @@
  * DMs and groups as well, so several teams are merged and deduplicated here.
  */
 
+import { threadMentioned, threadParticipated, writtenMention } from '@rocket-vibe/provider-api/threadScope';
+
 import type { ThreadInboxEntry, ThreadInboxFilter, ThreadInboxPage, ThreadParticipant, ThreadTotals } from '../../lib/provider.ts';
 import { MmError, type MmClient } from './client.ts';
 import type { MmDirectory } from './directory.ts';
@@ -83,12 +85,14 @@ export class MmThreads {
   private readonly directory: MmDirectory;
   private readonly live: MmLive;
   private readonly translator: MmTranslator;
+  private readonly myId: string;
 
-  constructor(options: { client: MmClient; directory: MmDirectory; live: MmLive; translator: MmTranslator }) {
+  constructor(options: { client: MmClient; directory: MmDirectory; live: MmLive; translator: MmTranslator; myId: string }) {
     this.client = options.client;
     this.directory = options.directory;
     this.live = options.live;
     this.translator = options.translator;
+    this.myId = options.myId;
   }
 
   private async teams(): Promise<string[]> {
@@ -121,7 +125,8 @@ export class MmThreads {
     await this.live.ensureAuthors(posts);
     await this.directory.ensure(threads.flatMap((thread) => docs(thread.participants).flatMap((person) => text(person, 'id') ?? [])));
     const entries: ThreadInboxEntry[] = [];
-    const rooms = new Map<string, string>();
+    const rooms = new Map<string, { name: string; direct: boolean }>();
+    const names = writtenMention(this.directory.username(this.myId));
     for (const thread of threads) {
       const post = record(thread.post);
       if (post === null || int(post, 'delete_at') > 0) continue;
@@ -129,17 +134,25 @@ export class MmThreads {
       if (root === null) continue;
       let room = rooms.get(root.rid);
       if (room === undefined) {
-        room = await this.roomName(root.rid);
+        room = await this.roomOf(root.rid);
         rooms.set(root.rid, room);
       }
+      const unreadMentions = int(thread, 'unread_mentions');
       entries.push({
         root,
-        room,
+        room: room.name,
         lastReply: int(thread, 'last_reply_at'),
         replies: int(thread, 'reply_count'),
         participants: this.participants(thread),
         unreadReplies: int(thread, 'unread_replies'),
-        unreadMentions: int(thread, 'unread_mentions'),
+        unreadMentions,
+        participated: threadParticipated(this.myId, {
+          rootAuthor: root.authorId,
+          repliers: docs(thread.participants).flatMap((person) => text(person, 'id') ?? []),
+          direct: room.direct,
+        }),
+        // The listing does not say whether a reply already read named me.
+        mentioned: threadMentioned({ mentions: unreadMentions, texts: [root.text], names }),
       });
     }
     return { entries, next };
@@ -153,10 +166,12 @@ export class MmThreads {
     });
   }
 
-  private async roomName(rid: string): Promise<string> {
+  private async roomOf(rid: string): Promise<{ name: string; direct: boolean }> {
     if (!this.live.channels.has(rid)) await this.live.load(rid).catch(() => false);
     const channel = this.live.channels.get(rid);
-    return channel === undefined ? '' : (this.translator.toRoom({ channel })?.displayName ?? '');
+    if (channel === undefined) return { name: '', direct: false };
+    const type = text(channel, 'type');
+    return { name: this.translator.toRoom({ channel })?.displayName ?? '', direct: type === 'D' || type === 'G' };
   }
 
   /** Counted from the unread threads themselves: each team's own totals count the DMs and groups again. */

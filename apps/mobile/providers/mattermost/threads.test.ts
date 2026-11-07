@@ -241,3 +241,43 @@ test('thread events tell the listeners and stay quiet, the thread a string or an
   await live.expand('hello', {}, {});
   assert.equal(told, 5);
 });
+
+test('each entry says whether I took part and whether I am mentioned', async () => {
+  const dm = (id: string, type: string) => ({
+    body: { id, type, name: `${id}__me`, display_name: '', team_id: '' },
+  });
+  const { actions } = account((call) => {
+    if (call.path === '/channels/dm1') return dm('dm1', 'D');
+    if (call.path === '/channels/gm1') return dm('gm1', 'G');
+    if (call.path === '/channels/dm1/members/me' || call.path === '/channels/gm1/members/me') return { body: { user_id: 'me' } };
+    if (call.path === '/users/me/teams/t1/threads') {
+      return {
+        body: {
+          threads: [
+            entry('plain', 90),
+            entry('mine', 80, { post: post('mine', { user_id: 'me' }) }),
+            entry('replied', 70, { participants: [{ id: 'me', username: 'me' }] }),
+            entry('direct', 60, { post: post('direct', { channel_id: 'dm1' }) }),
+            entry('group', 50, { post: post('group', { channel_id: 'gm1' }) }),
+            entry('counted', 40, { unread_mentions: 1 }),
+            entry('named', 30, { post: post('named', { message: 'hello @me!' }) }),
+            entry('near', 20, { post: post('near', { message: 'hello @menu and @all' }) }),
+          ],
+        },
+      };
+    }
+    return call.path.endsWith('/threads') ? { body: { threads: [] } } : undefined;
+  });
+  const { entries } = await actions.threadInbox!('followed', null);
+  const scope = Object.fromEntries(entries.map((e) => [e.root.id, [e.participated, e.mentioned]]));
+  assert.deepEqual(scope, {
+    plain: [false, false],
+    mine: [true, false],
+    replied: [true, false],
+    direct: [true, false],
+    group: [true, false],
+    counted: [false, true],
+    named: [false, true],
+    near: [false, false],
+  });
+});

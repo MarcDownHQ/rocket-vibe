@@ -343,6 +343,10 @@ export type ThreadInboxEntry = {
   participants: ThreadParticipant[];
   unreadReplies: number;
   unreadMentions: number;
+  /** `threadParticipated` of `threadScope.ts`. */
+  participated: boolean;
+  /** `threadMentioned` of `threadScope.ts`. */
+  mentioned: boolean;
 };
 
 /** One page of `ProviderActions.threadInbox`; `next` is null at the end of the list. */
