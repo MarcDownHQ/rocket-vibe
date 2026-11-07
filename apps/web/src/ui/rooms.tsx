@@ -16,7 +16,7 @@ function unread(room: Room): number {
   );
 }
 
-export function RoomList({ app }: { app: App }) {
+export function RoomList({ app, hidden }: { app: App; hidden?: boolean }) {
   const rooms = [...app.model.rooms.values()];
   const latest = (room: Room) => app.model.timeline(room.id).at(-1);
   rooms.sort((a, b) =>
@@ -62,6 +62,7 @@ export function RoomList({ app }: { app: App }) {
   return (
     <div
       className="rooms"
+      hidden={hidden}
       ref={(node) => {
         if (node) app.rooms = node;
       }}

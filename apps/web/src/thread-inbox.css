@@ -1,0 +1,139 @@
+.rooms[hidden] {
+  display: none;
+}
+.threads-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: auto;
+  margin: 6px 8px 0;
+  padding: 8px 10px;
+  border-radius: 12px;
+  color: inherit;
+  text-align: left;
+  font-weight: 600;
+}
+.threads-row:hover {
+  background: rgba(30, 27, 51, 0.6);
+}
+.threads-row-title {
+  flex: 1;
+  min-width: 0;
+}
+.threads-panel {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+.threads-header {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 8px;
+}
+.threads-title {
+  flex: 1;
+  min-width: 0;
+  font-weight: 700;
+}
+.threads-tabs {
+  display: flex;
+  gap: 4px;
+  margin: 0 8px 6px;
+}
+.threads-tabs button {
+  flex: 1;
+}
+.inbox-list {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  padding: 2px 8px 8px;
+}
+.inbox-row {
+  display: block;
+  width: 100%;
+  padding: 10px;
+  border-radius: 14px;
+  color: inherit;
+  text-align: left;
+}
+.inbox-row:hover {
+  background: rgba(30, 27, 51, 0.6);
+}
+.inbox-row.selected {
+  background: #1e1b33;
+}
+.inbox-top,
+.inbox-bottom {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+.inbox-author {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: 700;
+}
+.inbox-room {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  padding: 1px 7px;
+  border-radius: 6px;
+  background: #2a2547;
+  color: #b9b2dc;
+  font-size: 11.5px;
+}
+.inbox-time {
+  flex: none;
+  margin-left: auto;
+  color: #8f89ab;
+  font-size: 11.5px;
+}
+.inbox-preview {
+  display: -webkit-box;
+  margin: 4px 0 6px;
+  overflow: hidden;
+  overflow-wrap: anywhere;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
+}
+.inbox-bottom .tile-inbox {
+  flex: none;
+  width: 24px;
+  height: 24px;
+  border-radius: 8px;
+  font-size: 11px;
+}
+.inbox-replies {
+  color: #8f89ab;
+  font-size: 12px;
+}
+.inbox-bottom .badge {
+  margin-left: auto;
+}
+.inbox-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  padding: 40px 16px;
+  color: #8f89ab;
+  text-align: center;
+}
+.inbox-empty p {
+  margin: 0;
+}
+.inbox-retry {
+  display: block;
+  margin: 8px auto;
+}

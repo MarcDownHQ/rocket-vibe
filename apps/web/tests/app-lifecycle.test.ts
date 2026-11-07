@@ -295,8 +295,8 @@ test("thread responses from an earlier room opening or membership stay out of th
     const target = app(),
       receipt = deferred<unknown>();
     target.api.request = () => receipt.promise;
-    const thread = method("thread", { segment: encodeURIComponent });
-    const work = thread.call(target, message("root-A"));
+    const thread = method("openThread", { segment: encodeURIComponent });
+    const work = thread.call(target, "A", "root-A");
     if (change === "room") {
       target.room = "B";
       target.roomOpening++;
@@ -318,11 +318,11 @@ test("a delayed thread draft cannot reopen a closed thread", async () => {
     messages: [],
     has_more: false,
   });
-  const thread = method("thread", {
+  const thread = method("openThread", {
     segment: encodeURIComponent,
     read: () => draft.promise,
   });
-  const work = thread.call(target, message("root-A"));
+  const work = thread.call(target, "A", "root-A");
   await Promise.resolve();
   target.threadOpening++;
   draft.resolve("private thread draft");

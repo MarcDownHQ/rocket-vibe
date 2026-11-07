@@ -25,6 +25,7 @@ import { forRoom } from "../scheduled";
 import { LoginScreen } from "./login";
 import { ComposerFormatBar } from "./format";
 import { RoomList } from "./rooms";
+import { ThreadsPanel, ThreadsRow } from "./thread-inbox";
 import { AppContext } from "./context";
 import { PortalViews, clearView } from "./portals";
 
@@ -151,7 +152,12 @@ function Shell({ app }: { app: App }) {
             }}
           />
         </header>
-        <RoomList app={app} />
+        {app.threadsTab ? (
+          <ThreadsPanel app={app} tab={app.threadsTab} />
+        ) : (
+          app.info?.capabilities.thread_inbox && <ThreadsRow app={app} />
+        )}
+        <RoomList app={app} hidden={!!app.threadsTab} />
         <div className="account">
           <ActionButton
             className="flat account-avatar"
