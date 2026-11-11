@@ -602,7 +602,7 @@ A thread opened from the list does not read its room. `open_room` reads on entry
 
 ## The Threads view reaches every server that has threads, and only those (2026-11-07)
 
-User decision. The account's threads are owed on Mattermost and kChat, Vibez, Slack and Teams, decided by what each server can do (the gate in [threads](features/threads.md)), not by which provider is convenient. Rocket.Chat has no cross-room thread route and WhatsApp has no threads, so both are `n/a`: the apps do not assemble a substitute by walking rooms, because a view the server does not have would not match what its own clients show. Teams is owed, held back only by unprobed writes on a test tenant.
+User decision. The account's threads are owed on Mattermost and kChat, Vibez, Slack and Teams, decided by what each server can do (the gate in [threads](features/threads.md)), not by which provider is convenient. Rocket.Chat has no cross-room thread route and WhatsApp has no threads, so both are `n/a`: the apps do not assemble a substitute by walking rooms, because a view the server does not have would not match what its own clients show. Teams has no such list either, but its activity feed names the channel threads that notified me, which is what Teams' own Activity shows, so the view reads it (read-only; its writes wait for a test tenant).
 
 ## Threads chips: a direct conversation counts as participated (2026-11-07)
 
