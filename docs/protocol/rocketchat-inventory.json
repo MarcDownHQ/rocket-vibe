@@ -49,6 +49,7 @@
     "apps/desktop/crates/rv-core/src/links.rs",
     "apps/desktop/crates/rv-core/src/markdown.rs",
     "apps/desktop/crates/rv-core/src/mattermost/actions.rs",
+    "apps/desktop/crates/rv-core/src/mattermost/calls.rs",
     "apps/desktop/crates/rv-core/src/mattermost/categories.rs",
     "apps/desktop/crates/rv-core/src/mattermost/directory.rs",
     "apps/desktop/crates/rv-core/src/mattermost/mod.rs",
@@ -1812,6 +1813,42 @@
       "surface": "\"users/status/ids\""
     },
     {
+      "file": "apps/desktop/crates/rv-core/src/mattermost/calls.rs",
+      "line": 16,
+      "kind": "call:GET",
+      "surface": "&format!(\"{…}/version\"), outside()).await"
+    },
+    {
+      "file": "apps/desktop/crates/rv-core/src/mattermost/calls.rs",
+      "line": 22,
+      "kind": "call:GET",
+      "surface": "&format!(\"{…}/{…}\"), outside()).await {"
+    },
+    {
+      "file": "apps/desktop/crates/rv-core/src/mattermost/calls.rs",
+      "line": 32,
+      "kind": "call:GET",
+      "surface": "&format!(\"{…}/config\"), outside()).await.unwrap_or(Value::Null);"
+    },
+    {
+      "file": "apps/desktop/crates/rv-core/src/mattermost/calls.rs",
+      "line": 38,
+      "kind": "call:GET",
+      "surface": "&format!(\"{…}/config\"), outside()).await.unwrap_or(Value::Null);"
+    },
+    {
+      "file": "apps/desktop/crates/rv-core/src/mattermost/calls.rs",
+      "line": 41,
+      "kind": "call:GET",
+      "surface": "&format!(\"{…}/turn-credentials\"), outside()).await"
+    },
+    {
+      "file": "apps/desktop/crates/rv-core/src/mattermost/calls.rs",
+      "line": 70,
+      "kind": "call:GET",
+      "surface": "&format!(\"{…}/{…}\"), outside()).await.unwrap_or(Value::Null);"
+    },
+    {
       "file": "apps/desktop/crates/rv-core/src/mattermost/categories.rs",
       "line": 25,
       "kind": "call:GET",
@@ -1825,31 +1862,31 @@
     },
     {
       "file": "apps/desktop/crates/rv-core/src/mattermost/mod.rs",
-      "line": 71,
+      "line": 72,
       "kind": "url",
       "surface": "/api/v4/system/ping"
     },
     {
       "file": "apps/desktop/crates/rv-core/src/mattermost/mod.rs",
-      "line": 104,
+      "line": 105,
       "kind": "url",
       "surface": "/api/v4/users/login"
     },
     {
       "file": "apps/desktop/crates/rv-core/src/mattermost/mod.rs",
-      "line": 130,
+      "line": 131,
       "kind": "call:GET",
       "surface": "\"users/me\""
     },
     {
       "file": "apps/desktop/crates/rv-core/src/mattermost/mod.rs",
-      "line": 144,
+      "line": 145,
       "kind": "call:GET",
       "surface": "\"users/me/servers\""
     },
     {
       "file": "apps/desktop/crates/rv-core/src/mattermost/mod.rs",
-      "line": 228,
+      "line": 229,
       "kind": "call:GET",
       "surface": "path, options).await?.as_array().cloned().unwrap_or_default();"
     },
@@ -2365,193 +2402,193 @@
     },
     {
       "file": "apps/desktop/crates/rv-core/src/session.rs",
-      "line": 360,
+      "line": 362,
       "kind": "call:POST",
       "surface": "\"users/logout\""
     },
     {
       "file": "apps/desktop/crates/rv-core/src/session.rs",
-      "line": 361,
+      "line": 363,
       "kind": "call:POST",
       "surface": "\"logout\""
     },
     {
       "file": "apps/desktop/crates/rv-core/src/session.rs",
-      "line": 998,
+      "line": 1001,
       "kind": "call:POST",
       "surface": "\"users.getPresence\""
     },
     {
       "file": "apps/desktop/crates/rv-core/src/session.rs",
-      "line": 998,
+      "line": 1001,
       "kind": "endpoint",
       "surface": "users.getPresence"
     },
     {
       "file": "apps/desktop/crates/rv-core/src/session.rs",
-      "line": 1109,
+      "line": 1120,
       "kind": "call:GET",
       "surface": "\"e2e.fetchMyKeys\""
     },
     {
       "file": "apps/desktop/crates/rv-core/src/session.rs",
-      "line": 1109,
+      "line": 1120,
       "kind": "endpoint",
       "surface": "e2e.fetchMyKeys"
     },
     {
       "file": "apps/desktop/crates/rv-core/src/session.rs",
-      "line": 1363,
+      "line": 1374,
       "kind": "call:POST",
       "surface": "\"users.profile.set\""
     },
     {
       "file": "apps/desktop/crates/rv-core/src/session.rs",
-      "line": 1363,
+      "line": 1374,
       "kind": "endpoint",
       "surface": "users.profile.set"
     },
     {
       "file": "apps/desktop/crates/rv-core/src/session.rs",
-      "line": 1429,
+      "line": 1440,
       "kind": "endpoint",
       "surface": "users.setAvatar"
     },
     {
       "file": "apps/desktop/crates/rv-core/src/session.rs",
-      "line": 1431,
+      "line": 1442,
       "kind": "call:UPLOAD",
       "surface": "&path, \"image\", bytes, &name, mime, Vec::new(), |_, _| {…}).await.map(|_| ())"
     },
     {
       "file": "apps/desktop/crates/rv-core/src/session.rs",
-      "line": 1462,
+      "line": 1473,
       "kind": "call:DELETE",
       "surface": "&path"
     },
     {
       "file": "apps/desktop/crates/rv-core/src/session.rs",
-      "line": 1696,
+      "line": 1707,
       "kind": "call:GET",
       "surface": "\"settings.public\""
     },
     {
       "file": "apps/desktop/crates/rv-core/src/session.rs",
-      "line": 1696,
+      "line": 1707,
       "kind": "endpoint",
       "surface": "settings.public"
     },
     {
       "file": "apps/desktop/crates/rv-core/src/session.rs",
-      "line": 1734,
+      "line": 1745,
       "kind": "call:GET",
       "surface": "\"emoji-custom.list\""
     },
     {
       "file": "apps/desktop/crates/rv-core/src/session.rs",
-      "line": 1734,
+      "line": 1745,
       "kind": "endpoint",
       "surface": "emoji-custom.list"
     },
     {
       "file": "apps/desktop/crates/rv-core/src/session.rs",
-      "line": 1789,
+      "line": 1800,
       "kind": "call:POST",
       "surface": "\"subscriptions.read\", read).await;"
     },
     {
       "file": "apps/desktop/crates/rv-core/src/session.rs",
-      "line": 1789,
+      "line": 1800,
       "kind": "endpoint",
       "surface": "subscriptions.read"
     },
     {
       "file": "apps/desktop/crates/rv-core/src/session.rs",
-      "line": 1870,
+      "line": 1881,
       "kind": "call:GET",
       "surface": "\"permissions.listAll\""
     },
     {
       "file": "apps/desktop/crates/rv-core/src/session.rs",
-      "line": 1870,
+      "line": 1881,
       "kind": "endpoint",
       "surface": "permissions.listAll"
     },
     {
       "file": "apps/desktop/crates/rv-core/src/session.rs",
-      "line": 1871,
+      "line": 1882,
       "kind": "call:GET",
       "surface": "\"me\""
     },
     {
       "file": "apps/desktop/crates/rv-core/src/session.rs",
-      "line": 1895,
+      "line": 1906,
       "kind": "call:GET",
       "surface": "\"commands.list\""
     },
     {
       "file": "apps/desktop/crates/rv-core/src/session.rs",
-      "line": 1929,
+      "line": 1940,
       "kind": "call:POST",
       "surface": "\"commands.run\""
     },
     {
       "file": "apps/desktop/crates/rv-core/src/session.rs",
-      "line": 2144,
+      "line": 2155,
       "kind": "call:GET",
       "surface": "\"chat.getMessage\""
     },
     {
       "file": "apps/desktop/crates/rv-core/src/session.rs",
-      "line": 2144,
+      "line": 2155,
       "kind": "endpoint",
       "surface": "chat.getMessage"
     },
     {
       "file": "apps/desktop/crates/rv-core/src/session.rs",
-      "line": 2533,
+      "line": 2583,
       "kind": "call:GET",
       "surface": "\"video-conference.info\""
     },
     {
       "file": "apps/desktop/crates/rv-core/src/session.rs",
-      "line": 2533,
+      "line": 2583,
       "kind": "endpoint",
       "surface": "video-conference.info"
     },
     {
       "file": "apps/desktop/crates/rv-core/src/session.rs",
-      "line": 2627,
+      "line": 2683,
       "kind": "call:GET",
       "surface": "\"chat.getMessage\""
     },
     {
       "file": "apps/desktop/crates/rv-core/src/session.rs",
-      "line": 2627,
+      "line": 2683,
       "kind": "endpoint",
       "surface": "chat.getMessage"
     },
     {
       "file": "apps/desktop/crates/rv-core/src/session.rs",
-      "line": 2638,
+      "line": 2694,
       "kind": "call:GET",
       "surface": "\"chat.getThreadMessages\", options).await?;"
     },
     {
       "file": "apps/desktop/crates/rv-core/src/session.rs",
-      "line": 2638,
+      "line": 2694,
       "kind": "endpoint",
       "surface": "chat.getThreadMessages"
     },
     {
       "file": "apps/desktop/crates/rv-core/src/session.rs",
-      "line": 3005,
+      "line": 3061,
       "kind": "call:POST",
       "surface": "\"users.setPresence\""
     },
     {
       "file": "apps/desktop/crates/rv-core/src/session.rs",
-      "line": 3005,
+      "line": 3061,
       "kind": "endpoint",
       "surface": "users.setPresence"
     },

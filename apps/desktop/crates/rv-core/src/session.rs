@@ -254,6 +254,8 @@ pub struct Session {
     /// When I last said I was typing, per room (Slack).
     typing_sent: Mutex<HashMap<String, Instant>>,
     call_available: Mutex<Option<bool>>,
+    /// Who each Mattermost Calls session is, by session id: its user id.
+    plugin_call_people: Mutex<HashMap<String, String>>,
     /// Photo versions learnt from `updateAvatar`, by username.
     avatars: Mutex<HashMap<String, String>>,
     /// `desktopNotifications` from `me`, kept current by set_preference.
@@ -497,6 +499,7 @@ impl Session {
             typing: Mutex::default(),
             typing_sent: Mutex::default(),
             call_available: Mutex::default(),
+            plugin_call_people: Mutex::default(),
             avatars: Mutex::default(),
             notification_preference: Mutex::new("default".to_owned()),
             rings: Mutex::default(),
@@ -1013,14 +1016,19 @@ impl Session {
     /// the session; a network failure or a refused token says nothing about it.
     pub async fn call_available(&self) -> bool {
         match self.backend() {
-            Backend::Mattermost(_) => return self.info.mattermost == Some(mattermost::Flavor::Kchat),
+            Backend::Mattermost(_) if self.info.mattermost == Some(mattermost::Flavor::Kchat) => return true,
+            Backend::Mattermost(_) => {}
             Backend::Slack(_) | Backend::Teams(_) => return true,
             Backend::RocketChat => {}
         }
         if let Some(known) = *self.call_available.lock().unwrap() {
             return known;
         }
-        match rocketchat::actions::video_conference(&self.rest).await {
+        let probe = match self.backend() {
+            Backend::Mattermost(_) => mattermost::calls::version(&self.rest).await.map(|_| ()),
+            _ => rocketchat::actions::video_conference(&self.rest).await.map(|_| ()),
+        };
+        match probe {
             Ok(_) => {
                 self.call_available.lock().unwrap().replace(true);
                 true
@@ -1039,6 +1047,9 @@ impl Session {
     pub async fn room_callable(&self, rid: &str) -> bool {
         if let Backend::Teams(teams) = self.backend() {
             return teams.callable(rid);
+        }
+        if matches!(self.backend(), Backend::Mattermost(_)) && self.info.mattermost != Some(mattermost::Flavor::Kchat) {
+            return self.call_available().await && mattermost::calls::enabled(&self.rest, rid).await;
         }
         self.call_available().await
     }
@@ -2351,6 +2362,9 @@ impl Session {
 
     pub async fn start_call(&self, rid: &str) -> Result<String, RestError> {
         match self.backend() {
+            Backend::Mattermost(_) if self.info.mattermost != Some(mattermost::Flavor::Kchat) => {
+                return Ok(format!("{}{rid}", mattermost::translate::PLUGIN_CALL));
+            }
             Backend::Mattermost(_) => {
                 return mattermost::actions::start_conference(&self.rest, rid).await;
             }
@@ -2386,6 +2400,39 @@ impl Session {
             join_token: media.join_token,
             origin: "https://app.slack.com".to_owned(),
         })
+    }
+
+    /// Joins a Mattermost channel's call (the Calls plugin), for the voice sidecar
+    /// to carry: the server, this session's token and the plugin's ICE servers.
+    pub async fn join_mattermost_call(&self, call_id: &str) -> Result<crate::voice::MattermostCall, RestError> {
+        let channel = call_id
+            .strip_prefix(mattermost::translate::PLUGIN_CALL)
+            .ok_or_else(|| RestError::incomplete("call: not a Mattermost call"))?;
+        let credentials = self.rest.credentials().ok_or_else(|| RestError::incomplete("call: signed out"))?;
+        Ok(crate::voice::MattermostCall {
+            server: self.rest.base().as_str().trim_end_matches('/').to_owned(),
+            token: credentials.auth_token.clone(),
+            channel_id: channel.to_owned(),
+            user_id: self.info.user_id.clone(),
+            ice_servers: mattermost::calls::ice_servers(&self.rest).await,
+        })
+    }
+
+    /// Someone in a Mattermost call, by the session id the call gives them.
+    pub fn plugin_call_person_name(&self, session: &str) -> Option<String> {
+        let Backend::Mattermost(mm) = self.backend() else { return None };
+        let user = self.plugin_call_people.lock().unwrap().get(session).cloned()?;
+        mm.directory.display_name(&user)
+    }
+
+    /// Reads who is in a channel's Mattermost call, and their users.
+    pub async fn ensure_plugin_call_people(&self, call_id: &str) {
+        let Backend::Mattermost(mm) = self.backend() else { return };
+        let Some(channel) = call_id.strip_prefix(mattermost::translate::PLUGIN_CALL) else { return };
+        let people = mattermost::calls::sessions(&self.rest, channel).await;
+        let users: Vec<String> = people.iter().map(|(_, user)| user.clone()).collect();
+        self.plugin_call_people.lock().unwrap().extend(people);
+        mm.directory.ensure(&self.rest, users).await;
     }
 
     /// A huddle attendee's name, from the Slack user behind its external id.
@@ -2435,6 +2482,9 @@ impl Session {
         let decline =
             self.rings.lock().unwrap().current().filter(|c| c.call_id == call_id).and_then(|c| c.decline.clone());
         self.dismiss_call();
+        if call_id.starts_with(mattermost::translate::PLUGIN_CALL) {
+            return Ok(());
+        }
         match self.backend() {
             Backend::Mattermost(_) => mattermost::actions::decline_conference(&self.rest, call_id).await,
             Backend::Teams(teams) => match decline {
@@ -2576,6 +2626,9 @@ impl Session {
     }
 
     pub async fn join_call(&self, call_id: &str) -> Result<String, RestError> {
+        if call_id.starts_with(mattermost::translate::PLUGIN_CALL) {
+            return Ok(call_id.to_owned());
+        }
         match self.backend() {
             Backend::Mattermost(_) => {
                 return mattermost::actions::answer_conference(&self.rest, call_id).await;
@@ -2594,6 +2647,9 @@ impl Session {
 
     /// The meeting's link to share, without anyone's token.
     pub async fn call_link(&self, call_id: &str) -> Result<String, RestError> {
+        if call_id.starts_with(mattermost::translate::PLUGIN_CALL) {
+            return Err(RestError::incomplete("call: a Mattermost call has no link of its own"));
+        }
         match self.backend() {
             Backend::Mattermost(_) => {
                 return mattermost::actions::answer_conference(&self.rest, call_id)
