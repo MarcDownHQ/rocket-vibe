@@ -639,6 +639,16 @@ impl Chat {
         jitsi_call::start_plugin_call(self.session.clone(), call_id, title).await
     }
 
+    /// Whether the Teams call ringing in this room can be answered natively.
+    pub fn teams_call_answerable(&self, rid: String) -> bool {
+        self.session.teams_call_answerable(&rid)
+    }
+
+    /// Answers the Teams call ringing in this room natively; None to open its page instead.
+    pub async fn answer_teams_call(&self, rid: String, title: String) -> Option<Arc<jitsi_call::JitsiCallSession>> {
+        jitsi_call::answer_teams(self.session.clone(), rid, title).await
+    }
+
     pub async fn start_teams_call(&self, rid: String, title: String) -> Option<Arc<jitsi_call::JitsiCallSession>> {
         jitsi_call::start_teams(self.session.clone(), rid, title).await
     }

@@ -57,6 +57,19 @@ pub(crate) async fn start_plugin_call(
     .await
 }
 
+/// Answers the Teams call ringing in `rid` natively; None to open its page instead.
+pub(crate) async fn answer_teams(session: Arc<Session>, rid: String, title: String) -> Option<Arc<JitsiCallSession>> {
+    if !rv_core::voice::available() || !session.teams_call_answerable(&rid) {
+        return None;
+    }
+    on_tokio(async move {
+        let voice = VoiceController::new();
+        session.place_teams_call(&voice, rv_core::teams_call::Target::Incoming(rid), &title).await.ok()?;
+        Some(Arc::new(JitsiCallSession { voice, naming: None, plugin_call: None, asked: Mutex::default() }))
+    })
+    .await
+}
+
 /// Joins a Slack huddle, starting it when none runs; None to open its page instead.
 pub(crate) async fn start_huddle(
     session: Arc<Session>,
