@@ -37,7 +37,7 @@ public final class ThreadInboxModel {
     @ObservationIgnored private let source: any ThreadInboxSource
     @ObservationIgnored private let refreshDelay: UInt64
     @ObservationIgnored private let pollInterval: UInt64
-    @ObservationIgnored private var pages = 0
+    @ObservationIgnored private var readFurther = false
     @ObservationIgnored private var extraPages: UInt32 = 0
     @ObservationIgnored private var filling = 0
     @ObservationIgnored private var poll: Task<Void, Never>?
@@ -108,7 +108,7 @@ public final class ThreadInboxModel {
     public func reload() async {
         entries = []
         next = nil
-        pages = 0
+        readFurther = false
         extraPages = 0
         phase = .loading
         if await load(cursor: nil) { await fill() }
@@ -118,7 +118,9 @@ public final class ThreadInboxModel {
         guard let next, !loadingMore else { return }
         loadingMore = true
         extraPages = 0
-        if await load(cursor: next) { await fill() }
+        guard await load(cursor: next) else { return }
+        readFurther = true
+        await fill()
     }
 
     public func markAllRead() async {
@@ -135,8 +137,8 @@ public final class ThreadInboxModel {
     }
 
     /// Something changed on the server: a burst of events reads once. A list
-    /// read further than its first page stays as it is: reading it again would
-    /// throw the reader back to the top.
+    /// the reader read further with load more stays as it is: reading it again
+    /// would throw the reader back to the top.
     public func scheduleRefresh() {
         refresh?.cancel()
         let delay = refreshDelay
@@ -144,7 +146,7 @@ public final class ThreadInboxModel {
             try? await Task.sleep(nanoseconds: delay)
             guard !Task.isCancelled, let self else { return }
             await self.refreshTotals()
-            if self.shown, self.pages <= 1 { await self.readAgain() }
+            if self.shown, !self.readFurther { await self.readAgain() }
         }
     }
 
@@ -220,10 +222,9 @@ public final class ThreadInboxModel {
             let fresh = page.entries.filter { seen.insert($0.root).inserted }
             if cursor == nil {
                 entries = fresh
-                pages = 1
+                readFurther = false
             } else {
                 entries += fresh
-                pages += 1
             }
             next = page.next
             settle()

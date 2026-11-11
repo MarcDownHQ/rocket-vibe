@@ -113,6 +113,18 @@ final class ThreadInboxTests: XCTestCase {
         XCTAssertEqual(source.asked.count, asked)
     }
 
+    func testPagesReadByThemselvesStillRefresh() async {
+        let source = FakeSource()
+        source.set(["a"], next: "2")
+        source.set(cursor: "2", ["b"])
+        let inbox = ThreadInboxModel(source: source, refreshDelay: 1_000_000)
+        await inbox.open()
+        XCTAssertEqual(source.asked.map(\.cursor), [nil, "2"], "a short list reads on by itself")
+        source.set(["a", "c"])
+        inbox.scheduleRefresh()
+        await until(inbox.entries.map(\.root) == ["a", "c"], "a refresh reads the list again")
+    }
+
     func testAnAnswerForTheOtherTabIsDropped() async {
         let source = FakeSource()
         source.set(["followed"])
