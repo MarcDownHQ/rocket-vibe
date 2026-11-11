@@ -261,24 +261,34 @@ async fn fetch_roots(sync: &TeamsSync, threads: &[Thread]) {
         let unreachable = sync.unreachable_roots.lock().unwrap();
         ids.into_iter().filter(|id| !stored.contains(id) && !unreachable.contains(id)).collect()
     };
-    let fetched: Vec<(String, Option<crate::normalize::Message>)> = futures_util::stream::iter(missing)
-        .map(|id| async move {
-            let message = sync.fetch_message(&id).await.ok().flatten();
-            (id, message)
-        })
-        .buffer_unordered(ROOT_FETCHES)
-        .collect()
-        .await;
+    let fetched: Vec<(String, Result<Option<crate::normalize::Message>, RestError>)> =
+        futures_util::stream::iter(missing)
+            .map(|id| async move {
+                let message = sync.fetch_message(&id).await;
+                (id, message)
+            })
+            .buffer_unordered(ROOT_FETCHES)
+            .collect()
+            .await;
     let mut unreachable = Vec::new();
     sync.store().write(|w| {
         for (id, message) in &fetched {
             match message {
-                Some(message) => w.upsert_message(message),
-                None => unreachable.push(id.clone()),
+                Ok(Some(message)) => w.upsert_message(message),
+                _ if root_gone(message) => unreachable.push(id.clone()),
+                _ => {}
             }
         }
     });
     sync.unreachable_roots.lock().unwrap().extend(unreachable);
+}
+
+/// The service will not hand this root out: asking again this session is useless.
+fn root_gone<T>(answer: &Result<Option<T>, RestError>) -> bool {
+    match answer {
+        Ok(found) => found.is_none(),
+        Err(e) => (400..500).contains(&e.status) && !matches!(e.status, 401 | 408 | 429),
+    }
 }
 
 /// The root as the feed tells it, when the service would not hand it out.
@@ -531,5 +541,19 @@ mod tests {
         assert_eq!(row.ts, 1762000000000);
         assert_eq!(row.text.as_deref(), Some("sounds good"));
         assert_eq!(row.author.as_deref(), Some("Ada Example"));
+    }
+
+    #[test]
+    fn only_a_root_the_service_refuses_is_given_up_on() {
+        let status = |status: u16| -> Result<Option<()>, RestError> {
+            Err(RestError { status, ..RestError::network("down".to_owned()) })
+        };
+        assert!(root_gone::<()>(&Ok(None)));
+        assert!(!root_gone(&Ok(Some(()))));
+        assert!(root_gone(&status(403)));
+        assert!(root_gone(&status(400)));
+        for transient in [0, 401, 408, 429, 500, 503] {
+            assert!(!root_gone(&status(transient)), "{transient} is asked again");
+        }
     }
 }
