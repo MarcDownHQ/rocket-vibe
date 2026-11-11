@@ -18,7 +18,7 @@ room the frames are end-to-end encrypted under a key from the room's MLS group.
 
 ## Speaking while muted
 
-GTK, SwiftUI and Web show a localized "You're muted. Unmute your microphone to speak."
+GTK, SwiftUI, Web and Android show a localized "You're muted. Unmute your microphone to speak."
 toast after 600 ms of local speech while muted in a connected Vibez call, once per
 speech burst and at most once every 10 seconds. No reminder is sent to the server or
 other participants. Jitsi calls are outside this feature. The desktop sidecar detects
@@ -32,6 +32,15 @@ and stops a permission request that completes after teardown. Capture failure le
 the call muted without repeatedly asking for permission. Android is missing this
 reminder: its LiveKit mute disables microphone capture; a native local-only monitor and
 device qualification remain debt.
+
+Android (2026-11-11): LiveKit stops capturing while the microphone is off, so the voice module
+runs a recorder of its own then (`MutedMonitor` in `modules/voice/.../MutedSpeech.kt`, 16 kHz,
+`VOICE_COMMUNICATION` with the noise suppressor, connected to nothing), only while connected to a
+voice room with the microphone off, not deafened and no screen sound on the track. Speech is above
+-50 dBFS (the sidecar's threshold without its voice detector); `MutedSpeechReminder` is the
+protocol's, ported. The module's `mutedSpeech` event shows the toast (`MutedSpeechHost`, `ui/voice.tsx`).
+Not yet run on a device.
+
 
 ## Server contract
 
