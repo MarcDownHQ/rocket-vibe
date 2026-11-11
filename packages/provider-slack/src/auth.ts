@@ -58,7 +58,7 @@ export async function slackUnread(session: Session, options: SlackLoginOptions =
       for (const raw of Array.isArray(entries) ? entries : []) {
         if (typeof raw !== 'object' || raw === null) continue;
         const entry = raw as Record<string, unknown>;
-        if (Number(entry.mention_count) > 0 || (list === 'ims' && entry.has_unreads === true)) return 'attention';
+        if (Number(entry.mention_count) > 0 || (list !== 'channels' && entry.has_unreads === true)) return 'attention';
         if (entry.has_unreads === true) state = 'unread';
       }
     }

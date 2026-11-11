@@ -36,9 +36,10 @@ test('resume checks the pinned workspace and account', async () => {
 
 test('the server rail reads unread state from client.counts', async () => {
   const session = await loginSlack(TOKEN, COOKIE, null, { fetch: fakeSlack(() => ({ body: AUTH })).fetcher });
-  const counts = (list: 'channels' | 'ims', entry: Record<string, unknown>) => fakeSlack(() => ({ body: { ok: true, channels: [], mpims: [], ims: [], [list]: [{ id: 'X000', ...entry }] } })).fetcher;
+  const counts = (list: 'channels' | 'mpims' | 'ims', entry: Record<string, unknown>) => fakeSlack(() => ({ body: { ok: true, channels: [], mpims: [], ims: [], [list]: [{ id: 'X000', ...entry }] } })).fetcher;
   assert.equal(await slackUnread(session, { fetch: counts('ims', { has_unreads: false, mention_count: 0 }) }), 'none');
   assert.equal(await slackUnread(session, { fetch: counts('channels', { has_unreads: true, mention_count: 0 }) }), 'unread');
   assert.equal(await slackUnread(session, { fetch: counts('ims', { has_unreads: true, mention_count: 0 }) }), 'attention');
+  assert.equal(await slackUnread(session, { fetch: counts('mpims', { has_unreads: true, mention_count: 0 }) }), 'attention');
   assert.equal(await slackUnread(session, { fetch: counts('channels', { has_unreads: true, mention_count: 2 }) }), 'attention');
 });
