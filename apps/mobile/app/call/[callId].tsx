@@ -15,7 +15,7 @@ import { WebView } from 'react-native-webview';
 
 import { callAllowed as teamsCallAllowed } from '@rocket-vibe/provider-teams/translate';
 import type { ExternalCallEngine } from '@rocket-vibe/provider-api/calls';
-import { callContext, callPersonName, joinConference, nativeChime, nativeJitsi, nativeMattermost, placeNative } from '../../lib/call.ts';
+import { answerNative, answerableNative, callContext, callPersonName, joinConference, nativeChime, nativeJitsi, nativeMattermost, placeNative } from '../../lib/call.ts';
 import { sameOrigin, originOf } from '../../lib/origin.ts';
 import { VoiceNative, type VoiceSnapshot } from '../../modules/voice/index.ts';
 import type { RestClient } from '../../lib/rest.ts';
@@ -171,6 +171,11 @@ function Call({
           } else if (alive) setError(t('call.joinFailed'));
           return;
         }
+        if (rid !== undefined && answerableNative(client, rid) && await answeredNatively(rid)) {
+          if (alive) setNative(true);
+          return;
+        }
+        if (!alive) return;
         const external = client.kind === 'slack';
         if (!external) await requestCameraMic();
         const u = await joinConference(client, callId,undefined,{room:rid,membership,alive:()=>alive});
@@ -210,7 +215,7 @@ function Call({
         });
         const engine: ExternalCallEngine = {
           start: async (identity) => {
-            if (!await voice.connectExternal(callId, identity, title)) throw new Error('voice_unavailable');
+            if (!await voice.connectExternal(callId, identity, title, false)) throw new Error('voice_unavailable');
           },
           offer: () => offered,
           answer: (sdp) => voice.remoteAnswer(sdp),
@@ -238,6 +243,33 @@ function Call({
         if (call === null || !alive) return false;
         return await VoiceNative.connectMattermost(callId, call.server, call.token, call.channelId, call.userId, JSON.stringify(call.iceServers), title);
       } catch {
+        return false;
+      }
+    }
+    // A Teams call ringing here, answered on the voice engine; its page otherwise.
+    async function answeredNatively(room: string): Promise<boolean> {
+      const voice = VoiceNative;
+      if (pageOnly || voice === null) return false;
+      try {
+        await requestMicrophone();
+        const engine: ExternalCallEngine = {
+          start: async (identity) => {
+            if (!await voice.connectExternal(callId, identity, title, true)) throw new Error('voice_unavailable');
+          },
+          offer: () => Promise.reject(new Error('answering')),
+          answer: (sdp) => voice.remoteAnswer(sdp),
+          answerOffer: (sdp) => voice.remoteOffer(sdp),
+          roster: (members) => voice.remoteRoster(members),
+          ended: (reason) => voice.remoteEnded(reason),
+          left: () => new Promise((resolve) => {
+            const sub = voice.addListener('change', (next) => {
+              if (next.state === 'disconnected') { sub.remove(); resolve(); }
+            });
+          }),
+        };
+        return await answerNative(client, room, engine);
+      } catch {
+        await voice.disconnect().catch(() => {});
         return false;
       }
     }

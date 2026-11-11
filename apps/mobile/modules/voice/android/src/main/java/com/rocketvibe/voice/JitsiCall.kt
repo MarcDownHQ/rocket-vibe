@@ -124,9 +124,10 @@ internal class JitsiSession(
    * [onLocalOffer] and takes the answer with [remoteAnswer]. Needs no library:
    * nothing here crosses JNI. Called on the main thread.
    */
-  fun startExternal(identity: String) {
+  fun startExternal(identity: String, answering: Boolean) {
     external = true
     localId = identity
+    if (answering) return
     // After the engine set this session's microphone state, which the track reads.
     main.post { if (!closed) localOffer() }
   }
@@ -137,7 +138,7 @@ internal class JitsiSession(
 
   /** Answers an offer from the other side of an external call (a hold, a resume); null when it cannot. */
   fun remoteOffer(sdp: String, done: (String?) -> Unit) {
-    val p = pc ?: return done(null)
+    val p = pc ?: peer() ?: return done(null)
     val failed = object : Sdp() {
       override fun onCreateFailure(error: String?) { super.onCreateFailure(error); main.post { done(null) } }
       override fun onSetFailure(error: String?) { super.onSetFailure(error); main.post { done(null) } }
