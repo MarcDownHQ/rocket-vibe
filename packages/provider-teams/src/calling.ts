@@ -99,9 +99,58 @@ export function webrtcAnswer(sdp: string): string | null {
   return `${[...out, ...audio].join('\r\n')}\r\n`;
 }
 
+const sdpLines = (sdp: string) => sdp.split(/\r?\n/).filter((l) => l !== '');
+
+/** The first audio section's `a=mid`. */
+export function audioMid(sdp: string): string | null {
+  const lines = sdpLines(sdp);
+  const start = lines.findIndex((l) => l.startsWith('m=audio '));
+  if (start < 0) return null;
+  return lines.slice(start).find((l) => l.startsWith('a=mid:'))?.slice('a=mid:'.length) ?? null;
+}
+
+function withMid(sdp: string, mid: string): string {
+  const out = sdpLines(sdp).map((l) => (l.startsWith('a=mid:') ? `a=mid:${mid}` : l.startsWith('a=group:BUNDLE') ? `a=group:BUNDLE ${mid}` : l));
+  return `${out.join('\r\n')}\r\n`;
+}
+
+/** A new offer of Teams' in plain WebRTC, under the `mid` the call already negotiated:
+ *  libwebrtc refuses a later offer whose section has another one. */
+export function renegotiationOffer(sdp: string, sessionMid: string): string | null {
+  const plain = webrtcAnswer(sdp);
+  return plain === null ? null : withMid(plain, sessionMid);
+}
+
+/** A local answer to Teams' `offer`, in Teams' dialect: the offer's sections in its
+ *  order, each but the audio one refused with port 0. */
+export function teamsAnswer(answer: string, offer: string): string {
+  const mid = audioMid(offer);
+  const audio = teamsOffer(mid === null ? answer : withMid(answer, mid));
+  const at = audio.indexOf('m=audio ');
+  const head = at < 0 ? audio : audio.slice(0, at);
+  const body = at < 0 ? '' : audio.slice(at);
+  const sections: string[][] = [];
+  for (const line of sdpLines(offer)) {
+    if (line.startsWith('m=')) sections.push([line]);
+    else sections.at(-1)?.push(line);
+  }
+  let out = head;
+  let placed = false;
+  for (const section of sections) {
+    const line = section[0]!;
+    if (line.startsWith('m=audio ') && !placed) { placed = true; out += body; continue; }
+    const [kind, , ...rest] = line.split(' ');
+    out += `${kind} 0 ${rest.join(' ')}\r\n`;
+    const sectionMid = section.find((l) => l.startsWith('a=mid:'));
+    if (sectionMid !== undefined) out += `${sectionMid}\r\n`;
+  }
+  return out;
+}
+
 export type RosterChange = { mri: string; name: string; present: boolean };
 export type CallPushEvent =
-  | { kind: 'accepted'; sdp: string; acknowledge: string | null }
+  | { kind: 'accepted'; sdp: string; acknowledge: string | null; callLeg: string | null }
+  | { kind: 'negotiation'; sdp: string; answerLink: string; mediaLeg: string | null }
   | { kind: 'ended' }
   | { kind: 'roster'; changes: RosterChange[] }
   | { kind: 'other' };
@@ -124,8 +173,16 @@ export function callPushEvent(envelope: Doc): CallPushEvent {
   const accepted = (body.callAcceptance ?? body.mediaAnswer) as Doc | undefined;
   const blob = (accepted?.mediaContent as Doc | undefined)?.blob;
   if (typeof blob === 'string') {
-    const link = (accepted?.links as Doc | undefined)?.acknowledgement;
-    return { kind: 'accepted', sdp: blob, acknowledge: typeof link === 'string' ? link : null };
+    const links = accepted?.links as Doc | undefined;
+    const text = (v: unknown) => (typeof v === 'string' ? v : null);
+    return { kind: 'accepted', sdp: blob, acknowledge: text(links?.acknowledgement), callLeg: text(links?.callLeg) };
+  }
+  const negotiation = body.mediaNegotiation as Doc | undefined;
+  const offered = (negotiation?.mediaContent as Doc | undefined)?.blob;
+  const answerLink = (negotiation?.links as Doc | undefined)?.mediaAnswer;
+  if (typeof offered === 'string' && typeof answerLink === 'string') {
+    const leg = (negotiation?.mediaContent as Doc | undefined)?.mediaLegId;
+    return { kind: 'negotiation', sdp: offered, answerLink, mediaLeg: typeof leg === 'string' ? leg : null };
   }
   if (typeof envelope.url === 'string' && envelope.url.includes('/rosterUpdate')
     && typeof body.participants === 'object' && body.participants !== null) {
@@ -195,6 +252,27 @@ export function acknowledgeBody(c: Caller): Doc {
   return { callAcceptanceAcknowledgement: { links: Object.fromEntries(names.map((name) => [name, cb(`call/${name}/`)])) } };
 }
 
+/** The call leg's registration, as Teams' web client sends it once accepted. */
+export function registerOnLegBody(c: Caller): Doc {
+  const ack = acknowledgeBody(c);
+  return { ...ack, callParticipantUpdate: ack.callAcceptanceAcknowledgement };
+}
+
+export function endpointMetadataBody(c: Caller): Doc {
+  return { participants: { from: fromOf(c) }, endpointMetadata: { holographicCapabilities: 3 } };
+}
+
+/** `mediaAnswer`'s body answering a renegotiation. */
+export function answerNegotiationBody(answer: string, mediaLeg: string | null): Doc {
+  return { mediaAnswer: { callModalities: ['Audio'], mediaContent: { blob: answer, contentType: 'application/sdp-ngc-1.0', mediaLegId: mediaLeg, escalationOccurring: false, newOffer: false } } };
+}
+
+/** The broker's next long poll: its lease is 30 s, and a call whose lease lapses dies. */
+export function nextSubscription(answer: Doc): string | null {
+  const next = answer.nextSubscribeUrl;
+  return typeof next === 'string' && next.startsWith('https://') ? next : null;
+}
+
 export function leaveBody(c: Caller): Doc {
   return {
     participants: { from: fromOf(c) },
@@ -204,6 +282,10 @@ export function leaveBody(c: Caller): Doc {
 
 type CallDeps = {
   post: (url: string, chain: string, body: Doc) => Promise<Doc>;
+  /** A long poll (the conversation's broker). */
+  poll: (url: string, chain: string) => Promise<Doc>;
+  put: (url: string, chain: string, body: Doc) => Promise<void>;
+  sleep?: (ms: number) => Promise<void>;
   pushes: (listener: (envelope: Doc) => void) => () => void;
   id: () => string;
   me: { mri: string; name: string };
@@ -226,10 +308,28 @@ export async function placeExternalCall(deps: CallDeps, engine: ExternalCallEngi
     unsubscribe();
     throw error;
   }
-  const leaveLink = (created.links as Doc | undefined)?.leave;
+  const links = (created.links ?? {}) as Doc;
+  const leaveLink = links.leave;
   const leave = () => { if (typeof leaveLink === 'string') void deps.post(leaveLink, chain, leaveBody(caller)).catch(() => {}); };
   let done = false;
   let answered = false;
+  let sessionMid: string | null = null;
+  const sleep = deps.sleep ?? ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
+  const holdLease = async (first: string) => {
+    let url = first;
+    let failures = 0;
+    while (!done) {
+      try {
+        url = nextSubscription(await deps.poll(url, chain)) ?? url;
+        failures = 0;
+      } catch {
+        if (++failures > 5) return;
+        await sleep(2000);
+      }
+    }
+  };
+  if (typeof links.subscribe === 'string') void holdLease(links.subscribe);
+  if (typeof links.updateEndpointMetadata === 'string') void deps.put(links.updateEndpointMetadata, chain, endpointMetadataBody(caller)).catch(() => {});
   const finish = (reason: string | null) => {
     if (done) return;
     done = true;
@@ -246,8 +346,17 @@ export async function placeExternalCall(deps: CallDeps, engine: ExternalCallEngi
       const answer = webrtcAnswer(event.sdp);
       if (answer === null) { finish('connect_failed'); leave(); return; }
       answered = true;
+      sessionMid = audioMid(answer);
       void engine.answer(answer);
       if (event.acknowledge !== null) void deps.post(event.acknowledge, chain, acknowledgeBody(caller)).catch(() => {});
+      if (event.callLeg !== null) void deps.post(event.callLeg, chain, registerOnLegBody(caller)).catch(() => {});
+    } else if (event.kind === 'negotiation' && engine.answerOffer !== undefined) {
+      const plain = renegotiationOffer(event.sdp, sessionMid ?? audioMid(event.sdp) ?? '0');
+      if (plain === null) return;
+      void engine.answerOffer(plain).then((local) => {
+        if (local === null || done) return;
+        return deps.post(event.answerLink, chain, answerNegotiationBody(teamsAnswer(local, event.sdp), event.mediaLeg));
+      }).catch(() => {});
     } else if (event.kind === 'roster') {
       for (const change of event.changes) {
         if (change.mri.toLowerCase() === caller.mri.toLowerCase()) continue;

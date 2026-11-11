@@ -73,6 +73,8 @@ export function teamsCalls(client: TeamsClient, rooms: TeamsRooms, tenant: strin
       if (target === null || surl === null) throw new Error('call_not_placeable');
       await placeExternalCall({
         post: (url, chain, body) => client.callingPost(url, chain, socket.id(), body),
+        poll: (url, chain) => client.callingPoll(url, chain, socket.id()),
+        put: (url, chain, body) => client.callingPut(url, chain, socket.id(), body),
         pushes: socket.pushes,
         id: socket.id,
         me: { mri: me, name: socket.name },

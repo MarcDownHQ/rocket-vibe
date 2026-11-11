@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
 
-import { acknowledgeBody, callPushEvent, isCallCallback, placeCallBody, placeExternalCall, teamsOffer, webrtcAnswer, type Caller } from './calling.ts';
+import { acknowledgeBody, audioMid, callPushEvent, isCallCallback, nextSubscription, placeCallBody, placeExternalCall, renegotiationOffer, teamsAnswer, teamsOffer, webrtcAnswer, type Caller } from './calling.ts';
 
 const OFFER = 'v=0\r\no=- 1 2 IN IP4 127.0.0.1\r\ns=-\r\nt=0 0\r\na=group:BUNDLE 0\r\n'
   + 'm=audio 9 UDP/TLS/RTP/SAVPF 111\r\nc=IN IP4 0.0.0.0\r\n'
@@ -45,7 +45,7 @@ describe('Teams calling', () => {
   });
   test('pushes say what happened', () => {
     const accepted = { url: 'https://x/callAgent/e/r/call/acceptance/', body: JSON.stringify({ callAcceptance: { links: { acknowledgement: 'https://cc/ack' }, mediaContent: { blob: 'v=0' } } }) };
-    assert.deepEqual(callPushEvent(accepted), { kind: 'accepted', sdp: 'v=0', acknowledge: 'https://cc/ack' });
+    assert.deepEqual(callPushEvent(accepted), { kind: 'accepted', sdp: 'v=0', acknowledge: 'https://cc/ack', callLeg: null });
     assert.ok(isCallCallback(accepted, 'e'));
     assert.ok(!isCallCallback(accepted, 'other'));
     assert.deepEqual(callPushEvent({ body: { callEnd: { phrase: 'Busy' } } }), { kind: 'ended' });
@@ -80,6 +80,8 @@ describe('Teams calling', () => {
     const deps = {
       post: async (url: string) => { posted.push(url); return url.endsWith('epconv') ? { links: { leave: 'https://conv/leave' } } : {}; },
       pushes: (listener: (envelope: Record<string, unknown>) => void) => { push = listener; return () => { push = () => {}; }; },
+      poll: async () => ({}),
+      put: async () => {},
       id: () => `id${++id}`,
       me: { mri: '8:orgid:me', name: 'Me' },
       surl: 'https://t/',
@@ -111,6 +113,8 @@ describe('Teams calling', () => {
     await placeExternalCall({
       post: async (url) => { posted.push(url); return { links: { leave: 'https://conv/leave' } }; },
       pushes: (listener) => { push = listener; return () => {}; },
+      poll: async () => ({}),
+      put: async () => {},
       id: () => `id${++id}`,
       me: { mri: '8:orgid:me', name: 'Me' },
       surl: 'https://t/',
@@ -121,5 +125,57 @@ describe('Teams calling', () => {
     push({ url: 'https://t/callAgent/id1/id3/call/end/', body: { callEnd: { phrase: 'Busy' } } });
     assert.deepEqual(ended, ['remote_ended']);
     assert.ok(!posted.includes('https://conv/leave'));
+  });
+  test('a new offer keeps the call\'s mid, its answer the offer\'s sections', () => {
+    const offer = 'v=0\r\ns=-\r\nt=0 0\r\na=group:BUNDLE 7 8\r\nm=audio 5 RTP/SAVP 111\r\nc=IN IP4 1.2.3.4\r\na=inactive\r\na=mid:7\r\nm=video 5 RTP/SAVP 34\r\na=mid:8\r\n';
+    const plain = renegotiationOffer(offer, '0')!;
+    assert.equal(audioMid(plain), '0');
+    assert.ok(plain.includes('a=group:BUNDLE 0\r\n') && plain.includes('a=inactive') && !plain.includes('m=video'));
+    const local = 'v=0\r\ns=-\r\nt=0 0\r\na=group:BUNDLE 0\r\nm=audio 9 UDP/TLS/RTP/SAVPF 111\r\nc=IN IP4 0.0.0.0\r\na=inactive\r\na=mid:0\r\n';
+    const answer = teamsAnswer(local, offer);
+    assert.equal(audioMid(answer), '7');
+    assert.ok(answer.includes('a=group:BUNDLE 7\r\n') && answer.includes('m=video 0 ') && answer.includes('a=mid:8'));
+    assert.equal(nextSubscription({ nextSubscribeUrl: 'https://b/next' }), 'https://b/next');
+    assert.equal(nextSubscription({ nextSubscribeUrl: 'http://b/next' }), null);
+  });
+  test('a running call holds its lease, registers its leg and answers a hold', async () => {
+    let push: (envelope: Record<string, unknown>) => void = () => {};
+    const posted: [string, unknown][] = [];
+    const polled: string[] = [];
+    const put: string[] = [];
+    const offered: string[] = [];
+    let id = 0;
+    let leftHere: () => void = () => {};
+    await placeExternalCall({
+      post: async (url, _chain, body) => { posted.push([url, body]); return url.endsWith('epconv') ? { links: { leave: 'https://conv/leave', subscribe: 'https://b/1', updateEndpointMetadata: 'https://conv/meta' } } : {}; },
+      poll: async (url) => { polled.push(url); await new Promise((resolve) => setImmediate(resolve)); return { nextSubscribeUrl: `https://b/${polled.length + 1}` }; },
+      put: async (url) => { put.push(url); },
+      sleep: async () => {},
+      pushes: (listener) => { push = listener; return () => {}; },
+      id: () => `id${++id}`,
+      me: { mri: '8:orgid:me', name: 'Me' },
+      surl: 'https://t/',
+    }, {
+      start: async () => {}, offer: async () => OFFER, answer: async () => {}, roster: async () => {},
+      answerOffer: async (sdp) => { offered.push(sdp); return 'v=0\r\ns=-\r\nt=0 0\r\na=group:BUNDLE 0\r\nm=audio 9 UDP/TLS/RTP/SAVPF 111\r\nc=IN IP4 0.0.0.0\r\na=inactive\r\na=mid:0\r\n'; },
+      ended: async () => {}, left: () => new Promise<void>((resolve) => { leftHere = resolve; }),
+    }, ['8:orgid:x'], null);
+    const url = (path: string) => `https://t/callAgent/id1/id3/${path}`;
+    push({ url: url('call/acceptance/'), body: { callAcceptance: { links: { callLeg: 'https://cc/leg' }, mediaContent: { blob: ANSWER } } } });
+    const hold = ANSWER.replace(/a=mid:0/, 'a=mid:9').replace('a=sendrecv', 'a=inactive');
+    push({ url: url('call/mediaRenegotiation/'), body: { mediaNegotiation: { mediaContent: { blob: hold, mediaLegId: 'leg1' }, links: { mediaAnswer: 'https://cc/answer' } } } });
+    for (let i = 0; i < 5; i++) await new Promise((resolve) => setImmediate(resolve));
+    assert.ok(polled.length >= 2 && polled[1] === 'https://b/2', 'the broker is polled again at the link it gave');
+    assert.deepEqual(put, ['https://conv/meta']);
+    assert.ok(posted.some(([u]) => u === 'https://cc/leg'));
+    assert.equal(audioMid(offered[0]!), '0', 'the engine sees the call\'s own mid');
+    const answered = posted.find(([u]) => u === 'https://cc/answer')?.[1] as { mediaAnswer: { mediaContent: { blob: string; mediaLegId: string } } };
+    assert.equal(answered.mediaAnswer.mediaContent.mediaLegId, 'leg1');
+    assert.equal(audioMid(answered.mediaAnswer.mediaContent.blob), '9', 'Teams sees its own mid back');
+    leftHere();
+    await new Promise((resolve) => setImmediate(resolve));
+    const seen = polled.length;
+    for (let i = 0; i < 5; i++) await new Promise((resolve) => setImmediate(resolve));
+    assert.ok(polled.length <= seen + 1, 'the lease stops with the call');
   });
 });

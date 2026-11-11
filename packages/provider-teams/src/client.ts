@@ -118,15 +118,29 @@ export class TeamsClient {
 
   /** A POST to the calling stack (`epconv`, or a link it gave); its JSON answer. */
   async callingPost(url: string, chain: string, message: string, body: unknown): Promise<Doc> {
+    return this.calling('POST', url, chain, message, body);
+  }
+
+  /** A long poll of the calling stack (the conversation's broker). */
+  async callingPoll(url: string, chain: string, message: string): Promise<Doc> {
+    return this.calling('GET', url, chain, message, undefined, { 'x-usebatching': '1' });
+  }
+
+  async callingPut(url: string, chain: string, message: string, body: unknown): Promise<void> {
+    await this.calling('PUT', url, chain, message, body);
+  }
+
+  private async calling(method: string, url: string, chain: string, message: string, body: unknown, extra: Record<string, string> = {}): Promise<Doc> {
     if (!callingUrl(url)) throw new TeamsError('call_link_invalid');
     const bearer = await this.tokens.calling();
     let response: Response;
     try {
       response = await this.fetcher(url, {
-        method: 'POST',
+        method,
         headers: {
           authorization: `Bearer ${bearer}`,
-          'content-type': 'application/json',
+          ...(body === undefined ? {} : { 'content-type': 'application/json' }),
+          ...extra,
           'x-microsoft-skype-chain-id': chain,
           'x-microsoft-skype-message-id': message,
           'x-microsoft-skype-client': CALL_CLIENT,
@@ -134,7 +148,7 @@ export class TeamsClient {
           origin: 'https://teams.cloud.microsoft',
           referer: 'https://teams.cloud.microsoft/',
         },
-        body: JSON.stringify(body),
+        ...(body === undefined ? {} : { body: JSON.stringify(body) }),
         redirect: 'error',
       });
     } catch {

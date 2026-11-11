@@ -10,6 +10,8 @@ export type ExternalCallEngine={
   /** The local offer, once its candidates are gathered. */
   offer:()=>Promise<string>;
   answer:(sdp:string)=>Promise<void>;
+  /** Answers an offer from the other side (a hold, a resume); null when it cannot. */
+  answerOffer?:(sdp:string)=>Promise<string|null>;
   roster:(members:{id:string;name:string;muted:boolean}[])=>Promise<void>;
   /** The call ended elsewhere, for this reason. */
   ended:(reason:string)=>Promise<void>;
