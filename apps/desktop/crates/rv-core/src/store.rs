@@ -625,6 +625,13 @@ impl Store {
         out
     }
 
+    /// How far the thread was looked at (`thread_seen`); None when never.
+    pub fn thread_seen_at(&self, root: &str) -> Option<i64> {
+        self.read(|c| c.query_row("SELECT seen FROM thread_seen WHERE root = ?1", [root], |r| r.get(0)).optional())
+            .ok()
+            .flatten()
+    }
+
     /// Whether `who` wrote a thread's root or one of its replies.
     pub fn took_part(&self, root: &str, who: &str) -> bool {
         self.read(|c| {
@@ -1547,6 +1554,7 @@ mod tests {
             w.recount_threads("ch");
         });
         assert_eq!(unread(&store), 0, "never followed here");
+        assert_eq!(store.thread_seen_at("ch:1"), None);
         store.write(|w| {
             w.upsert_message(&reply("ch:3", 300));
             w.thread_reply_arrived("ch", "ch:1", 300);
@@ -1554,8 +1562,10 @@ mod tests {
             w.thread_reply_arrived("ch", "ch:1", 400);
         });
         assert_eq!(unread(&store), 2);
+        assert_eq!(store.thread_seen_at("ch:1"), Some(299));
         store.write(|w| w.thread_seen("ch", "ch:1", 400));
         assert_eq!(unread(&store), 0);
+        assert_eq!(store.thread_seen_at("ch:1"), Some(400));
         assert!(!store.took_part("ch:1", "me"));
         assert!(store.took_part("ch:1", "u"));
     }

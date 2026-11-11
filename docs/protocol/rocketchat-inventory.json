@@ -147,6 +147,7 @@
     "apps/desktop/crates/rv-core/src/teams/actions.rs",
     "apps/desktop/crates/rv-core/src/teams/mod.rs",
     "apps/desktop/crates/rv-core/src/teams/sync.rs",
+    "apps/desktop/crates/rv-core/src/teams/threads.rs",
     "apps/desktop/crates/rv-core/src/thread_inbox.rs",
     "apps/desktop/crates/rv-core/src/timeline.rs",
     "apps/desktop/crates/rv-core/src/update.rs",

@@ -54,6 +54,10 @@ pub struct TeamsSync {
     named_stored: AtomicBool,
     /// How far the other members read each room read so far: (MRI, arrival time).
     read_positions: Mutex<HashMap<String, Vec<(String, i64)>>>,
+    /// The activity feed as last read, and when.
+    pub(crate) feed: tokio::sync::Mutex<Option<(std::time::Instant, Arc<Vec<Value>>)>>,
+    /// Thread roots the chat service would not hand out this session.
+    pub(crate) unreachable_roots: Mutex<std::collections::HashSet<String>>,
 }
 
 impl TeamsSync {
@@ -76,6 +80,8 @@ impl TeamsSync {
             keep_online: AtomicBool::new(true),
             named_stored: AtomicBool::new(false),
             read_positions: Mutex::default(),
+            feed: tokio::sync::Mutex::default(),
+            unreachable_roots: Mutex::default(),
         }
     }
 
@@ -171,6 +177,10 @@ impl TeamsSync {
 
     pub fn me(&self) -> &str {
         &self.me
+    }
+
+    pub(crate) fn store(&self) -> &Store {
+        &self.store
     }
 
     /// An image on Teams' object store, with the skype token.
