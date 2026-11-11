@@ -88,6 +88,16 @@ export function useInputLevel(): number {
   return level;
 }
 
+/** Reminds whoever speaks with the microphone off in a voice room that they are muted. */
+export function MutedSpeechHost() {
+  const t = useT();
+  useEffect(() => {
+    const subscription = VoiceNative?.addListener('mutedSpeech', () => notify(t('voice.mutedSpeech')));
+    return () => subscription?.remove();
+  }, [t]);
+  return null;
+}
+
 /** The live snapshot (2 s, server side): who is in each room's voice session. */
 function useLive() {
   const sync = useSync();

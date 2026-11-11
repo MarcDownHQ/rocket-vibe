@@ -88,6 +88,8 @@ type Bridge={
   /** The held call's notification hung up. */
   addListener(event:'hangUp',listener:()=>void):{remove:()=>void};
   addListener(event:'localOffer',listener:(event:{sdp:string})=>void):{remove:()=>void};
+  /** Someone spoke with the microphone off in a voice room (local only, nothing sent). */
+  addListener(event:'mutedSpeech',listener:()=>void):{remove:()=>void};
   /** The microphone's level, 0 to 1, about ten times a second while connected. */
   addListener(event:'level',listener:(event:{level:number})=>void):{remove:()=>void};
 };

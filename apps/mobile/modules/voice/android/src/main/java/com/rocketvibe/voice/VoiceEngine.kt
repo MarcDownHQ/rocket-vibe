@@ -111,12 +111,21 @@ object VoiceEngine {
   }
   fun listen(listener: () -> Unit) { listeners.add(listener) }
   fun unlisten(listener: () -> Unit) { listeners.remove(listener) }
+  private val mutedSpeechListeners = CopyOnWriteArraySet<() -> Unit>()
+  fun listenMutedSpeech(listener: () -> Unit) { mutedSpeechListeners.add(listener) }
+  fun unlistenMutedSpeech(listener: () -> Unit) { mutedSpeechListeners.remove(listener) }
+  private val mainThread = android.os.Handler(android.os.Looper.getMainLooper())
+  private val mutedMonitor = MutedMonitor { mainThread.post { mutedSpeechListeners.forEach { it() } } }
+
   fun listenLevel(listener: (Double) -> Unit) { levelListeners.add(listener) }
   fun unlistenLevel(listener: (Double) -> Unit) { levelListeners.remove(listener) }
   /** Computed on the main thread; any thread may read it. */
   @Volatile var last: Map<String, Any?> = mapOf("state" to "idle", "participants" to emptyList<Any>()); private set
   private fun changed() {
     last = snapshot()
+    // Speaking with the microphone off in a voice room: told, never sent.
+    val watching = room != null && state == "connected" && !microphone && !deafened && screenAudio == null && canRecord()
+    if (watching) mutedMonitor.start() else mutedMonitor.stop()
     listeners.forEach { it() }
     if (roomId != null) VoiceService.refresh(app)
   }
