@@ -27,10 +27,12 @@ import { TeamsDirectory, channelRoom, chatRoom, conversationOf, conversationTopi
 import { CALL_AGENT_COLLECTION, CALL_COLLECTION, TeamsTrouter, endpointId, type CallPush } from './trouter.ts';
 import type { TeamsAnswering } from './calling.ts';
 import { teamsReadReceipts } from './receipts.ts';
+import { TeamsThreadInbox, TeamsThreadMarks } from './threads.ts';
 
 type Doc = Record<string, unknown>;
 
 const PINNED_LOOKBACK = 200;
+const TEAMS_THREAD_POLL_MS = 30_000;
 
 /** A room's pinned messages among its newest `PINNED_LOOKBACK`, newest first:
  *  Teams has no list of them, its web app filters the messages it holds on
@@ -176,6 +178,11 @@ export function createTeamsProvider(session: Session, rest: TokenRejection, gene
   const translator = new TeamsTranslator(directory, session.userId, threads);
   const newest = new Map<string, string>();
   let engine: SyncEngine | null = null;
+  const inbox = new TeamsThreadInbox({
+    source: { feed: () => client.activityFeed(), fetch: (id) => sync.fetch(id) },
+    rooms, threads, directory, me: session.userId,
+    marks: new TeamsThreadMarks(() => engine?.syncStore ?? null),
+  });
   const ingestOne = async (raw: Doc) => {
     const rid = str(raw, '__rid') ?? conversationOf(raw);
     const id = str(raw, 'id');
@@ -195,7 +202,10 @@ export function createTeamsProvider(session: Session, rest: TokenRejection, gene
     const events: DdpEvent[] = [{ collection: TEAMS_EVENTS, eventKey: name, args: [{ ...resource, __rid: rid }] }];
     const id = str(resource, 'id');
     const post = id === null ? null : rootOf(resource, id);
-    if (post !== null) events.push({ collection: TEAMS_EVENTS, eventKey: THREAD_COUNTERS, args: [{ id: `${rid}/${post}` }] });
+    if (post !== null) {
+      events.push({ collection: TEAMS_EVENTS, eventKey: THREAD_COUNTERS, args: [{ id: `${rid}/${post}` }] });
+      inbox.changed();
+    }
     if (name === 'NewMessage' && !rooms.isPreview(rid, resource)) {
       await ingestOne({ ...resource, __rid: rid });
       if (!rooms.entries.has(rid)) await sync.adopt(rid, resource);
@@ -321,6 +331,12 @@ export function createTeamsProvider(session: Session, rest: TokenRejection, gene
       roomNotes: (rid) => teamsNotes(client, directory, rid),
       saveRoomNotes: (rid, markdown, revision) => saveTeamsNotes(client, directory, session.userId, rid, markdown, revision),
       listStarred: async (): Promise<LocalMessage[]> => [],
+      threadInbox: (filter, cursor) => inbox.page(filter, cursor),
+      threadTotals: () => inbox.totals(),
+      markThreadRead: (rid, root, lastReply) => inbox.markRead(rid, root, lastReply),
+      markAllThreadsRead: () => inbox.markAllRead(),
+      onThreadsChanged: (listener) => inbox.onChanged(listener),
+      threadPollMs: TEAMS_THREAD_POLL_MS,
       markRead: async (rid) => {
         const marked = await actionsFor(ingestLive).markRead(rid, newest.get(rid) ?? null, rooms.lastId(rid));
         const entry = marked === null ? null : rooms.readUpTo(rid, marked);
