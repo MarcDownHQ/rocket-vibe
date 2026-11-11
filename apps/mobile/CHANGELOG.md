@@ -20,6 +20,7 @@ release, and its notes are that version's section here.
 - Threads view: filter chips (All, Participated, Mentioned, Others) in the Followed and Unread tabs; a thread in a direct conversation counts as participated
 - Slack (experimental): the Threads view reads Slack's own, with mark as read and following a thread; it refreshes on thread activity, on coming back to the app and every 30 seconds while on screen
 - Vibez: the Threads view and following a thread, on a server that announces them
+- Teams (experimental): the Threads view lists the channel threads from your Teams activity (replies to you, replies in threads you took part in, mentions), about three weeks back. Unread and "Mark all as read" are kept on the phone; Teams itself is not told.
 - Slack (experimental): a huddle runs inside the app, audio only (who is there, who speaks, mute, deafen, hang up); the browser stays the fallback when the join fails.
 - Notes: the editor has a formatting row (bold, italic, strikethrough, heading, link, code, quote, lists), and going back keeps an unsaved edit for when you reopen the notes. Slack canvases offer the block formats only, since they keep no inline formatting.
 - Server rail: a server can be disabled with a long press on its tile: it stays on the rail, greyed and after the others, keeps its session and is no longer read in the background, until enabled again without signing in.
