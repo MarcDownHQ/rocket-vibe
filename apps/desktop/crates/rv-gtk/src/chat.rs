@@ -1106,6 +1106,22 @@ impl ChatPage {
                 this.voice_call();
                 return;
             }
+            if let Some(session) = this.whatsapp_session() {
+                let (Some(chat), room) = (this.current_rid(), this.current_name()) else { return };
+                let target = rv_core::whatsapp_session::WaTarget::Outgoing(chat);
+                let back = Rc::downgrade(&this);
+                crate::native_call::open(
+                    crate::native_call::Call::WhatsApp(session, target),
+                    &room,
+                    crate::native_call::Names::none(),
+                    move || {
+                        if let Some(this) = back.upgrade() {
+                            this.toast(t("call.failed").to_owned());
+                        }
+                    },
+                );
+                return;
+            }
             let (Some(session), Some(rid)) = (this.session(), this.current_rid()) else { return };
             let room = this.current_name();
             let weak = Rc::downgrade(&this);

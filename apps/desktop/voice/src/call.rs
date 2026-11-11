@@ -76,25 +76,7 @@ where
     let (mut sound, input, output) = audio::Audio::start(mix.clone(), fake, "", "");
     report((input, output));
     let (mut factory, mut microphone) = media(&sound);
-    let mut call = Call {
-        mix,
-        pc: None,
-        ice: Vec::new(),
-        roster: Vec::new(),
-        heard: HashMap::new(),
-        levels: HashMap::new(),
-        channel: None,
-        offering: None,
-        answering: None,
-        gathered: Vec::new(),
-        relay_only: false,
-        stream: None,
-        microphone: true,
-        deafened: false,
-        connected: false,
-        input_level: 0.0,
-        last: None,
-    };
+    let mut call = Call::new(mix);
     let mut tries = 0;
     let reason = loop {
         let stop = joined(&mut session, &mut factory, &mut microphone, &mut sound, &mut call, commands).await;
@@ -590,6 +572,28 @@ struct Call {
 }
 
 impl Call {
+    fn new(mix: std::sync::Arc<audio::Mix>) -> Self {
+        Call {
+            mix,
+            pc: None,
+            ice: Vec::new(),
+            roster: Vec::new(),
+            heard: HashMap::new(),
+            levels: HashMap::new(),
+            channel: None,
+            offering: None,
+            answering: None,
+            gathered: Vec::new(),
+            relay_only: false,
+            stream: None,
+            microphone: true,
+            deafened: false,
+            connected: false,
+            input_level: 0.0,
+            last: None,
+        }
+    }
+
     /// Forgets one session's media: its peer connection, the tracks heard, the roster.
     fn reset(&mut self) {
         self.drop_media();
@@ -733,5 +737,156 @@ mod tests {
         for _ in 0..1000 {
             assert!(next(&mut session).await.is_none());
         }
+    }
+}
+
+/// A call carried as raw PCM by another process (`Command::ConnectPcm`, a WhatsApp
+/// call): 16 kHz mono in 60 ms frames over TCP, resampled from and to this side's
+/// 48 kHz processing, so the echo canceller, the noise remover, the devices and who
+/// speaks all work as in any call. It ends when the app says so, or the socket closes.
+pub async fn run_pcm(address: String, fake: bool, commands: &mut mpsc::UnboundedReceiver<Result<Command, ()>>) {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    emit(Event::State { state: State::Connecting });
+    let Some((host, token)) = address.split_once('#') else {
+        emit(Event::State { state: State::Disconnected });
+        emit(Event::Disconnected { reason: "connect_failed".into() });
+        return;
+    };
+    let socket = match tokio::net::TcpStream::connect(host).await {
+        Ok(socket) => socket,
+        Err(e) => {
+            diagnose(&format!("call: audio socket: {e}"));
+            emit(Event::State { state: State::Disconnected });
+            emit(Event::Disconnected { reason: "connect_failed".into() });
+            return;
+        }
+    };
+    let _ = socket.set_nodelay(true);
+    let (mut read, mut write) = socket.into_split();
+    if write.write_all(format!("{token}\n").as_bytes()).await.is_err() {
+        emit(Event::State { state: State::Disconnected });
+        emit(Event::Disconnected { reason: "connect_failed".into() });
+        return;
+    }
+    let mix = audio::Mix::new();
+    let (mut sound, input, output) = audio::Audio::start(mix.clone(), fake, "", "");
+    report((input, output));
+    let (_factory, microphone) = media(&sound);
+    let mut call = Call::new(mix.clone());
+    call.apply(&microphone);
+    let (tap, mut tapped) = mpsc::unbounded_channel::<Vec<i16>>();
+    mix.set_tap(Some(tap));
+    // The far side's frames, played 10 ms at a time on this side's clock.
+    let (heard_tx, mut heard) = mpsc::unbounded_channel::<Vec<i16>>();
+    let reader = tokio::spawn(async move {
+        let mut bytes = vec![0u8; PCM_FRAME * 2];
+        while read.read_exact(&mut bytes).await.is_ok() {
+            let frame: Vec<i16> = bytes.as_chunks::<2>().0.iter().map(|b| i16::from_le_bytes(*b)).collect();
+            if heard_tx.send(frame).is_err() {
+                return;
+            }
+        }
+    });
+    call.connected = true;
+    emit(Event::State { state: State::Connected });
+    let mut queue: std::collections::VecDeque<Vec<i16>> = std::collections::VecDeque::new();
+    let mut playing = false;
+    let mut captured: Vec<i16> = Vec::with_capacity(PCM_FRAME);
+    let mut send = tokio::time::interval(Duration::from_millis(60));
+    let mut play = tokio::time::interval(Duration::from_millis(10));
+    let mut activity = tokio::time::interval(Duration::from_millis(100));
+    for tick in [&mut send, &mut play, &mut activity] {
+        tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    }
+    let peer = |call: &Call| call.roster.first().map(|m| m.id.clone()).unwrap_or_else(|| "peer".to_owned());
+    let reason = loop {
+        tokio::select! {
+            command = commands.recv() => match command {
+                None | Some(Ok(Command::Disconnect)) => break "client_initiated".to_owned(),
+                Some(Ok(Command::RemoteEnded { reason })) => break reason,
+                Some(Ok(Command::RemoteRoster { members })) => {
+                    call.roster = members.into_iter().map(|m| CallMember { id: m.id, name: m.name, muted: m.muted }).collect();
+                    call.publish("me");
+                }
+                Some(command) => local(command, &mut call, &microphone, &mut sound),
+            },
+            frame = heard.recv() => {
+                let Some(frame) = frame else { break "remote_ended".to_owned() };
+                queue.extend(upsampled(&frame));
+                if queue.len() > PCM_BACKLOG {
+                    queue.drain(..queue.len() - PCM_PRIME);
+                }
+            }
+            Some(frame) = tapped.recv() => captured.extend(decimated(&frame)),
+            _ = send.tick() => {
+                // Silence while muted: the library wants a frame every 60 ms.
+                captured.resize(captured.len().max(PCM_FRAME), 0);
+                let frame: Vec<i16> = captured.drain(..PCM_FRAME).collect();
+                if captured.len() > PCM_FRAME * 2 {
+                    captured.clear();
+                }
+                let bytes: Vec<u8> = frame.iter().flat_map(|s| s.to_le_bytes()).collect();
+                if write.write_all(&bytes).await.is_err() {
+                    break "remote_ended".to_owned();
+                }
+            }
+            _ = play.tick() => {
+                if !playing && queue.len() >= PCM_PRIME {
+                    playing = true;
+                }
+                if playing {
+                    match queue.pop_front() {
+                        Some(frame) => mix.play(&peer(&call), &frame),
+                        None => playing = false,
+                    }
+                }
+            }
+            _ = activity.tick() => call.tick("me"),
+        }
+    };
+    reader.abort();
+    mix.set_tap(None);
+    drop(sound);
+    diagnose(&format!("call: ended ({reason})"));
+    emit(Event::State { state: State::Disconnected });
+    emit(Event::Disconnected { reason });
+}
+
+/// A frame of a call carried as raw PCM: 60 ms at 16 kHz.
+const PCM_FRAME: usize = 960;
+/// 10 ms frames of the far side to hold before playing, and at most.
+const PCM_PRIME: usize = 8;
+const PCM_BACKLOG: usize = 30;
+
+/// 10 ms of this side's 48 kHz mono as 16 kHz: each three samples averaged.
+fn decimated(frame: &[i16]) -> Vec<i16> {
+    frame.chunks(3).map(|c| (c.iter().map(|&s| s as i32).sum::<i32>() / c.len() as i32) as i16).collect()
+}
+
+/// 60 ms of the far side's 16 kHz mono as six 10 ms frames of 48 kHz stereo.
+fn upsampled(frame: &[i16]) -> Vec<Vec<i16>> {
+    let mut mono = Vec::with_capacity(frame.len() * 3);
+    for (i, &s) in frame.iter().enumerate() {
+        let next = frame.get(i + 1).copied().unwrap_or(s) as i32;
+        let s = s as i32;
+        mono.extend([s, s + (next - s) / 3, s + 2 * (next - s) / 3].map(|v| v as i16));
+    }
+    mono.chunks(480).map(|c| c.iter().flat_map(|&s| [s, s]).collect()).collect()
+}
+
+#[cfg(test)]
+mod pcm_tests {
+    use super::*;
+
+    #[test]
+    fn the_rates_meet_in_frames_of_the_right_size() {
+        let ten_ms = vec![300i16; 480];
+        assert_eq!(decimated(&ten_ms).len(), 160);
+        assert!(decimated(&ten_ms).iter().all(|&s| s == 300));
+        let sixty_ms: Vec<i16> = (0..960).map(|i| (i % 100) as i16).collect();
+        let frames = upsampled(&sixty_ms);
+        assert_eq!(frames.len(), 6);
+        assert!(frames.iter().all(|f| f.len() == 960), "10 ms of stereo each");
+        assert_eq!((frames[0][0], frames[0][1]), (0, 0), "the same sample on both channels");
     }
 }

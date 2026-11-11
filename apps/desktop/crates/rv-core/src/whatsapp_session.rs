@@ -28,6 +28,15 @@ pub type KeySource =
 const NOTIFY_WINDOW_MS: i64 = 120_000;
 const RESTART_MAX: Duration = Duration::from_secs(60);
 
+/// A WhatsApp call to carry.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum WaTarget {
+    /// The call ringing here, by id.
+    Incoming(String),
+    /// A person to call, by JID.
+    Outgoing(String),
+}
+
 /// What the account tells beyond its revisions.
 #[derive(Debug, Clone)]
 pub enum Notice {
@@ -320,6 +329,110 @@ impl WaSession {
             local.available = available;
         }
     }
+    /// Carries a WhatsApp call on `voice`, audio only: answers the call ringing
+    /// as `call` (`Incoming`) or calls a person (`Outgoing`), then runs it until it
+    /// ends or the voice session is left. `Ok` once the engine opened its audio.
+    pub async fn carry_call(
+        self: &Arc<Self>,
+        voice: &crate::voice::VoiceController,
+        call: WaTarget,
+        label: &str,
+    ) -> Result<(), String> {
+        let connector =
+            self.connector().filter(|c| c.state() == "connected").ok_or_else(|| "not_connected".to_owned())?;
+        let mut frames = connector.call_frames();
+        let (mut id, peer) = match &call {
+            WaTarget::Incoming(id) => {
+                let from = connector.snapshot().calls.get(id).map(|c| c.from.clone()).unwrap_or_default();
+                connector.accept_call(id.clone())?;
+                (id.clone(), from)
+            }
+            WaTarget::Outgoing(chat) => {
+                let asked = format!("rv-{}", crate::teams::calling::random_id());
+                connector.place_call(asked.clone(), chat.clone())?;
+                (asked, chat.clone())
+            }
+        };
+        let address = tokio::time::timeout(Duration::from_secs(30), async {
+            loop {
+                let frame = frames.recv().await.map_err(|_| "engine_gone".to_owned())?;
+                if frame.id != id {
+                    continue;
+                }
+                match frame.state.as_str() {
+                    "placed" => id = frame.audio.clone(),
+                    "connecting" => return Ok(frame.audio.clone()),
+                    "ended" => {
+                        return Err(if frame.reason.is_empty() { "ended".to_owned() } else { frame.reason.clone() });
+                    }
+                    _ => {}
+                }
+            }
+        })
+        .await
+        .map_err(|_| "no_answer".to_owned())??;
+        if let Err(e) = voice.connect_pcm(label, &address).await {
+            let _ = connector.hangup_call(id.clone());
+            return Err(format!("{e}"));
+        }
+        let name = self.chat_name(&peer);
+        if matches!(call, WaTarget::Incoming(_)) {
+            voice
+                .remote_roster(vec![rv_voice_protocol::RemoteMember {
+                    id: peer.clone(),
+                    name: name.clone(),
+                    muted: false,
+                }])
+                .await;
+        }
+        let voice = voice.clone();
+        tokio::spawn(async move {
+            let mut changes = voice.changes();
+            let mut muted = !voice.snapshot().microphone;
+            loop {
+                tokio::select! {
+                    frame = frames.recv() => {
+                        let frame = match frame {
+                            Ok(frame) => frame,
+                            Err(broadcast::error::RecvError::Lagged(_)) => continue,
+                            Err(broadcast::error::RecvError::Closed) => {
+                                voice.remote_ended("connection_lost").await;
+                                return;
+                            }
+                        };
+                        if frame.id != id {
+                            continue;
+                        }
+                        match frame.state.as_str() {
+                            "active" => {
+                                let member = rv_voice_protocol::RemoteMember { id: peer.clone(), name: name.clone(), muted: false };
+                                voice.remote_roster(vec![member]).await;
+                            }
+                            "ended" => {
+                                voice.remote_ended("remote_ended").await;
+                                return;
+                            }
+                            _ => {}
+                        }
+                    }
+                    change = changes.recv() => {
+                        let snapshot = voice.snapshot();
+                        if change.is_err() || snapshot.ended.is_some() {
+                            let _ = connector.hangup_call(id.clone());
+                            return;
+                        }
+                        let now = !snapshot.microphone;
+                        if now != muted {
+                            muted = now;
+                            let _ = connector.mute_call(id.clone(), muted);
+                        }
+                    }
+                }
+            }
+        });
+        Ok(())
+    }
+
     /// Declines a call ringing here.
     pub fn reject_call(&self, id: &str) {
         if let Some(connector) = self.connector() {

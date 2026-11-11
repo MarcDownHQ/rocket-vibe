@@ -73,6 +73,9 @@ class VoiceModule : Module() {
     AsyncFunction("connectExternal") { callId: String, identity: String, title: String, answering: Boolean ->
       VoiceEngine.connectExternal(callId, identity, title, answering)
     }.runOnQueue(Queues.MAIN)
+    AsyncFunction("connectPcm") { callId: String, address: String, title: String ->
+      VoiceEngine.connectPcm(callId, address, title)
+    }.runOnQueue(Queues.MAIN)
     AsyncFunction("remoteAnswer") { sdp: String -> VoiceEngine.remoteAnswer(sdp) }.runOnQueue(Queues.MAIN)
     AsyncFunction("remoteOffer") { sdp: String, promise: Promise -> VoiceEngine.remoteOffer(sdp) { answer -> promise.resolve(answer) } }.runOnQueue(Queues.MAIN)
     AsyncFunction("remoteRoster") { members: List<Map<String, Any?>> ->

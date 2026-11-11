@@ -140,8 +140,15 @@ pub struct Call {
     pub group: String,
     #[serde(skip_serializing_if = "is_false")]
     pub video: bool,
-    /// ringing or ended.
+    /// ringing, then (carried here) placed, connecting, active; ended.
     pub state: String,
+    /// Where the app carries its audio (`connecting`): `127.0.0.1:<port>#<token>`;
+    /// for `placed`, the call's real id.
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub audio: String,
+    /// Why it ended, when this engine knows.
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub reason: String,
 }
 
 /// A frame to the client.

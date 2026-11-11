@@ -171,7 +171,10 @@ impl ChatPage {
             dm_other_uid: None,
         }));
         self.typing_label.set_visible(false);
-        self.call_button.set_visible(false);
+        // A person's chat can be called, audio only; a group's not yet.
+        self.call_button.set_icon_name("call-start-symbolic");
+        self.call_button.set_tooltip_text(Some(t("room.call")));
+        self.call_button.set_visible(rv_core::voice::available() && !room.rid.ends_with("@g.us"));
         self.threads_button.set_visible(false);
         self.upload_strip.set_visible(false);
         self.list.set_unread_after(None);

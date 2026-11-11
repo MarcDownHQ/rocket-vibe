@@ -214,6 +214,8 @@ pub struct Mix {
     input_delay: AtomicU32,
     /// A device stream failed (unplugged): the main loop reopens the default.
     pub broken: AtomicBool,
+    /// A copy of each microphone frame the room hears, for a call carried as raw PCM.
+    tap: Mutex<Option<mpsc::UnboundedSender<Vec<i16>>>>,
     /// Diagnostics (`RV_VOICE_DEBUG=1`).
     pub stats: Stats,
 }
@@ -279,8 +281,19 @@ impl Mix {
             output_delay: AtomicU32::new(20),
             input_delay: AtomicU32::new(20),
             broken: AtomicBool::new(false),
+            tap: Mutex::new(None),
             stats: Stats::default(),
         })
+    }
+
+    /// Where each microphone frame the room hears is copied, or nowhere.
+    pub fn set_tap(&self, tap: Option<mpsc::UnboundedSender<Vec<i16>>>) {
+        *lock(&self.tap) = tap;
+    }
+
+    /// One remote 10 ms frame (48 kHz stereo i16) to play, for a call carried as raw PCM.
+    pub fn play(&self, identity: &str, samples: &[i16]) {
+        self.receive(identity, identity, true, samples, true);
     }
 
     pub fn set_sending(&self, on: bool) {
@@ -578,6 +591,9 @@ impl Audio {
             while let Some(mut samples) = received.recv().await {
                 if let Some(newer) = shed(&mut received, &stats.stats) {
                     samples = newer;
+                }
+                if let Some(tap) = lock(&stats.tap).as_ref() {
+                    let _ = tap.send(samples.clone());
                 }
                 let frame = AudioFrame {
                     data: samples.into(),

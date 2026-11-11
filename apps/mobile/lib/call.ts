@@ -26,7 +26,7 @@
 import type { CallCheck } from './callRing.ts';
 import { RestError, isTokenRejected } from './rest.ts';
 import type { RestClient } from './rest.ts';
-import type { CallScope, ChimeCredentials, ExternalCallEngine, MattermostCallCredentials, NativeCalls } from '@rocket-vibe/provider-api/calls';
+import type { CallScope, ChimeCredentials, ExternalCallEngine, MattermostCallCredentials, NativeCalls, PcmCallEngine } from '@rocket-vibe/provider-api/calls';
 export type { CallScope, MattermostCallCredentials, NativeCalls } from '@rocket-vibe/provider-api/calls';
 
 type Binding={key:string;calls:NativeCalls|null};
@@ -130,6 +130,19 @@ export function nativeJitsi(kind: string, url: string): { meeting: string; token
 export async function nativeChime(client: RestClient, callId: string): Promise<ChimeCredentials | null> {
   const chime = bindings.get(client)?.calls?.chime;
   return chime === undefined ? null : chime(callId);
+}
+
+/** Carries this call with its audio on the voice engine as raw PCM (WhatsApp): false when its provider cannot. */
+export async function carryNative(client: RestClient, callId: string, engine: PcmCallEngine): Promise<boolean> {
+  const carry = bindings.get(client)?.calls?.carryPcm;
+  if (carry === undefined) return false;
+  await carry(callId, engine);
+  return true;
+}
+
+/** Whether this account's calls are carried as raw PCM (WhatsApp). */
+export function carriesPcm(client: RestClient): boolean {
+  return bindings.get(client)?.calls?.carryPcm !== undefined;
 }
 
 /** What the voice engine needs to join a Mattermost Calls plugin call itself; `null` for any other call. */

@@ -118,6 +118,14 @@ pub enum Command {
         #[serde(default)]
         ice_servers: Vec<IceServerSpec>,
     },
+    /// A call whose audio another process carries (a WhatsApp call, in the app's
+    /// WhatsApp engine): its 16 kHz mono PCM, 60 ms frames of 960 little-endian
+    /// i16, both ways over TCP at `address` (`host:port#token`, the token sent
+    /// first as a line). Who is in it comes with `RemoteRoster`, its end with
+    /// `RemoteEnded`. Audio only.
+    ConnectPcm {
+        address: String,
+    },
     /// The room's group reached a new epoch: frames from now on use its key.
     SetKey {
         key: String,
@@ -220,6 +228,7 @@ impl std::fmt::Debug for Command {
                 .field("server", server)
                 .field("channel_id", channel_id)
                 .finish_non_exhaustive(),
+            Self::ConnectPcm { .. } => f.write_str("ConnectPcm"),
             Self::SetKey { .. } => f.write_str("SetKey"),
             Self::SetMicrophone { enabled } => f.debug_struct("SetMicrophone").field("enabled", enabled).finish(),
             Self::SetDeafened { deafened } => f.debug_struct("SetDeafened").field("deafened", deafened).finish(),

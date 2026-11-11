@@ -12,7 +12,7 @@ use serde::Deserialize;
 use serde_json::json;
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::process::Command;
-use tokio::sync::{mpsc, oneshot, watch};
+use tokio::sync::{broadcast, mpsc, oneshot, watch};
 use zeroize::Zeroize;
 
 use crate::store::MessageRow;
@@ -110,7 +110,15 @@ pub struct WaCall {
     pub group: String,
     #[serde(default)]
     pub video: bool,
+    /// ringing; for a call carried here placed, connecting, active; ended.
     pub state: String,
+    /// `connecting`: where the call's audio is carried (`host:port#token`);
+    /// `placed`: the call's real id.
+    #[serde(default)]
+    pub audio: String,
+    /// Why it ended, when the engine knows.
+    #[serde(default)]
+    pub reason: String,
 }
 /// A "typing" WhatsApp does not end itself fades after this.
 const TYPING_FADE: Duration = Duration::from_secs(12);
@@ -489,6 +497,7 @@ enum Request {
     Upload(Box<Upload>),
     Typing { chat: String, composing: bool },
     RejectCall { id: String },
+    Call { kind: &'static str, id: String, chat: String, text: String },
     PairPhone { number: String },
     Presence { available: bool },
     Connect,
@@ -504,6 +513,8 @@ pub struct Connector {
     searches: Mutex<HashMap<String, oneshot::Sender<Vec<Person>>>>,
     /// Downloads waiting for their file, by message id; one request serves them all.
     downloads: Mutex<HashMap<String, Vec<oneshot::Sender<String>>>>,
+    /// Every call frame, for a call carried here.
+    calls: broadcast::Sender<WaCall>,
 }
 fn failure() -> String {
     "connector_unavailable".into()
@@ -778,6 +789,7 @@ impl Connector {
             revisions: watch::Sender::new(0),
             searches: Mutex::default(),
             downloads: Mutex::default(),
+            calls: broadcast::channel(32).0,
         });
         tokio::spawn(worker(Arc::downgrade(&connector), lines, receiver));
         Ok(connector)
@@ -844,6 +856,25 @@ impl Connector {
     /// Declines a call ringing here, for all my devices.
     pub fn reject_call(&self, id: String) -> Result<(), String> {
         self.request(Request::RejectCall { id })
+    }
+    /// The frames of the calls, from now on.
+    pub fn call_frames(&self) -> broadcast::Receiver<WaCall> {
+        self.calls.subscribe()
+    }
+    /// Answers the call ringing here: the engine carries it, its audio at the `connecting` frame's address.
+    pub fn accept_call(&self, id: String) -> Result<(), String> {
+        self.request(Request::Call { kind: "accept_call", id, chat: String::new(), text: String::new() })
+    }
+    /// Calls `chat` (a person), `id` naming the request until `placed` names the call.
+    pub fn place_call(&self, id: String, chat: String) -> Result<(), String> {
+        self.request(Request::Call { kind: "place_call", id, chat, text: String::new() })
+    }
+    pub fn hangup_call(&self, id: String) -> Result<(), String> {
+        self.request(Request::Call { kind: "hangup_call", id, chat: String::new(), text: String::new() })
+    }
+    pub fn mute_call(&self, id: String, muted: bool) -> Result<(), String> {
+        let text = if muted { "on" } else { "off" }.to_owned();
+        self.request(Request::Call { kind: "mute_call", id, chat: String::new(), text })
     }
     /// Tells a chat I am typing, or stopped.
     pub fn set_typing(&self, chat: String, composing: bool) -> Result<(), String> {
@@ -941,6 +972,9 @@ async fn worker(weak: Weak<Connector>, lines: Lines, mut receiver: mpsc::Receive
                         }
                         continue;
                     }
+                    if let Event::Call { call } = &event {
+                        let _ = connector.calls.send(call.clone());
+                    }
                     let revision = {
                         let mut snapshot = connector.snapshot.lock().unwrap_or_else(|p| p.into_inner());
                         snapshot.apply(event);
@@ -961,6 +995,7 @@ async fn worker(weak: Weak<Connector>, lines: Lines, mut receiver: mpsc::Receive
                     Request::Search { id, text } => json!({"type":"search","id":id,"text":text}),
                     Request::Download { id } => json!({"type":"download","id":id}),
                     Request::RejectCall { id } => json!({"type":"reject_call","id":id}),
+                    Request::Call { kind, id, chat, text } => json!({"type":kind,"id":id,"chat":chat,"text":text}),
                     Request::PairPhone { number } => json!({"type":"pair_phone","text":number}),
                     Request::Typing { chat, composing } => {
                         json!({"type":"typing","chat":chat,"text":if composing { "composing" } else { "paused" }})

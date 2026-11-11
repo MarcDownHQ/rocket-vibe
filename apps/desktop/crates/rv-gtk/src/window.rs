@@ -40,8 +40,9 @@ enum LoginOutcome {
 enum Answer {
     Call(Arc<Session>, String),
     Voice(Arc<rv_core::native::NativeSession>, String),
-    /// A WhatsApp call: declined here, or answered on the phone.
-    WhatsApp(Arc<rv_core::whatsapp_session::WaSession>),
+    /// A WhatsApp call: declined here, answered here when it is a 1:1 audio
+    /// call (its name for the window), else on the phone.
+    WhatsApp(Arc<rv_core::whatsapp_session::WaSession>, Option<String>),
 }
 
 struct BackgroundRing {
@@ -2062,8 +2063,8 @@ impl AppWindow {
             "voice_session.incoming_on",
             &[("name", caller), ("server", &supervisor::server_label(info))],
         ));
-        // A WhatsApp call cannot be answered here: on the phone.
-        if matches!(answer, Answer::WhatsApp(_)) {
+        // A WhatsApp call this app cannot carry (video, group) is answered on the phone.
+        if matches!(answer, Answer::WhatsApp(_, None)) {
             dialog.set_response_label("accept", t("wa.call_on_phone"));
         }
         let (weak, ring, account) = (Rc::downgrade(self), id.clone(), info.clone());
@@ -2099,8 +2100,18 @@ impl AppWindow {
                     runtime().spawn(async move { session.decline_ring(&id).await });
                 }
                 (Answer::Voice(..), _) => {}
-                (Answer::WhatsApp(session), "decline") => session.reject_call(&ring),
-                (Answer::WhatsApp(_), _) => {}
+                (Answer::WhatsApp(session, _), "decline") => session.reject_call(&ring),
+                (Answer::WhatsApp(session, Some(name)), "accept") => {
+                    let target = rv_core::whatsapp_session::WaTarget::Incoming(ring.clone());
+                    let call = crate::native_call::Call::WhatsApp(session.clone(), target);
+                    let back = Rc::downgrade(&this);
+                    crate::native_call::open(call, name, crate::native_call::Names::none(), move || {
+                        if let Some(this) = back.upgrade() {
+                            this.chat.toast(t("wa.call_on_phone").to_owned());
+                        }
+                    });
+                }
+                (Answer::WhatsApp(..), _) => {}
             }
         });
         if !self.window.is_visible() {
@@ -2139,7 +2150,8 @@ impl AppWindow {
                     let Some(this) = weak.upgrade() else { break };
                     match notice {
                         Notice::Ring(call, name) => {
-                            let answer = Answer::WhatsApp(session.clone());
+                            let carried = rv_core::voice::available() && !call.video && call.group.is_empty();
+                            let answer = Answer::WhatsApp(session.clone(), carried.then(|| name.clone()));
                             this.ring_background(&info, call.id, &call.from, &name, answer, false);
                         }
                         Notice::RingEnded(id) if this.background_ring.borrow().as_ref().is_some_and(|r| r.id == id) => {

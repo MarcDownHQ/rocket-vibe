@@ -594,6 +594,14 @@ impl VoiceController {
         self.command(Command::RemoteAnswer { sdp: sdp.to_owned() }).await;
     }
 
+    /// Starts a call whose audio another process carries as raw PCM (a WhatsApp
+    /// call, the engine's socket at `address`); who is in it comes through
+    /// [`Self::remote_roster`], its end through [`Self::remote_ended`]. Audio only.
+    pub async fn connect_pcm(&self, label: &str, address: &str) -> Result<(), VoiceError> {
+        let connect = Command::ConnectPcm { address: address.to_owned() };
+        self.start(label.to_owned(), true, None, None, connect).await
+    }
+
     pub async fn remote_roster(&self, members: Vec<rv_voice_protocol::RemoteMember>) {
         self.command(Command::RemoteRoster { members }).await;
     }

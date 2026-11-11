@@ -694,6 +694,8 @@ impl Engine {
                     group: String::new(),
                     video: false,
                     state: "ended".to_owned(),
+                    audio: String::new(),
+                    reason: "declined".to_owned(),
                 };
                 self.emit(Frame::Call { call });
             }

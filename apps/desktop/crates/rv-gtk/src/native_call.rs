@@ -57,6 +57,8 @@ pub enum Call {
     Sidecar(NativeCall),
     /// This account speaks it and the sidecar carries the media (Teams).
     Account(std::sync::Arc<Session>, Target),
+    /// The WhatsApp engine speaks it and carries the media; the sidecar its audio.
+    WhatsApp(std::sync::Arc<rv_core::whatsapp_session::WaSession>, rv_core::whatsapp_session::WaTarget),
 }
 
 /// Opens the call; `fallback` opens the meeting's page instead when the
@@ -209,6 +211,7 @@ pub fn open(call: Call, title: &str, names: Names, fallback: impl Fn() + 'static
                 Call::Account(session, target) => {
                     session.place_teams_call(&v, target, &label).await.map_err(|e| e.message)
                 }
+                Call::WhatsApp(session, target) => session.carry_call(&v, target, &label).await,
             }
         })
         .await;
