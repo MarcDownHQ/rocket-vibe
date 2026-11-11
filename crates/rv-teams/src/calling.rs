@@ -524,6 +524,83 @@ pub fn next_subscription(answer: &Value) -> Option<String> {
     answer.get("nextSubscribeUrl").and_then(Value::as_str).filter(|u| u.starts_with("https://")).map(str::to_owned)
 }
 
+/// `attach`'s body, answering a ring here: this endpoint's callbacks on the call,
+/// and the join of its conversation (as Teams' web client sends them).
+pub fn attach_call(caller: &Caller, conversation: &str) -> Value {
+    let cb = |path: &str| caller.callback(path);
+    json!({
+        "attach": {"requireMediaContent": false, "links": {"end": cb("call/end/")},
+            "locationContent": null, "networkContent": null, "areaContent": null},
+        "capabilities": null,
+        "endpointCapabilities": 73463,
+        "additionalActions": [{
+            "name": "join",
+            "url": conversation,
+            "waitForResponse": true,
+            "input": {
+                "capabilities": null,
+                "endpointCapabilities": 73463,
+                "conversationRequest": {
+                    "roster": {"type": "Delta", "rosterUpdate": cb("conversation/rosterUpdate/")},
+                    "links": {
+                        "conversationEnd": cb("conversation/conversationEnd/"),
+                        "conversationUpdate": cb("conversation/conversationUpdate/"),
+                        "localParticipantUpdate": cb("conversation/localParticipantUpdate/"),
+                        "addParticipantSuccess": cb("conversation/addParticipantSuccess/"),
+                        "addParticipantFailure": cb("conversation/addParticipantFailure/"),
+                        "receiveMessage": cb("conversation/receiveMessage/"),
+                    },
+                },
+                "endpointMetadata": {},
+                "participants": {"from": caller.from()},
+            },
+        }],
+    })
+}
+
+/// What an `attach` answered: the call's links (`acceptance`, `subscribe`) and the
+/// conversation's (`leave`, `updateEndpointMetadata`), as one `links` object the
+/// call's run reads like a placed call's, with the conversation's controller.
+pub fn attached(answer: &Value) -> Option<Value> {
+    let invitation = answer.pointer("/callInvitation/links")?.as_object()?;
+    let joined = answer.pointer("/additionalActionResponses/0/output")?;
+    let mut links = joined.get("links").and_then(Value::as_object).cloned().unwrap_or_default();
+    for (key, link) in invitation {
+        links.entry(key.clone()).or_insert_with(|| link.clone());
+    }
+    Some(
+        json!({"links": links, "conversationController": joined.get("conversationController").cloned().unwrap_or(Value::Null)}),
+    )
+}
+
+/// `acceptance`'s body: the answer in Teams' dialect, under the offer's media leg.
+pub fn accept_call(caller: &Caller, answer: &str, media_leg: Option<&str>) -> Value {
+    let cb = |path: &str| caller.callback(path);
+    json!({"callAcceptance": {
+        "acceptedBy": caller.from(),
+        "acceptedCallModalities": ["Audio"],
+        "capabilities": null,
+        "endpointCapabilities": 73463,
+        "clientEndpointCapabilities": 114259690,
+        "links": {
+            "mediaRenegotiation": cb("call/mediaRenegotiation/"),
+            "transfer": cb("call/transfer/"),
+            "replacement": cb("call/replacement/"),
+            "balanceUpdate": cb("call/balanceUpdate/"),
+            "retargetCompletion": cb("call/retargetCompletion/"),
+            "controlVideoStreaming": cb("call/controlVideoStreaming/"),
+            "updateMediaDescriptions": cb("call/updateMediaDescriptions"),
+        },
+        "clientContentForMediaController": {
+            "controlVideoStreaming": cb("call/controlVideoStreaming/"),
+            "csrcInfo": cb("call/csrcInfo/"),
+        },
+        "mediaContent": {"blob": answer, "contentType": "application/sdp-ngc-1.0", "mediaLegId": media_leg},
+        "pstnContent": {"emergencyCallCountry": "", "platformName": caller.client, "publicApiCall": false},
+        "callKeepAliveInterval": null,
+    }})
+}
+
 /// `leave`'s body.
 pub fn leave_call(caller: &Caller) -> Value {
     json!({
@@ -549,6 +626,36 @@ mod tests {
         assert_eq!(audio_mid(&answer), Some("7"));
         assert!(answer.contains("a=group:BUNDLE 7\r\n") && answer.contains("m=video 0 ") && answer.contains("a=mid:8"));
         assert_eq!(sdp_sections(offer), "audio port 5 inactive mid 7; video port 5 mid 8");
+    }
+
+    #[test]
+    fn answering_a_ring_attaches_then_accepts_under_its_media_leg() {
+        let caller = Caller {
+            mri: "8:orgid:me",
+            name: "Me",
+            endpoint: "ep",
+            participant: "p",
+            surl: "https://t/",
+            random: "r",
+            client: CLIENT,
+        };
+        let attach = attach_call(&caller, "https://conv/c1");
+        assert_eq!(attach["additionalActions"][0]["url"], "https://conv/c1");
+        assert_eq!(attach["attach"]["links"]["end"], "https://t/callAgent/ep/r/call/end/");
+        let answer = json!({
+            "callInvitation": {"links": {"acceptance": "https://cc/accept", "subscribe": "https://b/1", "leave": "not this"}},
+            "additionalActionResponses": [{"output": {"conversationController": "https://conv/c1",
+                "links": {"leave": "https://conv/leave", "updateEndpointMetadata": "https://conv/meta"}}}],
+        });
+        let links = attached(&answer).unwrap();
+        assert_eq!(links["links"]["acceptance"], "https://cc/accept");
+        assert_eq!(links["links"]["subscribe"], "https://b/1");
+        assert_eq!(links["links"]["leave"], "https://conv/leave", "the conversation's own leave");
+        assert_eq!(links["conversationController"], "https://conv/c1");
+        assert_eq!(attached(&json!({})), None);
+        let accept = accept_call(&caller, "v=0", Some("LEG"));
+        assert_eq!(accept["callAcceptance"]["mediaContent"]["mediaLegId"], "LEG");
+        assert_eq!(accept["callAcceptance"]["acceptedBy"]["endpointId"], "ep");
     }
 
     #[test]
