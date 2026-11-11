@@ -149,10 +149,14 @@ async fn mattermost_rooms_and_account() {
         b.expect("spotlight", "POST", "/api/v4/users/search", s.spotlight("bo")).await;
         b.expect("join", "POST", "/api/v4/channels/r1/members", s.join_channel("r1")).await;
         b.expect("mark read", "POST", "/api/v4/channels/members/me/view", s.mark_read("r1")).await;
-        // kChat has calls of its own; Mattermost none, and neither asks.
+        // kChat has calls of its own, Mattermost those of its Calls plugin (which this bench
+        // answers); neither asks Rocket.Chat's.
         let calls = b.during(s.call_available()).await;
         assert!(calls.iter().all(|(_, p)| !p.starts_with("/api/v1/")), "{calls:?}");
-        assert_eq!(s.call_available().await, flavor == Flavor::Kchat);
+        if flavor == Flavor::Mattermost {
+            assert!(calls.iter().any(|(_, p)| p == "/plugins/com.mattermost.calls/version"), "{calls:?}");
+        }
+        assert!(s.call_available().await);
         b.close();
     }
 }
