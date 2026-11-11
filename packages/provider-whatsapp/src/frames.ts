@@ -52,7 +52,11 @@ export type WaFrame =
   | { type: 'account'; jid: string; name?: string }
   | { type: 'typing'; typing: { chat: string; sender: string; state: string } }
   | { type: 'file'; id: string; path?: string }
-  | { type: 'found'; id: string; people?: { jid: string; name: string }[] };
+  | { type: 'found'; id: string; people?: { jid: string; name: string }[] }
+  | { type: 'call'; call: WaCall };
+
+/** A call: ringing here, or (carried by the app) placed, connecting, active; ended. */
+export type WaCall = { id: string; from: string; group?: string; video?: boolean; state: string; audio?: string; reason?: string };
 
 /** A frame from the engine, or null when it is not one this app reads. */
 export function parseFrame(json: string): WaFrame | null {

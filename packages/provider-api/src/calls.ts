@@ -3,6 +3,18 @@ export type CallScope={room?:string;membership?:string|null;alive?:()=>boolean};
 /** An Amazon Chime attendee's credentials, for a call the voice engine carries itself. */
 export type ChimeCredentials={signalingUrl:string;audioHost:string;attendeeId:string;joinToken:string;origin:string};
 
+/** The voice engine, for a call whose audio another part of the app carries as raw PCM (WhatsApp). */
+export type PcmCallEngine={
+  /** Opens the session on the audio socket at `address` (`host:port#token`). */
+  connect:(address:string)=>Promise<void>;
+  roster:(members:{id:string;name:string;muted:boolean}[])=>Promise<void>;
+  ended:(reason:string)=>Promise<void>;
+  /** Resolves when the call is hung up here. */
+  left:()=>Promise<void>;
+  /** Tells each change of the microphone, on or off; returns its unsubscribe. */
+  microphone:(listener:(on:boolean)=>void)=>()=>void;
+};
+
 /** What the voice engine needs to join a Mattermost Calls plugin call itself. */
 export type MattermostCallCredentials={server:string;token:string;channelId:string;userId:string;iceServers:{urls:string[];username:string;credential:string}[]};
 
@@ -40,6 +52,8 @@ export type NativeCalls={
   answerable?:(room:string)=>boolean;
   /** Answers the call ringing in this room on the engine: resolves once accepted. */
   answerExternal?:(room:string,engine:ExternalCallEngine)=>Promise<void>;
+  /** Carries this call (a ringing one by id, or `wa:<jid>` to call someone) with its audio on `engine`: resolves once its audio runs. */
+  carryPcm?:(id:string,engine:PcmCallEngine)=>Promise<void>;
   /** The name of someone in such a call, from the id the call gives them. */
   personName?:(identity:string)=>Promise<string|null>;
 };

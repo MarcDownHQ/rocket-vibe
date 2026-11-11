@@ -13,7 +13,8 @@ import type { Capabilities, FileOutbox, Listener, Provider } from '@rocket-vibe/
 import { WhatsAppFiles, type FilePreparer } from './files.ts';
 import type { Store } from '@rocket-vibe/provider-api/sync';
 import type { WhatsAppNative } from './native.ts';
-import { fallbackName, parseFrame, type WaFrame } from './frames.ts';
+import { fallbackName, parseFrame, type WaCall, type WaFrame } from './frames.ts';
+import type { CallSignal, NativeCalls, PcmCallEngine } from '@rocket-vibe/provider-api/calls';
 import type { DdpEvent } from '@rocket-vibe/provider-api/ddp';
 import { STREAM_NOTIFY_ROOM_TYPING, TYPING_ACTIVITY } from '@rocket-vibe/provider-api/typing';
 import { WhatsAppProjection, type WaLabels } from './projection.ts';
@@ -23,8 +24,72 @@ export type { FilePreparer, PreparedFile } from './files.ts';
 export const WHATSAPP_CAPABILITIES: Capabilities = {
   editing: true, deletion: true, reactions: true, files: true, quotes: true, marks: false, threads: false,
   typing: true, presence: false, push: false, e2ee: false, customEmojis: false,
-  videoCall: false, search: false, threadTemplate: 'tmid',
+  videoCall: true, search: false, threadTemplate: 'tmid',
 };
+
+/** The `DdpEvent` collection a call frame is emitted on. */
+export const WHATSAPP_CALL = 'whatsapp-call';
+
+/** What a call frame means to the ring: a 1:1 call ringing, or one no longer ringing. */
+export function whatsappCallSignal(call: WaCall, callerName: string | null): CallSignal | null {
+  if (call.state === 'ringing') {
+    if (call.video || (call.group ?? '') !== '') return null;
+    return { kind: 'ring', rid: call.from, messageId: call.id, callId: call.id, callerId: call.from, callerName };
+  }
+  return call.state === 'ended' ? { kind: 'rung-over' } : null;
+}
+
+/** Runs a call carried here, its audio on `engine`, from the engine's call frames. */
+export async function carryWhatsAppCall(
+  account: { command: (value: Record<string, unknown>) => Promise<boolean>; onCall: (listener: (call: WaCall) => void) => () => void },
+  id: string, engine: PcmCallEngine, nameOf: (jid: string) => string, newId: () => string,
+): Promise<void> {
+  const outgoing = id.startsWith('wa:');
+  const peer = outgoing ? id.slice(3) : '';
+  let callId = outgoing ? `rv-${newId()}` : id;
+  let from = peer;
+  let done = false;
+  let opened: (address: string) => void = () => {};
+  let failed: (reason: string) => void = () => {};
+  const audio = new Promise<string>((resolve, reject) => { opened = resolve; failed = (r) => reject(new Error(r)); });
+  const stop = account.onCall((call) => {
+    if (call.id !== callId || done) return;
+    if (call.state === 'placed' && call.audio) { callId = call.audio; return; }
+    if (call.from) from = call.from;
+    if (call.state === 'connecting' && call.audio) opened(call.audio);
+    else if (call.state === 'active') void engine.roster([{ id: from, name: nameOf(from), muted: false }]);
+    else if (call.state === 'ended') {
+      done = true;
+      stop();
+      failed(call.reason || 'ended');
+      void engine.ended('remote_ended');
+    }
+  });
+  const sent = outgoing
+    ? await account.command({ type: 'place_call', id: callId, chat: peer })
+    : await account.command({ type: 'accept_call', id: callId });
+  if (!sent) { stop(); throw new Error('not_connected'); }
+  const timeout = setTimeout(() => failed('no_answer'), 30_000);
+  try {
+    await engine.connect(await audio);
+  } catch (error) {
+    done = true;
+    stop();
+    void account.command({ type: 'hangup_call', id: callId }).catch(() => {});
+    throw error;
+  } finally {
+    clearTimeout(timeout);
+  }
+  if (!outgoing) void engine.roster([{ id: from, name: nameOf(from), muted: false }]);
+  const unwatch = engine.microphone((on) => { void account.command({ type: 'mute_call', id: callId, text: on ? 'off' : 'on' }).catch(() => {}); });
+  void engine.left().then(() => {
+    unwatch();
+    if (done) return;
+    done = true;
+    stop();
+    void account.command({ type: 'hangup_call', id: callId }).catch(() => {});
+  });
+}
 
 /** The account's state id, from its `whatsapp://<state>` address. */
 export function whatsappState(baseUrl: string): string | null {
@@ -97,6 +162,14 @@ export class WhatsAppAccount {
   /** The file queue, told when an upload is recorded or refused. */
   files: WhatsAppFiles | null = null;
 
+  /** Every call frame, for the ring and for a call carried here. */
+  private readonly calls = new Set<(call: WaCall) => void>();
+
+  onCall(listener: (call: WaCall) => void): () => void {
+    this.calls.add(listener);
+    return () => { this.calls.delete(listener); };
+  }
+
   onTyping(listener: (event: DdpEvent) => void): () => void {
     this.typing.add(listener);
     return () => { this.typing.delete(listener); };
@@ -113,6 +186,12 @@ export class WhatsAppAccount {
       const { chat, sender, state } = frame.typing;
       const event: DdpEvent = { collection: STREAM_NOTIFY_ROOM_TYPING, eventKey: `${chat}/user-activity`,
         args: [this.projection.nameOf(sender), state === 'paused' ? [] : [TYPING_ACTIVITY]] };
+      for (const listener of this.typing) listener(event);
+      return;
+    }
+    if (frame.type === 'call') {
+      for (const listener of this.calls) listener(frame.call);
+      const event: DdpEvent = { collection: WHATSAPP_CALL, eventKey: frame.call.id, args: [frame.call] };
       for (const listener of this.typing) listener(event);
       return;
     }
@@ -236,6 +315,19 @@ export function createWhatsAppProvider(
     describeError,
     capabilities: WHATSAPP_CAPABILITIES,
     listener,
+    callSignal: (event: DdpEvent) => {
+      if (event.collection !== WHATSAPP_CALL) return null;
+      const call = event.args[0] as WaCall;
+      return whatsappCallSignal(call, call.from ? projection.nameOf(call.from) : null);
+    },
+    calls: {
+      available: async (room) => room === undefined || !room.endsWith('@g.us'),
+      memo: () => true,
+      start: async (room) => `wa:${room}`,
+      join: async (id) => id,
+      decline: async (id) => { await run({ type: 'reject_call', id }); },
+      carryPcm: (id, engine) => carryWhatsAppCall(account, id, engine, (jid) => projection.nameOf(jid), () => messageId(random)),
+    } satisfies NativeCalls,
     translator: { translateEvent: () => ({ kind: 'silence' }), toMessage: () => null, toRoom: () => null, toSubscription: () => null },
     privateNote: () => null,
     historyRange: unsupported, fetchMessage: unsupported, historyPage: 0,
