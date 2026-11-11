@@ -153,6 +153,13 @@ async fn run() {
                     let config = rv_call::chime::Config { signaling_url, audio_host, attendee_id, join_token, origin };
                     return call::run(|| rv_call::chime::client::join(config.clone()), voice.fake, &mut commands).await;
                 }
+                Some(Ok(Command::ConnectPcm { address })) => {
+                    if voice.room.is_some() {
+                        error("already_connected");
+                        continue;
+                    }
+                    return call::run_pcm(address, voice.fake, &mut commands).await;
+                }
                 Some(Ok(Command::ConnectExternal { identity, answering })) => {
                     if voice.room.is_some() {
                         error("already_connected");
@@ -413,6 +420,7 @@ impl Voice {
             | Command::ConnectJitsi { .. }
             | Command::ConnectChime { .. }
             | Command::ConnectExternal { .. }
+            | Command::ConnectPcm { .. }
             | Command::RemoteOffer { .. }
             | Command::RemoteAnswer { .. }
             | Command::RemoteRoster { .. }
