@@ -450,3 +450,14 @@ test('a chat file goes to my OneDrive chat files folder and is shared with the c
   const invite = calls.find((c) => c.url.endsWith('/invite'));
   assert.deepEqual(invite?.body, { requireSignIn: true, sendInvitation: false, roles: ['read'], recipients: [{ objectId: 'bob' }] });
 });
+
+test('a chat Teams hides is listed again once opened, and a catch-up does not hide it again', () => {
+  const rooms = new TeamsRooms();
+  const rid = '19:a_b@unq.gbl.spaces';
+  rooms.entries.set(rid, { entry: { id: rid, hidden: true, isConversationDeleted: true, members: [] }, team: null });
+  const known = rooms.reveal(rid);
+  assert.equal(known?.entry.hidden, undefined);
+  assert.equal(known?.entry.isConversationDeleted, undefined);
+  assert.equal(rooms.revealed.has(rid), true);
+  assert.equal(rooms.reveal('19:unknown'), null);
+});

@@ -24,7 +24,7 @@ import { teamsCalls } from './calls.ts';
 import { NOTES_CREATED, NOTES_SAVE_CONFLICT, notesEdit, notesPage, notesSubmit, readNotes, type NotesPage, type NotesText } from './notes.ts';
 import { TEAMS_EVENTS, TEAMS_HISTORY_PAGE, THREAD_COUNTERS, TeamsRooms, TeamsSync, TeamsThreads, TeamsTranslator } from './sync.ts';
 import { TeamsDirectory, channelRoom, chatRoom, conversationOf, conversationTopic, deleted, groupThread, isGraphShare, isGroupChat, mriOf, newGroupChat, newOneOnOne, oneOnOneId, people, profileFields, rootOf, rosterPage, searchHits, str, toMessage } from './translate.ts';
-import { CALL_COLLECTION, TeamsTrouter, type CallPush } from './trouter.ts';
+import { CALL_AGENT_COLLECTION, CALL_COLLECTION, TeamsTrouter, endpointId, type CallPush } from './trouter.ts';
 import { teamsReadReceipts } from './receipts.ts';
 
 type Doc = Record<string, unknown>;
@@ -235,7 +235,14 @@ export function createTeamsProvider(session: Session, rest: TokenRejection, gene
     return actionsFor(ingestLive).setPinned(team, rid, mid, on);
   };
 
-  const calls = teamsCalls(client, rooms, session.teamsTenantId ?? '', session.userId);
+  const calls = teamsCalls(client, rooms, session.teamsTenantId ?? '', session.userId, listener instanceof TeamsTrouter ? {
+    route: () => listener.presenceRoute()?.uri.replace(/unifiedPresenceService$/, '') ?? null,
+    pushes: (handle) => listener.onEvent((event) => {
+      if (event.collection === CALL_AGENT_COLLECTION) handle(event.args[0] as Record<string, unknown>);
+    }),
+    id: () => endpointId(),
+    name: session.username,
+  } : undefined);
   /** The `reject` link of each ringing call, by the call id the prompt declines. */
   const declines = new Map<string, string>();
 
@@ -329,8 +336,12 @@ export function createTeamsProvider(session: Session, rest: TokenRejection, gene
         const chat = newOneOnOne(session.userId, mri, Date.now());
         const rid = chat ? str(chat, 'id') : null;
         if (!chat || !rid) throw new TeamsError('direct_message_unknown_person');
-        const known = rooms.entries.get(rid);
-        if (known) return { rid, rawRoom: { ...known.entry, __team: known.team } };
+        const known = rooms.reveal(rid);
+        if (known) {
+          const raw = { ...known.entry, __team: known.team };
+          if (engine) await engine.ingestSubscriptions([raw]);
+          return { rid, rawRoom: raw };
+        }
         rooms.open(chat);
         const raw = { ...chat, __team: null };
         if (engine) await engine.ingestSubscriptions([raw]);

@@ -26,7 +26,7 @@
 import type { CallCheck } from './callRing.ts';
 import { RestError, isTokenRejected } from './rest.ts';
 import type { RestClient } from './rest.ts';
-import type { CallScope, ChimeCredentials, NativeCalls } from '@rocket-vibe/provider-api/calls';
+import type { CallScope, ChimeCredentials, ExternalCallEngine, NativeCalls } from '@rocket-vibe/provider-api/calls';
 export type { CallScope, NativeCalls } from '@rocket-vibe/provider-api/calls';
 
 type Binding={key:string;calls:NativeCalls|null};
@@ -130,6 +130,14 @@ export function nativeJitsi(kind: string, url: string): { meeting: string; token
 export async function nativeChime(client: RestClient, callId: string): Promise<ChimeCredentials | null> {
   const chime = bindings.get(client)?.calls?.chime;
   return chime === undefined ? null : chime(callId);
+}
+
+/** Places this room's call on the voice engine (Teams): false when this room's provider cannot. */
+export async function placeNative(client: RestClient, room: string, engine: ExternalCallEngine): Promise<boolean> {
+  const calls = bindings.get(client)?.calls;
+  if (calls?.placeExternal === undefined || calls.placeable?.(room) !== true) return false;
+  await calls.placeExternal(room, engine);
+  return true;
 }
 
 /** The name of someone in a native call whose provider gives only an id. */

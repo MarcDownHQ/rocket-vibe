@@ -29,11 +29,27 @@ export const TEAMS_EVENTS = 'teams';
 
 type Team = { id: string; name: string };
 
+function revealedChat(chat: Doc): Doc {
+  const { hidden: _hidden, isConversationDeleted: _deleted, ...shown } = chat;
+  return shown;
+}
+
 /** Each room's aggregator entry and team, to rebuild its row when a message arrives. */
 export class TeamsRooms {
   readonly entries = new Map<string, { entry: Doc; team: Team | null }>();
   /** One-to-one chats opened here before their first message: no list has them yet. */
   readonly pending = new Map<string, Doc>();
+  /** Chats Teams marks hidden that were opened here: listed again for this session. */
+  readonly revealed = new Set<string>();
+
+  /** A known chat opened here: listed again if Teams hid it. */
+  reveal(rid: string): { entry: Doc; team: Team | null } | null {
+    const known = this.entries.get(rid);
+    if (!known) return null;
+    this.revealed.add(rid);
+    known.entry = revealedChat(known.entry);
+    return known;
+  }
 
   /** Files a chat opened here, kept until a list has it. */
   open(chat: Doc): void {
@@ -266,6 +282,13 @@ export class TeamsSync {
       this.rooms.entries.set(rid, { entry: chat, team: null });
       out.push({ ...chat, __team: null });
     }
+    for (const doc of out) {
+      if (typeof doc.id === 'string' && this.rooms.revealed.has(doc.id)) {
+        delete doc.hidden;
+        delete doc.isConversationDeleted;
+      }
+    }
+    for (const rid of this.rooms.revealed) this.rooms.reveal(rid);
     const wanted = [...unnamed];
     for (let i = 0; i < wanted.length; i += PROFILE_BATCH) {
       for (const row of await this.client.profiles(wanted.slice(i, i + PROFILE_BATCH)).catch(() => [] as Doc[])) {

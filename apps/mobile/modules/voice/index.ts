@@ -39,6 +39,16 @@ type Bridge={
   connectJitsi(callId:string,meeting:string,displayName:string,token:string|null,title:string):Promise<boolean>;
   /** Joins an Amazon Chime meeting natively, audio only (a Slack huddle); false when this build cannot, so the huddle's page is kept. */
   connectChime(callId:string,signalingUrl:string,audioHost:string,attendeeId:string,joinToken:string,origin:string,title:string):Promise<boolean>;
+  /**
+   * A call whose signalling the app speaks itself (Teams), audio only: the offer
+   * arrives on `localOffer`, the rest goes through the `remote*` functions.
+   */
+  connectExternal(callId:string,identity:string,title:string):Promise<boolean>;
+  remoteAnswer(sdp:string):Promise<void>;
+  /** Answers an offer from the other side of such a call (a hold, a resume): the local answer, null when it cannot. */
+  remoteOffer(sdp:string):Promise<string|null>;
+  remoteRoster(members:{id:string;name:string;muted:boolean}[]):Promise<void>;
+  remoteEnded(reason:string):Promise<void>;
   /** A Slack canvas's `load-data` answer (base64) as JSON `{markdown, version, thread, document, title}`; null when unreadable. */
   canvasRead(load:string):string|null;
   /** The `data_binary` (base64) saving `markdown` over that answer, as JSON `{data, changed}`. */
@@ -74,6 +84,7 @@ type Bridge={
   addListener(event:'change',listener:(snapshot:VoiceSnapshot)=>void):{remove:()=>void};
   /** The held call's notification hung up. */
   addListener(event:'hangUp',listener:()=>void):{remove:()=>void};
+  addListener(event:'localOffer',listener:(event:{sdp:string})=>void):{remove:()=>void};
   /** The microphone's level, 0 to 1, about ten times a second while connected. */
   addListener(event:'level',listener:(event:{level:number})=>void):{remove:()=>void};
 };

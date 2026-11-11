@@ -151,17 +151,28 @@ pub fn call_push(envelope: &Value) -> Option<CallPush> {
             }))
         }
         JOINED_ELSEWHERE | CONVERSATION_OVER => {
-            let call_id = body
-                .get("cp")
-                .and_then(Value::as_str)
-                .and_then(unbase64)
-                .and_then(|zipped| gunzip(&zipped))
-                .and_then(|raw| serde_json::from_slice::<Value>(&raw).ok())
-                .and_then(|cp| text(&cp, "/correlationId"));
+            let call_id = pushed_cp(&body).and_then(|cp| text(&cp, "/correlationId"));
             Some(CallPush::Moved { call_id })
         }
         _ => None,
     }
+}
+
+fn pushed_cp(body: &Value) -> Option<Value> {
+    let zipped = unbase64(body.get("cp")?.as_str()?)?;
+    serde_json::from_slice(&gunzip(&zipped)?).ok()
+}
+
+/// The `conversationController` of the conversation this push says is over.
+pub fn conversation_over(envelope: &Value) -> Option<String> {
+    let body: Value = match envelope.get("body")? {
+        Value::String(raw) => serde_json::from_str(raw).ok()?,
+        other => other.clone(),
+    };
+    if body.get("evt")?.as_i64()? != CONVERSATION_OVER {
+        return None;
+    }
+    pushed_cp(&body)?.get("conversationController")?.as_str().map(str::to_owned)
 }
 
 /// The `callEnd` a decline sends to the ring's `reject` link (Teams' web
@@ -306,6 +317,8 @@ mod tests {
             );
         }
         assert_eq!(call_push(&push(json!({"evt": 116, "cp": "not gzip"}))), Some(CallPush::Moved { call_id: None }));
+        assert_eq!(conversation_over(&push(json!({"evt": 116, "cp": encoded}))).as_deref(), Some("https://x/conv/1"));
+        assert_eq!(conversation_over(&push(json!({"evt": 115, "cp": encoded}))), None);
         assert_eq!(call_push(&push(json!({"evt": 1}))), None);
         assert_eq!(call_push(&push(json!({"resourceType": "NewMessage"}))), None);
         assert_eq!(decline_body()["callEnd"]["code"], 603);

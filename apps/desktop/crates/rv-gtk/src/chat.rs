@@ -3860,14 +3860,25 @@ impl ChatPage {
     }
 
     pub(crate) fn open_call(self: &Rc<Self>, url: &str, room: &str) {
-        if let Some(account) = self.session().filter(|s| s.info.teams.is_some()).map(|s| s.info.user_id.clone()) {
-            let weak = Rc::downgrade(self);
-            crate::call_window::open_teams(&self.split, url, room, &account, move |text| {
-                if let Some(this) = weak.upgrade() {
-                    this.toast(text);
-                }
+        if let Some(session) = self.session().filter(|s| s.info.teams.is_some()) {
+            // Starting a call in a chat runs natively; joining one keeps Teams' page.
+            let room_id = self.current_rid().filter(|rid| {
+                rv_core::voice::available()
+                    && rv_core::teams::translate::is_call_start(url)
+                    && session.teams_call_possible(rid)
             });
-            return;
+            if let Some(rid) = room_id {
+                let (weak, target, title) = (Rc::downgrade(self), url.to_owned(), room.to_owned());
+                let call = crate::native_call::Call::Account(session, rv_core::teams_call::Target::Room(rid));
+                crate::native_call::open(call, room, crate::native_call::Names::none(), move || {
+                    if let Some(this) = weak.upgrade() {
+                        this.toast(t("call.native_fallback").to_owned());
+                        this.open_teams_page(&target, &title);
+                    }
+                });
+                return;
+            }
+            return self.open_teams_page(url, room);
         }
         if let Some(session) = self.session().filter(|s| s.info.slack.is_some()) {
             if !rv_core::voice::available() {
@@ -3896,7 +3907,8 @@ impl ChatPage {
                     },
                 );
                 let (back, title) = (Rc::downgrade(&this), room.clone());
-                crate::native_call::open(rv_core::voice::NativeCall::Chime(call), &title, names, move || {
+                let call = crate::native_call::Call::Sidecar(rv_core::voice::NativeCall::Chime(call));
+                crate::native_call::open(call, &title, names, move || {
                     if let Some(this) = back.upgrade() {
                         this.toast(t("call.native_fallback").to_owned());
                         this.open_huddle_page(&url, &room);
@@ -3919,7 +3931,7 @@ impl ChatPage {
                 let Some(this) = weak.upgrade() else { return };
                 let Some(call) = call else { return this.open_call_window(&url, &room) };
                 let (back, title) = (Rc::downgrade(&this), room.clone());
-                let call = rv_core::voice::NativeCall::Jitsi(call);
+                let call = crate::native_call::Call::Sidecar(rv_core::voice::NativeCall::Jitsi(call));
                 crate::native_call::open(call, &title, crate::native_call::Names::none(), move || {
                     if let Some(this) = back.upgrade() {
                         this.toast(t("call.native_fallback").to_owned());
@@ -3930,6 +3942,17 @@ impl ChatPage {
             return;
         }
         self.open_call_window(url, room);
+    }
+
+    /// Teams' web page for a call, in the call window with its own sign-in.
+    fn open_teams_page(self: &Rc<Self>, url: &str, room: &str) {
+        let Some(account) = self.session().map(|s| s.info.user_id.clone()) else { return };
+        let weak = Rc::downgrade(self);
+        crate::call_window::open_teams(&self.split, url, room, &account, move |text| {
+            if let Some(this) = weak.upgrade() {
+                this.toast(text);
+            }
+        });
     }
 
     /// A huddle's page: in a call window signed in with the session, else in

@@ -4,7 +4,7 @@ The goal: calls on Teams, Rocket.Chat (Jitsi), kChat (kMeet) and Slack (huddles)
 by the apps themselves, with no web page, no WebView and no browser: our own signalling
 client per provider, our own WebRTC media, the existing call UI. This page records what the
 research and the captures established, the architecture chosen, what is built ("Implementation
-status": Jitsi and kMeet, Slack huddles; Teams not yet), the order, and the captures still owed.
+status": Jitsi and kMeet, Slack huddles, Teams calls placed from a chat), the order, and the captures still owed.
 The fallback (a call window on the provider's web page, Teams' one-time Microsoft sign-in) is in
 [../features/calls.md](../features/calls.md); the decision is in [../decisions.md](../decisions.md).
 
@@ -373,6 +373,68 @@ meetings with video (2 to 3 months more).
   microphone in a huddle; the GTK window on a signed-in Slack account (none on the test machine);
   SwiftUI (macOS CI only); Android on a device (Kotlin and the Android cross-compile only).
 
+### Teams calls placed from a chat, audio (2026-11-06)
+
+- **Who does what**: unlike Jitsi and Chime, the app speaks the signalling, because it needs the
+  account's token refresh and Trouter socket; the sidecar only offers and carries the media
+  (`Command::ConnectExternal`, `Event::LocalOffer`, `RemoteAnswer`, `RemoteRoster`, `RemoteEnded`; rv-voice
+  `call::External`, not rejoinable). Android the same: `JitsiSession.startExternal`,
+  `connectExternal` and the `localOffer` event, the signalling in `provider-teams` (`calling.ts`, a port).
+- **The flow** (rv-teams `calling.rs`, rv-core `teams_call.rs`): the offer in Teams' dialect, then
+  `POST https://api.flightproxy.teams.microsoft.com/api/v2/epconv` with the callbacks under the socket's
+  route (`<surl>callAgent/<endpoint>/<random>/...`), bearer audience `https://ic3.teams.office.com`,
+  which **our own client's token passes**. The answer arrives over Trouter as `callAcceptance`
+  `.mediaContent.blob` (`mediaAnswer` is read too); `links.acknowledgement` wants
+  `{callAcceptanceAcknowledgement: {links}}` or the call ends (430). `rosterUpdate` is a delta keyed by MRI
+  (`details.displayName`, `endpoints`: empty when gone). `links.leave` hangs up (204).
+- **The dialect, found against Teams itself**: port 9 with `c=0.0.0.0` answers
+  `DisabledMediaNotSupported`, so the offer names a real address from a candidate, plus `a=rtcp:<port>`;
+  profile `RTP/SAVP`, extension URIs with backslashes, `a=label:main-audio`, `x-ssrc-range`, UDP candidates
+  only, without `generation`/`ufrag`/`network-id`. An audio-only offer is accepted, and answered without
+  the `x-data` a browser's carries a section for. The answer keeps its audio section: `UDP/TLS/RTP/SAVPF`,
+  forward slashes, UDP candidates without `MTURNID`, no `tcp-pass`, `a=x-*`, `a=label`, `a=ptime`.
+  Teams' media server offers public UDP candidates, so no TURN was needed; the relay token
+  (`api/v2/ep/relay/token`, from Microslop) is not used, which a network blocking UDP would need.
+- **Keeping it up** (found live, 2026-11-07): the `epconv` answer's `links.subscribe` is the
+  conversation's broker, a long poll (`GET`, `x-usebatching: 1`) answering `{message, nextSubscribeUrl,
+  expirationTimeInSec: 30}`: a client that stops polling loses its media about 35 s in (ICE disconnected,
+  then failed, no `callEnd`), which the echo bot does not show. rv-core `hold_subscription` keeps polling at
+  each `nextSubscribeUrl` for the whole call. As Teams' web client does, the app also `PUT`s
+  `updateEndpointMetadata` and, once accepted, registers on `links.callLeg`
+  (`{callAcceptanceAcknowledgement, callParticipantUpdate}`, both the same links). With these a call with a
+  person ran 3 minutes with no loss.
+- **Hold and resume** are Teams' renegotiations: `call/mediaRenegotiation/` pushes `mediaNegotiation
+  {mediaContent {blob, mediaLegId}, links {mediaAnswer}}`, answered by a `mediaAnswer` POST. **Teams
+  renumbers the audio section's `a=mid` in such an offer**, which libwebrtc refuses ("The order of m-lines in
+  subsequent offer doesn't match"): the offer goes to the sidecar (`Command::RemoteOffer`, `Event::LocalAnswer`)
+  under the call's own `mid` (`renegotiation_offer`), and the answer goes back under Teams' `mid` with every
+  section of its offer, refused ones at port 0 (`teams_answer`). A hold that was refused kept the microphone
+  flowing to the other side. Android does the same through `remoteOffer`.
+- **Ending**: the other side's `callEnd`/`conversationEnd` ends the voice session with `remote_ended`,
+  90 s without an answer with `no_answer`. Neither is a join failure (`Ended::is_join_failure`), so the page
+  does not open: it would ring them again.
+  When no `callEnd` reaches this endpoint (seen once: the call went on until its media failed), the calling
+  registration's `evt` 116 push naming this conversation (`cp.conversationController`, gzip) ends it too
+  (`frames::conversation_over`, `same_conversation`), believed only 5 s after the answer since the push that
+  follows an answer is not yet known to be 115 rather than 116. Android has no inflater for that gzip: it
+  relies on `callEnd`.
+- **Who speaks**: one mixed stream, so a person's own level is known only with one person in the call.
+- **Checked live (2026-11-06)**, Microsoft's Test Call (`UserInitiatedTestCall`, `to: []`, then the bot
+  `28:cf28171e-...` invited by `addParticipant`; it rings no one), a tone from `rv-voice`, through
+  `Session::place_teams_call` (`examples/teams-test-call.rs`; the signalling alone in rv-teams
+  `examples/teams-echo.rs`): token taken, answer received, DTLS up, the bot heard as decoded audio (its tile
+  speaking and silent in turn), 0 packets lost each way at 10 ms, roster, leave. **A person rung the same
+  day**, the GTK AppImage calling an account in Teams' web app in the same tenant, four short calls (5 to 15 s):
+  the native window opened, a decline ended it with its message and no page, the user heard audio both ways on a
+  real microphone and speakers, the name and speaking indicator were right, and hanging up from either side
+  ended it; 0 packets lost, no fallback. A call past 35 s died until the broker lease was held; with it a call
+ran 3 minutes (2026-11-07). The `a=mid` rewrite for hold and resume is in place but not yet run with a person. The media server connects before the callee answers, so `connected`
+  comes while it rings (the window shows "waiting" until someone else is in the roster). **Not run**: hold and resume after the
+  `a=mid` fix; a group chat's call; another network; SwiftUI (macOS CI only), Android on a
+  device (Kotlin compiled only). **Owed**: answering an incoming call
+  natively (Accept still opens Teams' page), meetings, channels. `callKeepAliveInterval` (2700 s) is
+  unexplained: no capture shows what it wants, so a call past 45 minutes may end.
+
 ### Long calls: what ended them, and recovery (2026-11-05)
 
 Two Rocket.Chat calls on meet.barrut.me closed by themselves after about an hour and a half. Nothing
@@ -445,12 +507,10 @@ Teams meetings and video last.
   Useful later: a huddle with a second participant's camera or a screen share (video
   subscription, the `ScreenSharingUrl` socket) and a `LEAVE`. A huddle opens in its own
   window: Chrome's DevTools setting "Auto-open DevTools for popups" catches it from the start.
-- **Teams**: the Trouter frames of a call (a HAR started before Teams loads, or a
-  webrtc-internals dump plus the Trouter socket's frames): the outgoing call's
-  `mediaAnswer` and the ring of a fresh session; where the relay (TURN/MRAS) credentials
-  come from; a meeting join (`meetingInfo`); a webrtc-internals dump of a Teams call (the
-  `x-data` channel's messages). The auth audience, the outgoing call's creating request and
-  screen sharing are captured (2026-11-02).
+- **Teams**: what `callKeepAliveInterval` wants of a call past 45 minutes; a meeting join
+  (`meetingInfo`); a webrtc-internals dump of a Teams call (the `x-data` channel's messages).
+  The outgoing call's answer was read live (2026-11-06), the auth audience, its creating
+  request and screen sharing captured (2026-11-02).
 
 ## Sources
 

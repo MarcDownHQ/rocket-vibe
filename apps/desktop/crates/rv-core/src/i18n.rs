@@ -2029,6 +2029,8 @@ const CATALOG: &[(&str, &str, &str)] = &[
     ("call.end.media_failed", "la connexion audio a échoué", "the audio connection failed"),
     ("call.end.server", "le serveur d'appel a fermé la session", "the call server closed the session"),
     ("call.end.join_failed", "impossible de rejoindre l'appel", "could not join the call"),
+    ("call.end.remote", "l'appel est terminé de l'autre côté", "the other side ended the call"),
+    ("call.end.no_answer", "pas de réponse", "no answer"),
     ("call.end.sidecar", "le moteur audio s'est arrêté", "the audio engine stopped"),
     ("call.end.other", "{reason}", "{reason}"),
     ("call.microphone", "Microphone", "Microphone"),

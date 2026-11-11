@@ -271,6 +271,11 @@ export class TeamsTokens {
     return this.presenceLease.value;
   }
 
+  /** The calling stack's bearer (cc, conv, broker, epconv). */
+  async calling(): Promise<string> {
+    return (await this.access('https://ic3.teams.office.com')).value;
+  }
+
   /** The Substrate bearer, for message search. */
   async substrate(): Promise<string> {
     const held = fresh(this.substrateLease);

@@ -5,6 +5,8 @@
 //! with the answer, then who is in the call (AUDIO_STREAM_ID_INFO) and how loud
 //! (AUDIO_METADATA). The server mixes everyone into one audio stream.
 
+#![cfg_attr(not(feature = "client"), allow(dead_code))]
+
 #[cfg(feature = "client")]
 pub mod client;
 pub mod proto;

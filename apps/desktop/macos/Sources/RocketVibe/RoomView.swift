@@ -108,7 +108,7 @@ struct RoomView: View {
             if let link, let url = URL(string: link) {
                 CallWindow.show(url, title: L("call.window_title", ["room": model.room.name]),
                                 slackCookie: model.provider.legacy?.huddleCookie(), displayName: app.account?.username,
-                                chat: model.provider.legacy)
+                                chat: model.provider.legacy, teamsRoom: model.provider.legacy?.isTeams() == true ? model.room.rid : nil)
             } else {
                 app.notice = L("call.failed")
             }

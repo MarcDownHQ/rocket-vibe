@@ -11,6 +11,7 @@ section here.
 
 - Notes: Slack canvases keep bold, italic, strikethrough, code and links, and checklist items can be ticked; the whole formatting bar is available there.
 - Notes: Teams task lists show assignees, due dates and buckets; single tasks can be added and removed, and a save can create a new table or task list.
+- Teams (experimental): a call started in a chat runs inside the app, audio only, with no Microsoft sign-in in a browser window; Teams' page stays the fallback. It stays up past the first half minute, holds and resumes when the other side does, and ends when the other side hangs up.
 - Slack (experimental): a huddle runs inside the app, audio only, in its own call window (who is there, who speaks, mute, deafen, hang up); its page stays the fallback when the join fails.
 - Notes open beside the conversation instead of in a dialog, the room list hidden meanwhile. Back returns to the conversation with the list restored, forward reopens the notes, and an unsaved edit comes back when they reopen.
 - Notes: the editor has a formatting bar (bold, italic, strikethrough, heading, link, code, quote, lists). Slack canvases offer the block formats only, since they keep no inline formatting.
@@ -29,6 +30,7 @@ section here.
 - macOS: a GIF attachment plays instead of showing its first frame, in the message and the full-size viewer, on every server; one scrolled away and back no longer stays frozen.
 - GTK: a GIF that scrolled away after several others no longer stays frozen, a GIF attachment stops playing when animations are off, and a GIF declaring an enormous size can no longer crash the app.
 - Notes: saving after someone else changed them while you edited now always warns you and keeps your draft; a background refresh could let the save overwrite their change.
+- Teams (experimental): opening a chat Teams keeps hidden, from a search or a profile, now opens it; nothing happened before.
 - The mouse pointer turns into a hand over reactions (GTK, macOS), and on GTK also over the quick reactions and "more reactions" buttons, a thread's reply count, a failed message's retry, the edit buttons and the actions of file and integration cards.
 - Native Jitsi and kMeet calls: being left alone in a call no longer ends it. The server ends a lone participant's media session after about 20 seconds; the app took that for the end of the call and the window closed. It now stays in the room and the sound comes back as soon as someone returns.
 - Native calls: after a reconnection the others could be silent, the media having been reopened on the WebRTC factory of the closed connection.

@@ -15,6 +15,8 @@ use zeroize::Zeroizing;
 
 const ME: &str = "8:orgid:00000000-0000-4000-8000-0000000000aa";
 const ROOM: &str = "19:chat@thread.v2";
+const HIDDEN_PERSON: &str = "8:orgid:00000000-0000-4000-8000-000000000002";
+const HIDDEN_CHAT: &str = "19:00000000-0000-4000-8000-000000000002_00000000-0000-4000-8000-0000000000aa@unq.gbl.spaces";
 const NEWCOMER: &str = "8:orgid:00000000-0000-4000-8000-0000000000bb";
 const NEW_CHAT: &str = "19:00000000-0000-4000-8000-0000000000aa_00000000-0000-4000-8000-0000000000bb@unq.gbl.spaces";
 
@@ -70,7 +72,9 @@ fn handler(server_url: String) -> impl Fn(&Request) -> Response + Send + Sync + 
                     "chats": [{"id": ROOM, "chatType": "chat", "isOneOnOne": true, "isRead": false,
                         "members": [{"mri": ME}, {"mri": "8:orgid:bob"}],
                         "lastMessage": {"messageType": "RichText/Html", "content": "<p>new</p>", "from": "8:orgid:bob",
-                            "imDisplayName": "Bob", "composeTime": "2026-10-20T10:00:00Z", "id": "300"}}],
+                            "imDisplayName": "Bob", "composeTime": "2026-10-20T10:00:00Z", "id": "300"}},
+                        {"id": HIDDEN_CHAT, "chatType": "chat", "isOneOnOne": true, "isRead": true, "hidden": true,
+                            "members": [{"mri": ME}, {"mri": HIDDEN_PERSON}]}],
                     "teams": [{"id": "team", "displayName": "Ops", "channels": [
                         {"id": "19:general@thread.tacv2", "displayName": "General", "isMessageRead": true}]}],
                 })
@@ -279,6 +283,24 @@ async fn a_group_chat_is_created_listed_and_renamed() {
     assert_eq!(room.name.as_str(), "Devs");
     assert!(!sync.renamable(ROOM), "a one-to-one keeps its name");
     assert!(sync.open_group(&["nobody@example.com".to_owned(), a.to_owned()]).await.is_err());
+}
+
+#[tokio::test]
+async fn a_chat_teams_hides_is_listed_again_once_opened_here() {
+    let url = std::sync::Arc::new(std::sync::Mutex::new(String::new()));
+    let shared = url.clone();
+    let server = FakeHttp::start(move |r| handler(shared.lock().unwrap().clone())(r)).await;
+    *url.lock().unwrap() = server.url.to_string();
+    let (store, sync) = sync(&server);
+    sync.catch_up_global().await.unwrap();
+    assert!(!store.rooms().iter().any(|r| r.rid == HIDDEN_CHAT), "hidden until asked for");
+
+    assert_eq!(sync.open_direct(HIDDEN_PERSON).await.unwrap(), HIDDEN_CHAT);
+    assert!(store.rooms().iter().any(|r| r.rid == HIDDEN_CHAT), "listed, so the room can open");
+
+    sync.catch_up_global().await.unwrap();
+    sync.reconcile_rooms().await.unwrap();
+    assert!(store.rooms().iter().any(|r| r.rid == HIDDEN_CHAT), "the next catch-up does not hide it again");
 }
 
 #[tokio::test]

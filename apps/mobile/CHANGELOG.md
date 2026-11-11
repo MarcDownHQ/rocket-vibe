@@ -11,6 +11,7 @@ release, and its notes are that version's section here.
 
 - Notes: Slack canvases keep bold, italic, strikethrough, code and links, and checklist items can be ticked; the whole formatting bar is available there.
 - Notes: Teams task lists show assignees, due dates and buckets; single tasks can be added and removed, and a save can create a new table or task list.
+- Teams (experimental): a call started in a chat runs inside the app, audio only, with no Microsoft sign-in in a web page; Teams' page stays the fallback. It stays up past the first half minute and holds and resumes when the other side does.
 - Slack (experimental): a huddle runs inside the app, audio only (who is there, who speaks, mute, deafen, hang up); the browser stays the fallback when the join fails.
 - Notes: the editor has a formatting row (bold, italic, strikethrough, heading, link, code, quote, lists), and going back keeps an unsaved edit for when you reopen the notes. Slack canvases offer the block formats only, since they keep no inline formatting.
 - Server rail: a server can be disabled with a long press on its tile: it stays on the rail, greyed and after the others, keeps its session and is no longer read in the background, until enabled again without signing in.
@@ -25,6 +26,7 @@ release, and its notes are that version's section here.
 - Slack (experimental): a Giphy or Tenor GIF posted by an app or pasted as a link now shows and plays; a pasted image's preview no longer leaves a card reading "370x208px image", and cards show their links, mentions and colours.
 - Native Jitsi and kMeet calls: being left alone in a call no longer ends it. The server ends a lone participant's media session after about 20 seconds; the app took that for the end of the call and the window closed. It now stays in the room and the sound comes back as soon as someone returns.
 - Notes: saving after someone else changed them while you edited now always warns you and keeps your draft; a background refresh could let the save overwrite their change.
+- Teams (experimental): opening a chat Teams keeps hidden, from a search or a profile, lists it again.
 - Teams (experimental): a GIF sent from Teams' picker shows as an animated image with its link; the message was empty.
 - Teams (experimental): a line break in a Teams message no longer adds two spaces at the start of the next line.
 - Teams (experimental): people shown by their id ("8:orgid:…") in system messages, call cards, authors and reactions are named once their profile is read, the rows stored earlier included; someone adding themselves to a channel reads "joined the channel".

@@ -23,7 +23,18 @@ final class CallWindow: NSObject, WKUIDelegate, WKNavigationDelegate, NSWindowDe
     /// the cookie it goes to the browser, signed in there.
     /// A Jitsi Meet or kMeet meeting runs natively first (`NativeCallWindow`,
     /// `displayName` its name there); its page opens when that cannot be done.
-    static func show(_ url: URL, title: String, slackCookie: String? = nil, displayName: String? = nil, chat: Chat? = nil) {
+    /// A Teams call started in a chat (`teamsRoom`) runs natively first too.
+    static func show(_ url: URL, title: String, slackCookie: String? = nil, displayName: String? = nil, chat: Chat? = nil, teamsRoom: String? = nil) {
+        if let teamsRoom, let chat {
+            Task {
+                if let native = await chat.startTeamsCall(rid: teamsRoom, title: title) {
+                    NativeCallWindow.show(native, title: title)
+                } else {
+                    show(url, title: title)
+                }
+            }
+            return
+        }
         let slack = url.scheme == "https" && slackHuddleAllowed(url: url.absoluteString)
         if slack, let chat {
             Task {

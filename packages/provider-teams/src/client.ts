@@ -5,6 +5,7 @@
  * session. Mirrors `crates/rv-teams/src/client.rs`.
  */
 
+import { CALL_CLIENT } from './calling.ts';
 import { TeamsError, type TeamsRoutes, type TeamsTokens } from './auth.ts';
 import { peopleRequest, readPositions } from './translate.ts';
 import type { NotesPage } from './notes.ts';
@@ -113,6 +114,49 @@ export class TeamsClient {
     if (!callingUrl(reject)) throw new TeamsError('decline_link_invalid');
     const { skype } = await this.tokens.chat();
     await this.send(reject, ['X-Skypetoken', skype], 'DELETE', DECLINE_BODY);
+  }
+
+  /** A POST to the calling stack (`epconv`, or a link it gave); its JSON answer. */
+  async callingPost(url: string, chain: string, message: string, body: unknown): Promise<Doc> {
+    return this.calling('POST', url, chain, message, body);
+  }
+
+  /** A long poll of the calling stack (the conversation's broker). */
+  async callingPoll(url: string, chain: string, message: string): Promise<Doc> {
+    return this.calling('GET', url, chain, message, undefined, { 'x-usebatching': '1' });
+  }
+
+  async callingPut(url: string, chain: string, message: string, body: unknown): Promise<void> {
+    await this.calling('PUT', url, chain, message, body);
+  }
+
+  private async calling(method: string, url: string, chain: string, message: string, body: unknown, extra: Record<string, string> = {}): Promise<Doc> {
+    if (!callingUrl(url)) throw new TeamsError('call_link_invalid');
+    const bearer = await this.tokens.calling();
+    let response: Response;
+    try {
+      response = await this.fetcher(url, {
+        method,
+        headers: {
+          authorization: `Bearer ${bearer}`,
+          ...(body === undefined ? {} : { 'content-type': 'application/json' }),
+          ...extra,
+          'x-microsoft-skype-chain-id': chain,
+          'x-microsoft-skype-message-id': message,
+          'x-microsoft-skype-client': CALL_CLIENT,
+          'x-ms-migration': 'True',
+          origin: 'https://teams.cloud.microsoft',
+          referer: 'https://teams.cloud.microsoft/',
+        },
+        ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+        redirect: 'error',
+      });
+    } catch {
+      throw new TeamsError('network');
+    }
+    if (response.status >= 400) throw new TeamsError(`http_${response.status}`, response.status);
+    const text = await response.text().catch(() => '');
+    try { return text ? (JSON.parse(text) as Doc) : {}; } catch { return {}; }
   }
 
   /** A chat service call. */

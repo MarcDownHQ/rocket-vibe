@@ -270,6 +270,8 @@ pub struct Session {
     synced: Arc<Mutex<std::collections::HashSet<String>>>,
     /// Calls started in direct rooms, and the one ringing (`crate::call_ring`).
     rings: Mutex<crate::call_ring::Rings>,
+    /// Pushes to the callbacks of the Teams calls placed here.
+    pub(crate) teams_call_pushes: broadcast::Sender<Value>,
 }
 
 /// Exponential back-off from 1 s to `MAX_RECONNECT_DELAY_MS`, with up to 1 s of jitter.
@@ -498,6 +500,7 @@ impl Session {
             avatars: Mutex::default(),
             notification_preference: Mutex::new("default".to_owned()),
             rings: Mutex::default(),
+            teams_call_pushes: broadcast::channel(64).0,
             e2e: Mutex::default(),
             custom_emoji: Mutex::default(),
             custom_emoji_names: Mutex::default(),
@@ -589,6 +592,9 @@ impl Session {
                 LiveEvent::Event { name, data, broadcast } => match s.backend() {
                     Backend::Slack(_) => s.apply_slack(&name, &data).await,
                     Backend::Teams(_) if name == crate::teams::live::CALL_EVENT => s.teams_call(&data),
+                    Backend::Teams(_) if name == crate::teams::live::CALL_AGENT_EVENT => {
+                        let _ = s.teams_call_pushes.send(data);
+                    }
                     Backend::Teams(teams) if name == crate::teams::live::REGISTERED_EVENT => {
                         teams.set_presence_route(&data);
                         let teams = teams.clone();
@@ -2360,6 +2366,12 @@ impl Session {
         actions::join_call(&self.rest, &call_id).await
     }
 
+    /// Whether a Teams call in this room can be placed natively.
+    pub fn teams_call_possible(&self, rid: &str) -> bool {
+        let Backend::Teams(teams) = self.backend() else { return false };
+        teams.call_targets(rid).is_some() && teams.call_route().is_some()
+    }
+
     /// Joins the huddle a call id names (starting it when none runs), for
     /// the voice sidecar to carry: its Chime credentials.
     pub async fn join_huddle(&self, call_id: &str) -> Result<crate::voice::ChimeCall, RestError> {
@@ -2440,6 +2452,7 @@ impl Session {
     /// and the same call answered elsewhere or over stops it.
     fn teams_call(self: &Arc<Self>, envelope: &Value) {
         use crate::teams::frames::CallPush;
+        crate::teams_call::debug_ring(envelope);
         match crate::teams::frames::call_push(envelope) {
             Some(CallPush::Ring(ring)) => {
                 let me = self.info.user_id.as_str();
@@ -2477,6 +2490,7 @@ impl Session {
                 tasks.push(expiry);
             }
             Some(CallPush::Moved { call_id }) => {
+                let _ = self.teams_call_pushes.send(envelope.clone());
                 let stopped =
                     self.rings.lock().unwrap().stop_if(|c| call_id.as_ref().is_none_or(|id| &c.message_id == id));
                 if stopped {
