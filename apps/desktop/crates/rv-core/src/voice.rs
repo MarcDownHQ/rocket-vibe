@@ -411,11 +411,29 @@ impl std::fmt::Debug for ChimeCall {
     }
 }
 
+/// A Mattermost Calls plugin call to carry natively: the channel's, joined on the
+/// account's own token.
+#[derive(Clone, PartialEq, Eq)]
+pub struct MattermostCall {
+    pub server: String,
+    pub token: String,
+    pub channel_id: String,
+    pub user_id: String,
+    pub ice_servers: Vec<rv_voice_protocol::IceServerSpec>,
+}
+
+impl std::fmt::Debug for MattermostCall {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("MattermostCall").field("channel_id", &self.channel_id).finish_non_exhaustive()
+    }
+}
+
 /// A call the sidecar carries itself, whatever the provider's protocol.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum NativeCall {
     Jitsi(JitsiCall),
     Chime(ChimeCall),
+    Mattermost(MattermostCall),
 }
 
 /// kMeet's join token, carried by its meeting URL as `?jwt=`.
@@ -576,11 +594,24 @@ impl VoiceController {
         self.command(Command::RemoteEnded { reason: reason.to_owned() }).await;
     }
 
+    /// Joins a Mattermost channel's call natively (the Calls plugin). Audio only.
+    pub async fn connect_mattermost(&self, label: &str, call: &MattermostCall) -> Result<(), VoiceError> {
+        let connect = Command::ConnectMattermost {
+            server: call.server.clone(),
+            token: call.token.clone(),
+            channel_id: call.channel_id.clone(),
+            user_id: call.user_id.clone(),
+            ice_servers: call.ice_servers.clone(),
+        };
+        self.start(label.to_owned(), true, None, None, connect).await
+    }
+
     /// Joins a call the sidecar carries itself.
     pub async fn connect_native(&self, label: &str, call: &NativeCall) -> Result<(), VoiceError> {
         match call {
             NativeCall::Jitsi(jitsi) => self.connect_jitsi(label, jitsi).await,
             NativeCall::Chime(chime) => self.connect_chime(label, chime).await,
+            NativeCall::Mattermost(call) => self.connect_mattermost(label, call).await,
         }
     }
 

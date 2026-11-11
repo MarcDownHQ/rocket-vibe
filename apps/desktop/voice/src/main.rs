@@ -164,6 +164,19 @@ async fn run() {
                     };
                     return call::run(join, voice.fake, &mut commands).await;
                 }
+                Some(Ok(Command::ConnectMattermost { server, token, channel_id, user_id, ice_servers })) => {
+                    if voice.room.is_some() {
+                        error("already_connected");
+                        continue;
+                    }
+                    let config = rv_call::mattermost::Config { server, token, channel_id, user_id };
+                    let ice: Vec<rv_call::IceServer> = ice_servers
+                        .into_iter()
+                        .map(|s| rv_call::IceServer { urls: s.urls, username: s.username, credential: s.credential })
+                        .collect();
+                    return call::run(|| rv_call::mattermost::join(config.clone(), ice.clone()), voice.fake, &mut commands)
+                        .await;
+                }
                 Some(Ok(Command::Connect { url, token, e2ee_key })) => {
                     if voice.room.is_some() {
                         error("already_connected");
@@ -404,6 +417,7 @@ impl Voice {
             | Command::RemoteAnswer { .. }
             | Command::RemoteRoster { .. }
             | Command::RemoteEnded { .. }
+            | Command::ConnectMattermost { .. }
             | Command::Disconnect => {}
         }
     }

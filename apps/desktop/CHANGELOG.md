@@ -9,6 +9,7 @@ section here.
 
 ### Added
 
+- Mattermost: calls through the server's Calls plugin run inside the app, audio only: the room's call button where the channel's calls are on, Join on the call card, and a direct message's call rings.
 - Notes: Slack canvases keep bold, italic, strikethrough, code and links, and checklist items can be ticked; the whole formatting bar is available there.
 - Notes: Teams task lists show assignees, due dates and buckets; single tasks can be added and removed, and a save can create a new table or task list.
 - Teams (experimental): a call started in a chat runs inside the app, audio only, with no Microsoft sign-in in a browser window; Teams' page stays the fallback. It stays up past the first half minute, holds and resumes when the other side does, and ends when the other side hangs up.

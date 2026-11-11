@@ -15,6 +15,8 @@ pub struct JitsiCallSession {
     voice: VoiceController,
     /// The account of a call whose provider sends only ids (a Slack huddle), which names them.
     naming: Option<Arc<Session>>,
+    /// A Mattermost call's id, whose people are named by its session ids.
+    plugin_call: Option<String>,
     asked: Mutex<HashSet<String>>,
 }
 
@@ -26,7 +28,31 @@ pub(crate) async fn start_teams(session: Arc<Session>, rid: String, title: Strin
     on_tokio(async move {
         let voice = VoiceController::new();
         session.place_teams_call(&voice, rv_core::teams_call::Target::Room(rid), &title).await.ok()?;
-        Some(Arc::new(JitsiCallSession { voice, naming: None, asked: Mutex::default() }))
+        Some(Arc::new(JitsiCallSession { voice, naming: None, plugin_call: None, asked: Mutex::default() }))
+    })
+    .await
+}
+
+/// Joins a Mattermost channel's call (the Calls plugin), starting it when none
+/// runs; None when it cannot be joined, which has no page to fall back to.
+pub(crate) async fn start_plugin_call(
+    session: Arc<Session>,
+    call_id: String,
+    title: String,
+) -> Option<Arc<JitsiCallSession>> {
+    if !rv_core::voice::available() {
+        return None;
+    }
+    on_tokio(async move {
+        let call = session.join_mattermost_call(&call_id).await.ok()?;
+        let voice = VoiceController::new();
+        voice.connect_mattermost(&title, &call).await.ok()?;
+        Some(Arc::new(JitsiCallSession {
+            voice,
+            naming: Some(session),
+            plugin_call: Some(call_id),
+            asked: Mutex::default(),
+        }))
     })
     .await
 }
@@ -44,7 +70,7 @@ pub(crate) async fn start_huddle(
         let call = session.join_huddle(&call_url).await.ok()?;
         let voice = VoiceController::new();
         voice.connect_chime(&title, &call).await.ok()?;
-        Some(Arc::new(JitsiCallSession { voice, naming: Some(session), asked: Mutex::default() }))
+        Some(Arc::new(JitsiCallSession { voice, naming: Some(session), plugin_call: None, asked: Mutex::default() }))
     })
     .await
 }
@@ -76,7 +102,7 @@ pub async fn start_jitsi_call(
         let call = rv_core::voice::discover_jitsi(&meeting_url, &display_name).await?;
         let voice = VoiceController::new();
         voice.connect_jitsi(&title, &call).await.ok()?;
-        Some(Arc::new(JitsiCallSession { voice, naming: None, asked: Mutex::default() }))
+        Some(Arc::new(JitsiCallSession { voice, naming: None, plugin_call: None, asked: Mutex::default() }))
     })
     .await
 }
@@ -139,6 +165,14 @@ impl JitsiCallSession {
     /// Who this id is, once known; the first time an unknown one is seen, reads it.
     fn named(&self, identity: &str) -> Option<String> {
         let session = self.naming.as_ref()?;
+        if let Some(call_id) = &self.plugin_call {
+            let name = session.plugin_call_person_name(identity);
+            if name.is_none() && self.asked.lock().unwrap().insert(identity.to_owned()) {
+                let (session, call_id) = (session.clone(), call_id.clone());
+                crate::runtime().spawn(async move { session.ensure_plugin_call_people(&call_id).await });
+            }
+            return name;
+        }
         let name = session.huddle_person_name(identity);
         if name.is_none() && self.asked.lock().unwrap().insert(identity.to_owned()) {
             let (session, id) = (session.clone(), identity.to_owned());

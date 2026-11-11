@@ -39,6 +39,8 @@ type Bridge={
   connectJitsi(callId:string,meeting:string,displayName:string,token:string|null,title:string):Promise<boolean>;
   /** Joins an Amazon Chime meeting natively, audio only (a Slack huddle); false when this build cannot, so the huddle's page is kept. */
   connectChime(callId:string,signalingUrl:string,audioHost:string,attendeeId:string,joinToken:string,origin:string,title:string):Promise<boolean>;
+  /** Joins a Mattermost Calls plugin call natively, audio only; `iceServers` is the plugin's servers as JSON. False when this build cannot. */
+  connectMattermost(callId:string,server:string,token:string,channelId:string,userId:string,iceServers:string,title:string):Promise<boolean>;
   /**
    * A call whose signalling the app speaks itself (Teams), audio only: the offer
    * arrives on `localOffer`, the rest goes through the `remote*` functions.

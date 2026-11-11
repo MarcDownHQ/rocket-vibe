@@ -15,7 +15,7 @@ import { WebView } from 'react-native-webview';
 
 import { callAllowed as teamsCallAllowed } from '@rocket-vibe/provider-teams/translate';
 import type { ExternalCallEngine } from '@rocket-vibe/provider-api/calls';
-import { callContext, callPersonName, joinConference, nativeChime, nativeJitsi, placeNative } from '../../lib/call.ts';
+import { callContext, callPersonName, joinConference, nativeChime, nativeJitsi, nativeMattermost, placeNative } from '../../lib/call.ts';
 import { sameOrigin, originOf } from '../../lib/origin.ts';
 import { VoiceNative, type VoiceSnapshot } from '../../modules/voice/index.ts';
 import type { RestClient } from '../../lib/rest.ts';
@@ -165,6 +165,12 @@ function Call({
       try {
         // A Slack huddle runs natively, else in Slack's app or the browser;
         // Teams' calls stay here, on Teams' web app.
+        if (callId.startsWith('mmcalls:')) {
+          if (await joinedPlugin()) {
+            if (alive) setNative(true);
+          } else if (alive) setError(t('call.joinFailed'));
+          return;
+        }
         const external = client.kind === 'slack';
         if (!external) await requestCameraMic();
         const u = await joinConference(client, callId,undefined,{room:rid,membership,alive:()=>alive});
@@ -220,6 +226,18 @@ function Call({
         return await placeNative(client, rid, engine);
       } catch {
         await voice.disconnect().catch(() => {});
+        return false;
+      }
+    }
+    // A Mattermost Calls plugin call runs on the voice engine only: it has no page.
+    async function joinedPlugin(): Promise<boolean> {
+      if (VoiceNative === null) return false;
+      try {
+        await requestMicrophone();
+        const call = await nativeMattermost(client, callId);
+        if (call === null || !alive) return false;
+        return await VoiceNative.connectMattermost(callId, call.server, call.token, call.channelId, call.userId, JSON.stringify(call.iceServers), title);
+      } catch {
         return false;
       }
     }

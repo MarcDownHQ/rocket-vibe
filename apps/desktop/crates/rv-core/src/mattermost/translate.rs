@@ -53,11 +53,29 @@ pub fn kmeet_call(props: &Value) -> (&'static str, String, Option<String>) {
     ("videoconf", String::new(), str_of(props, "conference_id").map(str::to_owned))
 }
 
+/// The prefix of a Mattermost Calls plugin call id: the channel whose call it is.
+pub const PLUGIN_CALL: &str = "mmcalls:";
+
+/// The Calls plugin's call post (`custom_calls`): running until it has an `end_at`,
+/// then a `videoconf-ended` with its length in seconds.
+pub fn plugin_call(props: &Value) -> (&'static str, String) {
+    let (start, end) = (positive(props, "start_at"), positive(props, "end_at"));
+    if end.is_some() {
+        let seconds = start.zip(end).filter(|(s, e)| e >= s).map(|(s, e)| ((e - s + 500) / 1000).to_string());
+        return ("videoconf-ended", seconds.unwrap_or_default());
+    }
+    ("videoconf", String::new())
+}
+
 fn system(kind: &str, props: &Value, author: Option<&str>) -> Option<(&'static str, Option<String>)> {
     let prop = |key: &str| str_of(props, key).map(str::to_owned);
     let who = || prop("username").or_else(|| author.map(str::to_owned));
     if kind == "custom_call" {
         let (kind, param, _) = kmeet_call(props);
+        return Some((kind, Some(param)));
+    }
+    if kind == "custom_calls" {
+        let (kind, param) = plugin_call(props);
         return Some((kind, Some(param)));
     }
     Some(match kind {
@@ -217,7 +235,11 @@ impl Translator<'_> {
             updated_at: positive(post, "update_at").unwrap_or(ts),
             md,
             urls: previews(metadata.get("embeds")),
-            call_id: (mm_kind == "custom_call").then(|| kmeet_call(&props).2).flatten(),
+            call_id: match mm_kind {
+                "custom_call" => kmeet_call(&props).2,
+                "custom_calls" => Some(format!("{PLUGIN_CALL}{rid}")),
+                _ => None,
+            },
             pinned: post.get("is_pinned").and_then(Value::as_bool).unwrap_or(false),
             starred: None,
             thread_followers: None,
@@ -846,6 +868,13 @@ mod tests {
         assert_eq!(object(&json!("{\"a\":1}")).unwrap()["a"], json!(1));
         assert_eq!(object(&json!({"a": 1})).unwrap()["a"], json!(1));
         assert!(object(&json!("[1]")).is_none());
+    }
+
+    #[test]
+    fn calls_plugin_posts() {
+        assert_eq!(plugin_call(&json!({"start_at": 1_000, "end_at": 0})), ("videoconf", String::new()));
+        assert_eq!(plugin_call(&json!({"start_at": 1_000, "end_at": 31_200})), ("videoconf-ended", "30".to_owned()));
+        assert_eq!(plugin_call(&json!({"end_at": 5})), ("videoconf-ended", String::new()));
     }
 
     #[test]

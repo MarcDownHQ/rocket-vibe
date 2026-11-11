@@ -35,6 +35,7 @@ internal object JitsiCall {
   }
 
   @JvmStatic external fun start(meeting: String, configJs: String, displayName: String, token: String?): Long
+  @JvmStatic external fun startMattermost(server: String, token: String, channelId: String, userId: String, iceServers: String): Long
   @JvmStatic external fun startChime(signalingUrl: String, audioHost: String, attendeeId: String, joinToken: String, origin: String): Long
   @JvmStatic external fun offer(handle: Long, sdp: String)
   @JvmStatic external fun next(handle: Long, timeoutMs: Long): String?
@@ -44,6 +45,15 @@ internal object JitsiCall {
   @JvmStatic external fun leave(handle: Long)
   @JvmStatic external fun free(handle: Long)
 }
+
+/** What joining a Mattermost Calls plugin call takes; `iceServers` is the plugin's servers as JSON. */
+internal data class MattermostCall(
+  val server: String,
+  val token: String,
+  val channelId: String,
+  val userId: String,
+  val iceServers: String,
+)
 
 /** An Amazon Chime attendee's credentials (a Slack huddle). */
 internal data class ChimeCredentials(
@@ -73,6 +83,9 @@ internal class JitsiSession(
   private var microphone: AudioTrack? = null
   private var iceServers: List<PeerConnection.IceServer> = emptyList()
   private var localId = ""
+  /** The data channel the provider wants opened by the offer (Mattermost's SFU), by its label. */
+  private var channelLabel: String? = null
+  private var channel: DataChannel? = null
   private var deafened = false
   /** Everyone else: endpoint id to display name and whether they are muted. */
   private val roster = LinkedHashMap<String, Pair<String, Boolean>>()
@@ -151,6 +164,15 @@ internal class JitsiSession(
     onChange()
   }
 
+  /** Joins a Mattermost call on a thread of its own; false at once when the library is missing. */
+  fun startMattermost(c: MattermostCall): Boolean {
+    if (!JitsiCall.available) return false
+    Thread({
+      hold { JitsiCall.startMattermost(c.server, c.token, c.channelId, c.userId, c.iceServers) }
+    }, "mattermost-call").start()
+    return true
+  }
+
   /** Joins a Chime meeting on a thread of its own; false at once when the library is missing. */
   fun startChime(c: ChimeCredentials): Boolean {
     if (!JitsiCall.available) return false
@@ -215,7 +237,10 @@ internal class JitsiSession(
 
   private fun handle(event: JSONObject) {
     when (event.optString("type")) {
-      "local" -> localId = event.optString("id")
+      "local" -> {
+        localId = event.optString("id")
+        channelLabel = event.optString("dataChannel").takeIf { it.isNotEmpty() && !event.isNull("dataChannel") }
+      }
       "ice" -> {
         val servers = event.optJSONArray("servers")
         iceServers = (0 until (servers?.length() ?: 0)).map { i ->
@@ -280,6 +305,7 @@ internal class JitsiSession(
     val track = f.createAudioTrack("${localId}-a0", f.createAudioSource(MediaConstraints()))
     track.setEnabled(VoiceEngine.microphone && !VoiceEngine.deafened)
     created.addTrack(track, listOf(localId))
+    channelLabel?.let { channel = created.createDataChannel(it, DataChannel.Init()) }
     microphone = track
     pc = created
     return created
@@ -417,6 +443,7 @@ internal class JitsiSession(
 
   /** One session's media: the peer connection, its tracks, who was heard. */
   private fun dropMedia() {
+    channel?.dispose(); channel = null
     pc?.close(); pc?.dispose(); pc = null
     microphone = null
     factory?.dispose(); factory = null

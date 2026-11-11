@@ -83,6 +83,7 @@ where
         roster: Vec::new(),
         heard: HashMap::new(),
         levels: HashMap::new(),
+        channel: None,
         offering: None,
         answering: None,
         gathered: Vec::new(),
@@ -217,7 +218,7 @@ async fn joined<S: CallSignaling>(
                     let _ = session.set_muted(!enabled).await;
                 }
                 Some(Ok(Command::RemoteOffer { sdp })) => {
-                    if !call.ensure_pc(factory, false, &peer_tx, microphone, session.local_id()) {
+                    if !call.ensure_pc(factory, false, &peer_tx, microphone, session.local_id(), session.data_channel()) {
                         session.leave().await;
                         return Stop::Over("connect_failed".to_owned());
                     }
@@ -271,7 +272,7 @@ async fn joined<S: CallSignaling>(
                 }
                 Some(CallEvent::OfferWanted { relay_only }) => {
                     call.relay_only = relay_only;
-                    if !call.ensure_pc(factory, relay_only, &peer_tx, microphone, session.local_id()) {
+                    if !call.ensure_pc(factory, relay_only, &peer_tx, microphone, session.local_id(), session.data_channel()) {
                         session.leave().await;
                         return Stop::Lost("connect_failed".to_owned());
                     }
@@ -301,7 +302,7 @@ async fn joined<S: CallSignaling>(
                     call.levels = levels.into_iter().collect();
                 }
                 Some(CallEvent::Offer { sdp }) => {
-                    if !call.ensure_pc(factory, false, &peer_tx, microphone, session.local_id()) {
+                    if !call.ensure_pc(factory, false, &peer_tx, microphone, session.local_id(), session.data_channel()) {
                         session.leave().await;
                         return Stop::Lost("connect_failed".to_owned());
                     }
@@ -570,6 +571,8 @@ struct Call {
     heard: HashMap<String, tokio::task::JoinHandle<()>>,
     /// Each member's loudness when the provider says it (Chime mixes the audio).
     levels: HashMap<String, f32>,
+    /// The data channel the provider wants open, kept for the call's life.
+    channel: Option<livekit::webrtc::data_channel::DataChannel>,
     /// An offer set, waiting for gathering to complete before it goes out, and since when.
     offering: Option<(String, tokio::time::Instant)>,
     /// The same for an answer to an offer from the app.
@@ -604,6 +607,7 @@ impl Call {
         }
         self.levels.clear();
         self.stream = None;
+        self.channel = None;
         self.offering = None;
         self.answering = None;
         self.gathered.clear();
@@ -618,6 +622,7 @@ impl Call {
         events: &mpsc::UnboundedSender<Peer>,
         microphone: &livekit::webrtc::audio_track::RtcAudioTrack,
         stream: &str,
+        channel: Option<&str>,
     ) -> bool {
         if self.pc.is_some() {
             return true;
@@ -626,6 +631,12 @@ impl Call {
             Ok(pc) => {
                 if pc.add_track(MediaStreamTrack::Audio(microphone.clone()), &[stream]).is_err() {
                     error("publish_failed");
+                }
+                if let Some(label) = channel {
+                    match pc.create_data_channel(label, livekit::webrtc::data_channel::DataChannelInit::default()) {
+                        Ok(dc) => self.channel = Some(dc),
+                        Err(e) => diagnose(&format!("call: data channel: {e:?}")),
+                    }
                 }
                 self.pc = Some(pc);
                 self.apply(microphone);

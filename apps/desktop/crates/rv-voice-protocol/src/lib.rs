@@ -29,6 +29,16 @@ pub struct RemoteMember {
     pub muted: bool,
 }
 
+/// A STUN or TURN server for a call the sidecar signals itself.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct IceServerSpec {
+    pub urls: Vec<String>,
+    #[serde(default)]
+    pub username: String,
+    #[serde(default)]
+    pub credential: String,
+}
+
 #[derive(Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum Command {
@@ -94,6 +104,19 @@ pub enum Command {
     /// The other side ended an external call.
     RemoteEnded {
         reason: String,
+    },
+    /// Join a Mattermost Calls plugin call natively, the channel's, starting it
+    /// when none runs: the sidecar speaks its signalling itself (rv-call). Audio only.
+    ConnectMattermost {
+        /// `https://host[/subpath]`.
+        server: String,
+        token: String,
+        channel_id: String,
+        /// This account's user id, left out of the roster.
+        user_id: String,
+        /// The plugin's STUN and TURN servers (`/config`, `/turn-credentials`).
+        #[serde(default)]
+        ice_servers: Vec<IceServerSpec>,
     },
     /// The room's group reached a new epoch: frames from now on use its key.
     SetKey {
@@ -192,6 +215,11 @@ impl std::fmt::Debug for Command {
             Self::RemoteAnswer { .. } => f.write_str("RemoteAnswer"),
             Self::RemoteRoster { members } => f.debug_struct("RemoteRoster").field("members", &members.len()).finish(),
             Self::RemoteEnded { reason } => f.debug_struct("RemoteEnded").field("reason", reason).finish(),
+            Self::ConnectMattermost { server, channel_id, .. } => f
+                .debug_struct("ConnectMattermost")
+                .field("server", server)
+                .field("channel_id", channel_id)
+                .finish_non_exhaustive(),
             Self::SetKey { .. } => f.write_str("SetKey"),
             Self::SetMicrophone { enabled } => f.debug_struct("SetMicrophone").field("enabled", enabled).finish(),
             Self::SetDeafened { deafened } => f.debug_struct("SetDeafened").field("deafened", deafened).finish(),

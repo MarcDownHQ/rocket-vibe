@@ -4,6 +4,7 @@
 
 pub mod chime;
 pub mod jitsi;
+pub mod mattermost;
 pub mod xml;
 
 use std::fmt;
@@ -111,6 +112,11 @@ pub trait CallSignaling {
     /// Whether a session lost on the way can be joined again by this adapter.
     fn rejoinable(&self) -> bool {
         true
+    }
+    /// A data channel the offer must open, by its label (Mattermost's SFU sends no
+    /// one's media until it is open).
+    fn data_channel(&self) -> Option<&'static str> {
+        None
     }
 }
 
