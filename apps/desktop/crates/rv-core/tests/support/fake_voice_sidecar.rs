@@ -103,6 +103,7 @@ fn main() {
                 publish(&me);
             }
             Command::ConnectExternal { .. }
+            | Command::RemoteOffer { .. }
             | Command::RemoteAnswer { .. }
             | Command::RemoteRoster { .. }
             | Command::RemoteEnded { .. } => {}

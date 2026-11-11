@@ -74,6 +74,14 @@ pub enum Command {
     /// Audio only.
     ConnectExternal {
         identity: String,
+        /// The remote side offers first ([`Command::RemoteOffer`]): no local offer.
+        #[serde(default)]
+        answering: bool,
+    },
+    /// An offer from the other side of an external call, in plain WebRTC SDP:
+    /// answered with [`Event::LocalAnswer`].
+    RemoteOffer {
+        sdp: String,
     },
     /// The answer to [`Event::LocalOffer`], in plain WebRTC SDP.
     RemoteAnswer {
@@ -180,6 +188,7 @@ impl std::fmt::Debug for Command {
                 .field("attendee_id", attendee_id)
                 .finish_non_exhaustive(),
             Self::ConnectExternal { .. } => f.write_str("ConnectExternal"),
+            Self::RemoteOffer { .. } => f.write_str("RemoteOffer"),
             Self::RemoteAnswer { .. } => f.write_str("RemoteAnswer"),
             Self::RemoteRoster { members } => f.debug_struct("RemoteRoster").field("members", &members.len()).finish(),
             Self::RemoteEnded { reason } => f.debug_struct("RemoteEnded").field("reason", reason).finish(),
@@ -307,6 +316,10 @@ pub enum Event {
     /// An external call's local offer, its candidates in it: signal it, then
     /// give the answer back with [`Command::RemoteAnswer`].
     LocalOffer {
+        sdp: String,
+    },
+    /// The answer to [`Command::RemoteOffer`], its candidates in it.
+    LocalAnswer {
         sdp: String,
     },
     Hello {

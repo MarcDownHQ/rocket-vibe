@@ -349,6 +349,8 @@ struct Inner {
     input_level: AtomicU32,
     /// An external call's local offer, from the sidecar to whoever signals it.
     local_offer: tokio::sync::watch::Sender<Option<String>>,
+    /// Its local answers to the offers given to it, in order.
+    local_answers: broadcast::Sender<String>,
 }
 
 /// A Jitsi Meet call to carry natively: where its conference is and as whom.
@@ -461,6 +463,7 @@ impl VoiceController {
                 video: Mutex::default(),
                 input_level: AtomicU32::new(0),
                 local_offer: tokio::sync::watch::channel(None).0,
+                local_answers: broadcast::channel(8).0,
             }),
         }
     }
@@ -541,7 +544,7 @@ impl VoiceController {
     /// `remote_*` methods.
     pub async fn connect_external(&self, label: &str, identity: &str) -> Result<(), VoiceError> {
         self.inner.local_offer.send_replace(None);
-        let connect = Command::ConnectExternal { identity: identity.to_owned() };
+        let connect = Command::ConnectExternal { identity: identity.to_owned(), answering: false };
         self.start(label.to_owned(), true, None, None, connect).await
     }
 
@@ -551,6 +554,14 @@ impl VoiceController {
         let mut offers = self.inner.local_offer.subscribe();
         let offer = tokio::time::timeout(Duration::from_secs(15), offers.wait_for(Option::is_some)).await.ok()?.ok()?;
         offer.clone()
+    }
+
+    /// Gives an offer from the other side of an external call: the answer, once
+    /// made; `None` when it does not come in time.
+    pub async fn answer_remote_offer(&self, sdp: &str) -> Option<String> {
+        let mut answers = self.inner.local_answers.subscribe();
+        self.command(Command::RemoteOffer { sdp: sdp.to_owned() }).await;
+        tokio::time::timeout(Duration::from_secs(15), answers.recv()).await.ok()?.ok()
     }
 
     pub async fn remote_answer(&self, sdp: &str) {
@@ -937,6 +948,9 @@ impl Inner {
                 }
                 Event::LocalOffer { sdp } => {
                     self.local_offer.send_replace(Some(sdp));
+                }
+                Event::LocalAnswer { sdp } => {
+                    let _ = self.local_answers.send(sdp);
                 }
                 Event::Hello { .. } | Event::Devices { .. } | Event::Screens { .. } | Event::InputLevel { .. } => {}
             }

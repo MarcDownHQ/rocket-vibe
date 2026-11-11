@@ -84,6 +84,7 @@ where
         heard: HashMap::new(),
         levels: HashMap::new(),
         offering: None,
+        answering: None,
         gathered: Vec::new(),
         relay_only: false,
         stream: None,
@@ -215,6 +216,29 @@ async fn joined<S: CallSignaling>(
                     local(Ok(Command::SetMicrophone { enabled }), call, microphone, sound);
                     let _ = session.set_muted(!enabled).await;
                 }
+                Some(Ok(Command::RemoteOffer { sdp })) => {
+                    if !call.ensure_pc(factory, false, &peer_tx, microphone, session.local_id()) {
+                        session.leave().await;
+                        return Stop::Over("connect_failed".to_owned());
+                    }
+                    let Some(pc) = &call.pc else { continue };
+                    match negotiate(pc, &sdp).await {
+                        Ok(answer) => {
+                            call.answering = Some((answer, tokio::time::Instant::now()));
+                            // A new offer on a running call gathers nothing more.
+                            if call.connected || pc.ice_gathering_state() == IceGatheringState::Complete {
+                                send_answer(call);
+                            }
+                        }
+                        Err(e) => {
+                            diagnose(&format!("call: remote offer: {e}"));
+                            if !call.connected {
+                                session.leave().await;
+                                return Stop::Over("connect_failed".to_owned());
+                            }
+                        }
+                    }
+                }
                 Some(Ok(Command::RemoteAnswer { sdp })) => {
                     if let Err(e) = set_answer(call, &sdp).await {
                         diagnose(&format!("call: answer: {e}"));
@@ -314,6 +338,7 @@ async fn joined<S: CallSignaling>(
                     let _ = session.local_candidate(candidate).await;
                 }
                 Peer::Gathered => {
+                    send_answer(call);
                     if send_offer(session, call).await.is_err() {
                         return Stop::Lost("other".to_owned());
                     }
@@ -347,6 +372,9 @@ async fn joined<S: CallSignaling>(
                 }
             }
             _ = activity.tick() => {
+                if call.answering.as_ref().is_some_and(|(_, at)| at.elapsed() > GATHERING) {
+                    send_answer(call);
+                }
                 if call
                     .offering
                     .as_ref()
@@ -372,12 +400,13 @@ async fn set_answer(call: &Call, sdp: &str) -> Result<(), String> {
 /// app answers through the window's commands. It cannot be joined again from here.
 pub struct External {
     identity: String,
+    answering: bool,
     started: u8,
 }
 
 impl External {
-    pub fn new(identity: String) -> Self {
-        External { identity, started: 0 }
+    pub fn new(identity: String, answering: bool) -> Self {
+        External { identity, answering, started: 0 }
     }
 }
 
@@ -390,7 +419,7 @@ impl CallSignaling for External {
                 self.started = 1;
                 Some(CallEvent::IceServers(Vec::new()))
             }
-            1 => {
+            1 if !self.answering => {
                 self.started = 2;
                 Some(CallEvent::OfferWanted { relay_only: false })
             }
@@ -424,6 +453,12 @@ impl CallSignaling for External {
     fn rejoinable(&self) -> bool {
         false
     }
+}
+
+/// The answer waiting for gathering, with the candidates found so far.
+fn send_answer(call: &mut Call) {
+    let Some((sdp, _)) = call.answering.take() else { return };
+    emit(Event::LocalAnswer { sdp: rv_call::sdp_with_candidates(&sdp, &call.gathered) });
 }
 
 /// The offer waiting for gathering, with the candidates found so far.
@@ -537,6 +572,8 @@ struct Call {
     levels: HashMap<String, f32>,
     /// An offer set, waiting for gathering to complete before it goes out, and since when.
     offering: Option<(String, tokio::time::Instant)>,
+    /// The same for an answer to an offer from the app.
+    answering: Option<(String, tokio::time::Instant)>,
     /// The local candidates so far, which an offer that waited carries.
     gathered: Vec<Candidate>,
     relay_only: bool,
@@ -568,6 +605,7 @@ impl Call {
         self.levels.clear();
         self.stream = None;
         self.offering = None;
+        self.answering = None;
         self.gathered.clear();
     }
 
@@ -669,11 +707,20 @@ mod tests {
 
     #[tokio::test]
     async fn an_external_call_offers_once_however_often_it_is_asked() {
-        let mut session = External::new("me".into());
+        let mut session = External::new("me".into(), false);
         assert!(matches!(next(&mut session).await, Some(Some(CallEvent::IceServers(_)))));
         assert!(matches!(next(&mut session).await, Some(Some(CallEvent::OfferWanted { .. }))));
         for _ in 0..1000 {
             assert!(next(&mut session).await.is_none(), "nothing more, ever");
+        }
+    }
+
+    #[tokio::test]
+    async fn an_answering_call_never_offers() {
+        let mut session = External::new("me".into(), true);
+        assert!(matches!(next(&mut session).await, Some(Some(CallEvent::IceServers(_)))));
+        for _ in 0..1000 {
+            assert!(next(&mut session).await.is_none());
         }
     }
 }
