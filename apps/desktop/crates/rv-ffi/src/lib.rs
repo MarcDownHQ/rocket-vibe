@@ -634,6 +634,11 @@ impl Chat {
     }
 
     /// Places a Teams call in this chat natively; None to open Teams' page instead.
+    /// Joins a Mattermost channel's call natively (`mmcalls:<channel>`, the Calls plugin).
+    pub async fn start_plugin_call(&self, call_id: String, title: String) -> Option<Arc<jitsi_call::JitsiCallSession>> {
+        jitsi_call::start_plugin_call(self.session.clone(), call_id, title).await
+    }
+
     pub async fn start_teams_call(&self, rid: String, title: String) -> Option<Arc<jitsi_call::JitsiCallSession>> {
         jitsi_call::start_teams(self.session.clone(), rid, title).await
     }

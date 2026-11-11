@@ -25,6 +25,18 @@ final class CallWindow: NSObject, WKUIDelegate, WKNavigationDelegate, NSWindowDe
     /// `displayName` its name there); its page opens when that cannot be done.
     /// A Teams call started in a chat (`teamsRoom`) runs natively first too.
     static func show(_ url: URL, title: String, slackCookie: String? = nil, displayName: String? = nil, chat: Chat? = nil, teamsRoom: String? = nil) {
+        // A Mattermost Calls plugin call runs natively only: it has no page.
+        if url.scheme == "mmcalls" {
+            guard let chat else { return NSSound.beep() }
+            Task {
+                if let native = await chat.startPluginCall(callId: url.absoluteString, title: title) {
+                    NativeCallWindow.show(native, title: title)
+                } else {
+                    NSSound.beep()
+                }
+            }
+            return
+        }
         if let teamsRoom, let chat {
             Task {
                 if let native = await chat.startTeamsCall(rid: teamsRoom, title: title) {

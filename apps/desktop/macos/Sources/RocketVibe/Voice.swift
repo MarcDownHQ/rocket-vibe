@@ -939,7 +939,7 @@ struct RingingCallCard: View {
                     .foregroundStyle(Color.red)
                 Button(L("voice_session.accept")) {
                     let title = L("call.window_title", ["room": app.callerName(call)])
-                    Task { if let link = await app.answerCall(call), let url = URL(string: link) { CallWindow.show(url, title: title, displayName: app.account?.username) } }
+                    Task { if let link = await app.answerCall(call), let url = URL(string: link) { CallWindow.show(url, title: title, displayName: app.account?.username, chat: app.provider?.legacy) } }
                 }
                 .keyboardShortcut(.defaultAction)
             }
