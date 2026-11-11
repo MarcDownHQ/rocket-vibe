@@ -382,11 +382,18 @@ impl External {
 }
 
 impl CallSignaling for External {
+    /// The engine's loop drops and calls this again on everything else it does,
+    /// so it may be called any number of times: each step once.
     async fn next_event(&mut self) -> Option<CallEvent> {
-        self.started += 1;
         match self.started {
-            1 => Some(CallEvent::IceServers(Vec::new())),
-            2 => Some(CallEvent::OfferWanted { relay_only: false }),
+            0 => {
+                self.started = 1;
+                Some(CallEvent::IceServers(Vec::new()))
+            }
+            1 => {
+                self.started = 2;
+                Some(CallEvent::OfferWanted { relay_only: false })
+            }
             _ => std::future::pending().await,
         }
     }
@@ -648,6 +655,25 @@ impl Call {
         if self.last.as_ref() != Some(&participants) {
             self.last = Some(participants.clone());
             emit(Event::Participants { participants });
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    async fn next(session: &mut External) -> Option<Option<CallEvent>> {
+        tokio::time::timeout(Duration::ZERO, session.next_event()).await.ok()
+    }
+
+    #[tokio::test]
+    async fn an_external_call_offers_once_however_often_it_is_asked() {
+        let mut session = External::new("me".into());
+        assert!(matches!(next(&mut session).await, Some(Some(CallEvent::IceServers(_)))));
+        assert!(matches!(next(&mut session).await, Some(Some(CallEvent::OfferWanted { .. }))));
+        for _ in 0..1000 {
+            assert!(next(&mut session).await.is_none(), "nothing more, ever");
         }
     }
 }
