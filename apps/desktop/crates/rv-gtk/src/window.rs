@@ -2083,15 +2083,7 @@ impl AppWindow {
                     session.dismiss_call();
                     let room = session.store.room_name(rid).map(|(name, _)| name);
                     this.switch_to(account.clone());
-                    let (weak, session, id) = (Rc::downgrade(&this), session.clone(), ring.clone());
-                    glib::spawn_future_local(async move {
-                        let url = on_tokio(async move { session.join_call(&id).await }).await;
-                        let Some(this) = weak.upgrade() else { return };
-                        match url {
-                            Ok(url) => this.chat.open_call(&url, &room.unwrap_or_default()),
-                            Err(_) => this.chat.toast(t("call.failed").to_owned()),
-                        }
-                    });
+                    this.chat.accept_call(session, &ring, &room.unwrap_or_default());
                 }
                 (Answer::Call(session, _), "decline") => {
                     let (session, id) = (session.clone(), ring.clone());

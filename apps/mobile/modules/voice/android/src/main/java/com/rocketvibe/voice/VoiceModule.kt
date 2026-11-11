@@ -67,8 +67,8 @@ class VoiceModule : Module() {
     AsyncFunction("connectMattermost") { callId: String, server: String, token: String, channelId: String, userId: String, iceServers: String, title: String ->
       VoiceEngine.connectMattermost(callId, MattermostCall(server, token, channelId, userId, iceServers), title)
     }.runOnQueue(Queues.MAIN)
-    AsyncFunction("connectExternal") { callId: String, identity: String, title: String ->
-      VoiceEngine.connectExternal(callId, identity, title)
+    AsyncFunction("connectExternal") { callId: String, identity: String, title: String, answering: Boolean ->
+      VoiceEngine.connectExternal(callId, identity, title, answering)
     }.runOnQueue(Queues.MAIN)
     AsyncFunction("remoteAnswer") { sdp: String -> VoiceEngine.remoteAnswer(sdp) }.runOnQueue(Queues.MAIN)
     AsyncFunction("remoteOffer") { sdp: String, promise: Promise -> VoiceEngine.remoteOffer(sdp) { answer -> promise.resolve(answer) } }.runOnQueue(Queues.MAIN)

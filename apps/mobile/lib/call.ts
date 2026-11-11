@@ -146,6 +146,19 @@ export async function placeNative(client: RestClient, room: string, engine: Exte
   return true;
 }
 
+/** Whether the call ringing in this room can be answered on the voice engine (Teams). */
+export function answerableNative(client: RestClient, room: string): boolean {
+  return bindings.get(client)?.calls?.answerable?.(room) === true;
+}
+
+/** Answers the call ringing in this room on the voice engine: false when its provider cannot. */
+export async function answerNative(client: RestClient, room: string, engine: ExternalCallEngine): Promise<boolean> {
+  const calls = bindings.get(client)?.calls;
+  if (calls?.answerExternal === undefined || calls.answerable?.(room) !== true) return false;
+  await calls.answerExternal(room, engine);
+  return true;
+}
+
 /** The name of someone in a native call whose provider gives only an id. */
 export async function callPersonName(client: RestClient, identity: string): Promise<string | null> {
   const name = bindings.get(client)?.calls?.personName;

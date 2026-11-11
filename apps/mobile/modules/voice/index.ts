@@ -45,7 +45,8 @@ type Bridge={
    * A call whose signalling the app speaks itself (Teams), audio only: the offer
    * arrives on `localOffer`, the rest goes through the `remote*` functions.
    */
-  connectExternal(callId:string,identity:string,title:string):Promise<boolean>;
+  /** `answering`: the other side offers first ([`remoteOffer`]), no local offer. */
+  connectExternal(callId:string,identity:string,title:string,answering:boolean):Promise<boolean>;
   remoteAnswer(sdp:string):Promise<void>;
   /** Answers an offer from the other side of such a call (a hold, a resume): the local answer, null when it cannot. */
   remoteOffer(sdp:string):Promise<string|null>;

@@ -298,22 +298,133 @@ export async function placeExternalCall(deps: CallDeps, engine: ExternalCallEngi
   const chain = deps.id();
   await engine.start(caller.endpoint);
   const offer = await engine.offer();
-  const queued: Doc[] = [];
-  let handle: (envelope: Doc) => void = (envelope) => { queued.push(envelope); };
-  const unsubscribe = deps.pushes((envelope) => handle(envelope));
+  const pushes = listen(deps);
   let created: Doc;
   try {
     created = await deps.post(EPCONV, chain, placeCallBody(caller, to, thread, teamsOffer(offer), deps.id()));
   } catch (error) {
-    unsubscribe();
+    pushes.stop();
     throw error;
   }
-  const links = (created.links ?? {}) as Doc;
+  runCall(deps, engine, caller, chain, (created.links ?? {}) as Doc, pushes, null);
+}
+
+/** A ringing call's offer and the links that answer it (`callNotification` of its push). */
+export type TeamsAnswering = { attach: string; offer: string; mediaLeg: string | null; conversation: string };
+
+/** `attach`'s body, answering a ring here: this endpoint's callbacks, and the join of its conversation. */
+export function attachBody(c: Caller, conversation: string): Doc {
+  const cb = (path: string) => callback(c, path);
+  return {
+    attach: { requireMediaContent: false, links: { end: cb('call/end/') }, locationContent: null, networkContent: null, areaContent: null },
+    capabilities: null,
+    endpointCapabilities: 73463,
+    additionalActions: [{
+      name: 'join',
+      url: conversation,
+      waitForResponse: true,
+      input: {
+        capabilities: null,
+        endpointCapabilities: 73463,
+        conversationRequest: {
+          roster: { type: 'Delta', rosterUpdate: cb('conversation/rosterUpdate/') },
+          links: {
+            conversationEnd: cb('conversation/conversationEnd/'),
+            conversationUpdate: cb('conversation/conversationUpdate/'),
+            localParticipantUpdate: cb('conversation/localParticipantUpdate/'),
+            addParticipantSuccess: cb('conversation/addParticipantSuccess/'),
+            addParticipantFailure: cb('conversation/addParticipantFailure/'),
+            receiveMessage: cb('conversation/receiveMessage/'),
+          },
+        },
+        endpointMetadata: {},
+        participants: { from: fromOf(c) },
+      },
+    }],
+  };
+}
+
+/** An `attach`'s answer as one set of links, the conversation's first (`leave`), then the call's (`acceptance`, `subscribe`). */
+export function attachedLinks(answer: Doc): Doc | null {
+  const invitation = (answer.callInvitation as Doc | undefined)?.links as Doc | undefined;
+  const responses = answer.additionalActionResponses;
+  const joined = Array.isArray(responses) ? ((responses[0] as Doc | undefined)?.output as Doc | undefined) : undefined;
+  if (invitation === undefined || joined === undefined) return null;
+  return { ...invitation, ...((joined.links ?? {}) as Doc) };
+}
+
+/** `acceptance`'s body: the answer in Teams' dialect, under the offer's media leg. */
+export function acceptBody(c: Caller, answer: string, mediaLeg: string | null): Doc {
+  const cb = (path: string) => callback(c, path);
+  return {
+    callAcceptance: {
+      acceptedBy: fromOf(c),
+      acceptedCallModalities: ['Audio'],
+      capabilities: null,
+      endpointCapabilities: 73463,
+      clientEndpointCapabilities: 114259690,
+      links: {
+        mediaRenegotiation: cb('call/mediaRenegotiation/'), transfer: cb('call/transfer/'), replacement: cb('call/replacement/'),
+        balanceUpdate: cb('call/balanceUpdate/'), retargetCompletion: cb('call/retargetCompletion/'),
+        controlVideoStreaming: cb('call/controlVideoStreaming/'), updateMediaDescriptions: cb('call/updateMediaDescriptions'),
+      },
+      clientContentForMediaController: { controlVideoStreaming: cb('call/controlVideoStreaming/'), csrcInfo: cb('call/csrcInfo/') },
+      mediaContent: { blob: answer, contentType: 'application/sdp-ngc-1.0', mediaLegId: mediaLeg },
+      pstnContent: { emergencyCallCountry: '', platformName: CALL_CLIENT, publicApiCall: false },
+      callKeepAliveInterval: null,
+    },
+  };
+}
+
+/** Answers a ringing call on `engine`: attaches, answers its offer and accepts; then the call runs as a placed one. */
+export async function answerExternalCall(deps: CallDeps, engine: ExternalCallEngine, ring: TeamsAnswering): Promise<void> {
+  if (engine.answerOffer === undefined) throw new Error('call_not_answerable');
+  const caller: Caller = { ...deps.me, endpoint: deps.id(), participant: deps.id(), surl: deps.surl, random: deps.id() };
+  const chain = deps.id();
+  const plain = webrtcAnswer(ring.offer);
+  if (plain === null) throw new Error('call_offer_invalid');
+  const pushes = listen(deps);
+  try {
+    const links = attachedLinks(await deps.post(ring.attach, chain, attachBody(caller, ring.conversation)));
+    if (links === null || typeof links.acceptance !== 'string') throw new Error('call_attach_failed');
+    await engine.start(caller.endpoint);
+    const local = await engine.answerOffer(plain);
+    if (local === null) throw new Error('call_answer_failed');
+    await deps.post(links.acceptance, chain, acceptBody(caller, teamsAnswer(local, ring.offer), ring.mediaLeg));
+    runCall(deps, engine, caller, chain, links, pushes, audioMid(plain) ?? '0');
+  } catch (error) {
+    pushes.stop();
+    throw error;
+  }
+}
+
+type Pushes = { stop: () => void; attach: (handle: (envelope: Doc) => void) => void };
+
+/** The call's pushes, held from before its first request until the run takes them. */
+function listen(deps: CallDeps): Pushes {
+  const queued: Doc[] = [];
+  let handle: (envelope: Doc) => void = (envelope) => { queued.push(envelope); };
+  const stop = deps.pushes((envelope) => handle(envelope));
+  return {
+    stop,
+    attach: (next) => {
+      handle = next;
+      for (const envelope of queued.splice(0)) next(envelope);
+    },
+  };
+}
+
+/**
+ * The call's run until it ends: the broker lease, the endpoint metadata, the
+ * answer (when placed here), renegotiations, the roster and the end. `sessionMid`
+ * is the audio section's mid of a call answered here, accepted already.
+ */
+function runCall(deps: CallDeps, engine: ExternalCallEngine, caller: Caller, chain: string, links: Doc, pushes: Pushes, accepted: string | null): void {
   const leaveLink = links.leave;
   const leave = () => { if (typeof leaveLink === 'string') void deps.post(leaveLink, chain, leaveBody(caller)).catch(() => {}); };
   let done = false;
-  let answered = false;
-  let sessionMid: string | null = null;
+  let answered = accepted !== null;
+  let sessionMid: string | null = accepted;
   const sleep = deps.sleep ?? ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
   const holdLease = async (first: string) => {
     let url = first;
@@ -334,12 +445,12 @@ export async function placeExternalCall(deps: CallDeps, engine: ExternalCallEngi
     if (done) return;
     done = true;
     clearTimeout(ringing);
-    unsubscribe();
+    pushes.stop();
     if (reason !== null) void engine.ended(reason);
   };
   const ringing = setTimeout(() => { if (!answered) { finish('no_answer'); leave(); } }, RINGING_MS);
   const roster = new Map<string, string>();
-  handle = (envelope) => {
+  pushes.attach((envelope) => {
     if (done || !isCallCallback(envelope, caller.endpoint)) return;
     const event = callPushEvent(envelope);
     if (event.kind === 'accepted' && !answered) {
@@ -365,7 +476,6 @@ export async function placeExternalCall(deps: CallDeps, engine: ExternalCallEngi
       }
       void engine.roster([...roster].map(([id, name]) => ({ id, name, muted: false })));
     } else if (event.kind === 'ended') finish('remote_ended');
-  };
+  });
   void engine.left().then(() => { if (!done) { finish(null); leave(); } });
-  for (const envelope of queued) handle(envelope);
 }

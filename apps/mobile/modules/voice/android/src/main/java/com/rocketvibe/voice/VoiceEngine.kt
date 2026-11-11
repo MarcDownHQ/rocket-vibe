@@ -510,10 +510,10 @@ object VoiceEngine {
    * A call whose signalling the app speaks itself (Teams), audio only: the offer
    * arrives through [onLocalOffer], the rest through the `remote*` functions.
    */
-  fun connectExternal(callId: String, identity: String, title: String): Boolean =
+  fun connectExternal(callId: String, identity: String, title: String, answering: Boolean): Boolean =
     connectNative(callId, title) { session ->
       session.onLocalOffer = { sdp -> onLocalOffer?.invoke(sdp) }
-      session.startExternal(identity)
+      session.startExternal(identity, answering)
       true
     }
 

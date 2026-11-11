@@ -566,6 +566,14 @@ impl VoiceController {
         self.start(label.to_owned(), true, None, None, connect).await
     }
 
+    /// Starts a call whose signalling the app speaks itself, the other side offering
+    /// first (an incoming Teams call): no local offer, [`Self::answer_remote_offer`] answers.
+    pub async fn connect_external_answering(&self, label: &str, identity: &str) -> Result<(), VoiceError> {
+        self.inner.local_offer.send_replace(None);
+        let connect = Command::ConnectExternal { identity: identity.to_owned(), answering: true };
+        self.start(label.to_owned(), true, None, None, connect).await
+    }
+
     /// The external call's local offer, once the sidecar gathered it; `None` when
     /// it does not come in time.
     pub async fn local_offer(&self) -> Option<String> {

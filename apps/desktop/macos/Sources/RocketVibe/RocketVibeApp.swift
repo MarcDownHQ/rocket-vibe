@@ -141,7 +141,14 @@ struct RocketVibeApp: App {
             NSApp.activate()
             if accept {
                 let title = L("call.window_title", ["room": app.callerName(call)])
-                Task { if let link = await app.answerCall(call), let url = URL(string: link) { CallWindow.show(url, title: title, displayName: app.account?.username, chat: app.provider?.legacy) } }
+                Task {
+                    if let chat = app.provider?.legacy, chat.teamsCallAnswerable(rid: call.rid),
+                       let native = await chat.answerTeamsCall(rid: call.rid, title: title) {
+                        NativeCallWindow.show(native, title: title)
+                        return
+                    }
+                    if let link = await app.answerCall(call), let url = URL(string: link) { CallWindow.show(url, title: title, displayName: app.account?.username, chat: app.provider?.legacy) }
+                }
             } else {
                 app.declineCall(call)
             }

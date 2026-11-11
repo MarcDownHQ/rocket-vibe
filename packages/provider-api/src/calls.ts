@@ -36,6 +36,10 @@ export type NativeCalls={
   placeable?:(room:string)=>boolean;
   /** Places this room's call on the engine: resolves once the provider took it. */
   placeExternal?:(room:string,engine:ExternalCallEngine)=>Promise<void>;
+  /** Whether the call ringing in this room can be answered on the voice engine. */
+  answerable?:(room:string)=>boolean;
+  /** Answers the call ringing in this room on the engine: resolves once accepted. */
+  answerExternal?:(room:string,engine:ExternalCallEngine)=>Promise<void>;
   /** The name of someone in such a call, from the id the call gives them. */
   personName?:(identity:string)=>Promise<string|null>;
 };

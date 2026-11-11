@@ -120,6 +120,20 @@ pub struct Ring {
     pub multi_party: bool,
     /// A group call's conversation, when the push names one.
     pub thread: Option<String>,
+    /// What answering it here takes, when the push carries it.
+    pub answer: Option<Answering>,
+}
+
+/// A ringing call's offer and the links that answer it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Answering {
+    /// The `attach` link: registers this endpoint's callbacks on the call.
+    pub attach: String,
+    /// The caller's offer, in Teams' dialect.
+    pub offer: String,
+    pub media_leg: Option<String>,
+    /// The conversation's controller, which the attach joins.
+    pub conversation: String,
 }
 
 const RING: i64 = 107;
@@ -148,6 +162,7 @@ pub fn call_push(envelope: &Value) -> Option<CallPush> {
                     .and_then(Value::as_bool)
                     .unwrap_or(false),
                 thread: gp.get("groupContext").and_then(thread_in),
+                answer: answering(&gp),
             }))
         }
         JOINED_ELSEWHERE | CONVERSATION_OVER => {
@@ -173,6 +188,16 @@ pub fn conversation_over(envelope: &Value) -> Option<String> {
         return None;
     }
     pushed_cp(&body)?.get("conversationController")?.as_str().map(str::to_owned)
+}
+
+fn answering(gp: &Value) -> Option<Answering> {
+    let text = |path: &str| gp.pointer(path).and_then(Value::as_str).filter(|s| !s.is_empty()).map(str::to_owned);
+    Some(Answering {
+        attach: text("/callNotification/links/attach").filter(|u| u.starts_with("https://"))?,
+        offer: text("/callNotification/mediaContent/blob")?,
+        media_leg: text("/callNotification/mediaContent/mediaLegId"),
+        conversation: text("/conversationInvitation/conversationController").filter(|u| u.starts_with("https://"))?,
+    })
 }
 
 /// The `callEnd` a decline sends to the ring's `reject` link (Teams' web
@@ -284,6 +309,14 @@ mod tests {
         assert!(ring.reject.unwrap().ends_with("/reject?i=1"));
         assert!(!ring.multi_party);
         assert_eq!(ring.thread, None);
+        assert_eq!(ring.answer, None, "no offer: answered in Teams only");
+        let mut offered = gp.clone();
+        offered["callNotification"]["mediaContent"] = json!({"blob": "v=0", "mediaLegId": "LEG"});
+        let encoded = base64::engine::general_purpose::STANDARD_NO_PAD.encode(offered.to_string());
+        let Some(CallPush::Ring(ring)) = call_push(&push(json!({"evt": 107, "gp": encoded}))) else { panic!("a ring") };
+        let answer = ring.answer.expect("answerable");
+        assert_eq!((answer.attach.as_str(), answer.offer.as_str()), ("https://x/attach", "v=0"));
+        assert_eq!((answer.media_leg.as_deref(), answer.conversation.as_str()), (Some("LEG"), "https://x/conv/1"));
     }
 
     #[test]

@@ -431,8 +431,23 @@ meetings with video (2 to 3 months more).
 ran 3 minutes (2026-11-07). The `a=mid` rewrite for hold and resume is in place but not yet run with a person. The media server connects before the callee answers, so `connected`
   comes while it rings (the window shows "waiting" until someone else is in the roster). **Not run**: hold and resume after the
   `a=mid` fix; a group chat's call; another network; SwiftUI (macOS CI only), Android on a
-  device (Kotlin compiled only). **Owed**: answering an incoming call
-  natively (Accept still opens Teams' page), meetings, channels. `callKeepAliveInterval` (2700 s) is
+  device (Kotlin compiled only). **Owed**: meetings, channels.
+- **Answering an incoming call** (2026-11-11, from `teams.cloud.microsoft_call_in.har`): the ring
+  push (`evt` 107, `gp`) carries the caller's offer (`callNotification.mediaContent.blob`, its
+  `mediaLegId`), the `attach` link and the conversation's controller (`frames::Answering`, kept per
+  room in `Session::teams_answerable`). Accept POSTs `attach {attach {requireMediaContent: false,
+  links {end}}, additionalActions: [{name: join, url: <controller>, input {conversationRequest
+  {roster, links}, participants {from}}}]}`, whose answer gives the call's links (`acceptance`,
+  `subscribe`) and the conversation's (`leave`, `updateEndpointMetadata`, `calling::attached`); the
+  sidecar answers the offer in answering mode (`ConnectExternal {answering: true}`, then
+  `RemoteOffer`), and `acceptance` takes `callAcceptance {acceptedBy, acceptedCallModalities: [Audio],
+  links, mediaContent {blob, mediaLegId}}` (answered by `callAcceptanceAcknowledgement`). The call
+  then runs as a placed one (`drive` with the answer's mid: lease, metadata, renegotiations, end).
+  Teams' web client also posts `progress {status: ringing}`, `updateEndpointState` and
+  `updateParticipantProperties`: not sent, and **not yet run live**. A ring without the offer, or
+  any failure, keeps the old path (Teams' page). Android does the same in `provider-teams`
+  (`answerExternalCall`, `connectExternal(..., answering)`); SwiftUI from the foreground prompt only
+  (a background account's ring still opens the page). `callKeepAliveInterval` (2700 s) is
   unexplained: no capture shows what it wants, so a call past 45 minutes may end.
 
 ### Long calls: what ended them, and recovery (2026-11-05)

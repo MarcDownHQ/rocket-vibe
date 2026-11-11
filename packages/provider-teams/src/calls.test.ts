@@ -21,8 +21,11 @@ test('a ring names its caller and decline link; the conversation events after it
   };
   assert.deepEqual(callPush(push({ evt: 107, gp: base64(gp) })), {
     kind: 'ring', callId: '589ac9cc-0000-4000-8000-000000000000', callerMri: '8:orgid:caller', callerName: 'Adà Lovelace',
-    reject: 'https://api.flightproxy.teams.microsoft.com/api/v2/ep/cc/forked/x/reject?i=1', multiParty: false, thread: null,
+    reject: 'https://api.flightproxy.teams.microsoft.com/api/v2/ep/cc/forked/x/reject?i=1', multiParty: false, thread: null, answer: null,
   });
+  const offered = { ...gp, callNotification: { ...gp.callNotification, mediaContent: { blob: 'v=0', mediaLegId: 'LEG' } } };
+  assert.deepEqual((callPush(push({ evt: 107, gp: base64(offered) })) as { answer: unknown }).answer,
+    { attach: 'https://x/attach', offer: 'v=0', mediaLeg: 'LEG', conversation: 'https://x/conv/1' });
   const group = { ...gp, conversationInvitation: { isMultiParty: true }, groupContext: { threadId: '19:abc@thread.v2' } };
   assert.equal((callPush(push({ evt: 107, gp: base64(group) })) as { thread: string }).thread, '19:abc@thread.v2');
   assert.deepEqual(callPush(push({ evt: 115, cp: 'gzip' })), { kind: 'moved' });
@@ -34,7 +37,7 @@ test('a ring names its caller and decline link; the conversation events after it
 
 test('a ring rings on its 1:1 or its group conversation, never my own', () => {
   const me = '8:orgid:f1c9871e-4fe6-43b1-aa6f-5151f41cb073';
-  const ring = { kind: 'ring' as const, callId: 'c1', callerMri: '8:orgid:e91438dc-73eb-4dd2-9689-2d77b9bd5fcc', callerName: 'Fairouz', reject: null, multiParty: false, thread: null };
+  const ring = { kind: 'ring' as const, callId: 'c1', callerMri: '8:orgid:e91438dc-73eb-4dd2-9689-2d77b9bd5fcc', callerName: 'Fairouz', reject: null, multiParty: false, thread: null, answer: null };
   const oneOnOne = '19:e91438dc-73eb-4dd2-9689-2d77b9bd5fcc_f1c9871e-4fe6-43b1-aa6f-5151f41cb073@unq.gbl.spaces';
   assert.deepEqual(callSignal(ring, me), { kind: 'ring', rid: oneOnOne, messageId: 'c1', callId: oneOnOne, callerId: ring.callerMri, callerName: 'Fairouz' });
   assert.equal(callSignal({ ...ring, multiParty: true }, me), null, 'a group call the push names no conversation for');
