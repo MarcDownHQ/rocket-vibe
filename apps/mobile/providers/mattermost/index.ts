@@ -21,6 +21,7 @@ import { MmActions } from './actions.ts';
 import { mattermostActivity } from './activity.ts';
 import { MmCategories } from './categories.ts';
 import { kmeetCalls } from './kmeet.ts';
+import { pluginCalls } from './pluginCalls.ts';
 import { mattermostSidebarSettings } from './sidebarSettings.ts';
 import { MmCatchUp } from './catchUp.ts';
 import { MmClient, MmError } from './client.ts';
@@ -92,8 +93,8 @@ export function createMattermostProvider(
   return {
     identity: { kind: session.kind, origin: session.baseUrl, accountId: session.userId, instanceId: null, generation: null },
     describeError: describeMmError,
-    capabilities: kchat ? { ...MATTERMOST_CAPABILITIES, videoCall: true } : MATTERMOST_CAPABILITIES,
-    calls: kchat ? kmeetCalls(client) : undefined,
+    capabilities: { ...MATTERMOST_CAPABILITIES, videoCall: true },
+    calls: kchat ? kmeetCalls(client) : pluginCalls(client, directory, session.userId),
     sidebarSettings: mattermostSidebarSettings(client, session.userId),
     ownActivity: mattermostActivity(client, session.userId),
     listener,

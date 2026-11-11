@@ -93,6 +93,15 @@ impl Call {
         Some(Self::driven(runtime, session))
     }
 
+    /// Joins a channel's Mattermost call (the Calls plugin); `None` when it fails.
+    /// `ice_servers` is the plugin's servers as JSON (`[{urls, username, credential}]`).
+    pub fn start_mattermost(config: rv_call::mattermost::Config, ice_servers: &str) -> Option<Call> {
+        let runtime = Self::runtime()?;
+        let servers = ice_servers_of(ice_servers);
+        let session = runtime.block_on(rv_call::mattermost::join(config, servers)).ok()?;
+        Some(Self::driven(runtime, session))
+    }
+
     fn runtime() -> Option<tokio::runtime::Runtime> {
         tokio::runtime::Builder::new_multi_thread()
             .worker_threads(2)
@@ -108,7 +117,8 @@ impl Call {
         let (commands, command_rx) = async_mpsc::unbounded_channel();
         let (event_tx, events) = mpsc::channel();
         let local = session.local_id().to_owned();
-        let _ = event_tx.send(json!({"type": "local", "id": local}).to_string());
+        let channel = session.data_channel();
+        let _ = event_tx.send(json!({"type": "local", "id": local, "dataChannel": channel}).to_string());
         runtime.spawn(drive(session, command_rx, event_tx));
         Call {
             runtime,
@@ -234,6 +244,49 @@ pub extern "system" fn Java_com_rocketvibe_voice_JitsiCall_startChime(
         origin,
     };
     match Call::start_chime(config) {
+        Some(call) => {
+            let handle = NEXT.fetch_add(1, Ordering::Relaxed);
+            CALLS
+                .lock()
+                .map(|mut calls| calls.insert(handle, Arc::new(call)))
+                .map_or(0, |_| handle)
+        }
+        None => 0,
+    }
+}
+
+fn ice_servers_of(json: &str) -> Vec<rv_call::IceServer> {
+    let list: Vec<Value> = serde_json::from_str(json).unwrap_or_default();
+    let text = |v: &Value, k: &str| v.get(k).and_then(Value::as_str).unwrap_or_default().to_owned();
+    list.iter()
+        .filter_map(|s| {
+            let urls = s.get("urls")?.as_array()?.iter().filter_map(Value::as_str).map(str::to_owned).collect();
+            Some(rv_call::IceServer { urls, username: text(s, "username"), credential: text(s, "credential") })
+        })
+        .collect()
+}
+
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_com_rocketvibe_voice_JitsiCall_startMattermost(
+    mut env: JNIEnv,
+    _class: JClass,
+    server: JString,
+    token: JString,
+    channel_id: JString,
+    user_id: JString,
+    ice_servers: JString,
+) -> jlong {
+    let (Some(server), Some(token), Some(channel_id), Some(user_id), Some(ice_servers)) = (
+        text(&mut env, &server),
+        text(&mut env, &token),
+        text(&mut env, &channel_id),
+        text(&mut env, &user_id),
+        text(&mut env, &ice_servers),
+    ) else {
+        return 0;
+    };
+    let config = rv_call::mattermost::Config { server, token, channel_id, user_id };
+    match Call::start_mattermost(config, &ice_servers) {
         Some(call) => {
             let handle = NEXT.fetch_add(1, Ordering::Relaxed);
             CALLS
@@ -403,6 +456,14 @@ mod tests {
             event_json(&Event::MediaEnded),
             json!({"type": "media_ended"})
         );
+    }
+
+    #[test]
+    fn the_plugins_ice_servers_are_read_from_json() {
+        let servers = ice_servers_of(r#"[{"urls":["stun:s.example:3478"],"username":"","credential":""},{"nope":1}]"#);
+        assert_eq!(servers.len(), 1);
+        assert_eq!(servers[0].urls, vec!["stun:s.example:3478".to_owned()]);
+        assert!(ice_servers_of("not json").is_empty());
     }
 
     #[test]

@@ -64,6 +64,9 @@ class VoiceModule : Module() {
     AsyncFunction("connectChime") { callId: String, signalingUrl: String, audioHost: String, attendeeId: String, joinToken: String, origin: String, title: String ->
       VoiceEngine.connectChime(callId, ChimeCredentials(signalingUrl, audioHost, attendeeId, joinToken, origin), title)
     }.runOnQueue(Queues.MAIN)
+    AsyncFunction("connectMattermost") { callId: String, server: String, token: String, channelId: String, userId: String, iceServers: String, title: String ->
+      VoiceEngine.connectMattermost(callId, MattermostCall(server, token, channelId, userId, iceServers), title)
+    }.runOnQueue(Queues.MAIN)
     AsyncFunction("connectExternal") { callId: String, identity: String, title: String ->
       VoiceEngine.connectExternal(callId, identity, title)
     }.runOnQueue(Queues.MAIN)

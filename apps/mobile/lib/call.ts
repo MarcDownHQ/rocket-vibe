@@ -26,8 +26,8 @@
 import type { CallCheck } from './callRing.ts';
 import { RestError, isTokenRejected } from './rest.ts';
 import type { RestClient } from './rest.ts';
-import type { CallScope, ChimeCredentials, ExternalCallEngine, NativeCalls } from '@rocket-vibe/provider-api/calls';
-export type { CallScope, NativeCalls } from '@rocket-vibe/provider-api/calls';
+import type { CallScope, ChimeCredentials, ExternalCallEngine, MattermostCallCredentials, NativeCalls } from '@rocket-vibe/provider-api/calls';
+export type { CallScope, MattermostCallCredentials, NativeCalls } from '@rocket-vibe/provider-api/calls';
 
 type Binding={key:string;calls:NativeCalls|null};
 const bindings=new WeakMap<RestClient,Binding>(),identities=new WeakMap<RestClient,string>();
@@ -130,6 +130,12 @@ export function nativeJitsi(kind: string, url: string): { meeting: string; token
 export async function nativeChime(client: RestClient, callId: string): Promise<ChimeCredentials | null> {
   const chime = bindings.get(client)?.calls?.chime;
   return chime === undefined ? null : chime(callId);
+}
+
+/** What the voice engine needs to join a Mattermost Calls plugin call itself; `null` for any other call. */
+export async function nativeMattermost(client: RestClient, callId: string): Promise<MattermostCallCredentials | null> {
+  const mattermost = bindings.get(client)?.calls?.mattermost;
+  return mattermost === undefined ? null : mattermost(callId);
 }
 
 /** Places this room's call on the voice engine (Teams): false when this room's provider cannot. */

@@ -15,6 +15,8 @@ export type MmRequest = {
   /** Token sent, but a 401 is the caller's to judge (resume, token check, another account's badge). */
   quiet?: boolean;
   headers?: Record<string, string>;
+  /** A plugin's route, outside `/api/v4`. */
+  root?: boolean;
 };
 
 export const MM_PAGE = 200;
@@ -74,13 +76,13 @@ export class MmClient {
     this.plainErrors = options.plainErrors ?? false;
   }
 
-  url(path: string, query?: MmQuery): string {
+  url(path: string, query?: MmQuery, root = false): string {
     const search = new URLSearchParams();
     for (const [key, value] of Object.entries(query ?? {})) {
       if (value !== undefined) search.set(key, String(value));
     }
     const suffix = search.size > 0 ? `?${search.toString()}` : '';
-    return `${this.baseUrl}/api/v4${path}${suffix}`;
+    return `${this.baseUrl}${root ? '' : '/api/v4'}${path}${suffix}`;
   }
 
   get<T>(path: string, options: MmRequest = {}): Promise<T> {
@@ -168,7 +170,7 @@ export class MmClient {
   }
 
   private send(method: string, path: string, options: MmRequest, retryRateLimit: boolean): Promise<{ response: Response; text: string }> {
-    return this.read(this.url(path, options.query), {
+    return this.read(this.url(path, options.query, options.root === true), {
       method,
       headers: {
         Accept: 'application/json',

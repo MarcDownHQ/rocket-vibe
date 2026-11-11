@@ -169,7 +169,7 @@ export class MmTranslator implements Translator {
     const system = SYSTEM_TYPES[mmType];
     const metadata = record(raw.metadata) ?? {};
     const rootId = str(raw.root_id);
-    const call = mmType === 'custom_call' ? kmeetCall(props) : null;
+    const call = mmType === 'custom_call' ? kmeetCall(props) : mmType === 'custom_calls' ? pluginCall(props, rid) : null;
     const reminder = mmType === 'reminder' ? reminderOf(props, str(raw.message), this.directory.baseUrl) : null;
     const alias = webhookAlias(props);
     const text = call !== null ? call.param : reminder ?? (system === undefined ? (str(raw.message) ?? '') : system.param(props, author?.username ?? null));
@@ -449,6 +449,17 @@ export function kmeetCall(props: Record<string, unknown>): { type: string; param
     return { type: 'videoconf-ended', param: seconds === null ? '' : String(seconds), conferenceId: null };
   }
   return { type: 'videoconf', param: '', conferenceId: str(props.conference_id) };
+}
+
+/** The Calls plugin's call post (`custom_calls`): running until it has an `end_at`; its call id is its channel's. */
+export function pluginCall(props: Record<string, unknown>, rid: string): { type: string; param: string; conferenceId: string | null } {
+  const start = positive(props.start_at);
+  const end = positive(props.end_at);
+  if (end !== null) {
+    const seconds = start !== null && end >= start ? Math.round((end - start) / 1000) : null;
+    return { type: 'videoconf-ended', param: seconds === null ? '' : String(seconds), conferenceId: null };
+  }
+  return { type: 'videoconf', param: '', conferenceId: `mmcalls:${rid}` };
 }
 
 /** Integrations' Slack-style cards (`props.attachments`), in the shape Rocket.Chat's attachments already render. */

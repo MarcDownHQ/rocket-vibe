@@ -766,6 +766,7 @@ dependencies = [
  "miniz_oxide",
  "quick-xml",
  "rustls",
+ "serde_json",
  "tokio",
  "tokio-tungstenite",
 ]

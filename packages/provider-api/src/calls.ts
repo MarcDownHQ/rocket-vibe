@@ -3,6 +3,9 @@ export type CallScope={room?:string;membership?:string|null;alive?:()=>boolean};
 /** An Amazon Chime attendee's credentials, for a call the voice engine carries itself. */
 export type ChimeCredentials={signalingUrl:string;audioHost:string;attendeeId:string;joinToken:string;origin:string};
 
+/** What the voice engine needs to join a Mattermost Calls plugin call itself. */
+export type MattermostCallCredentials={server:string;token:string;channelId:string;userId:string;iceServers:{urls:string[];username:string;credential:string}[]};
+
 /** The voice engine, for a call whose signalling the provider speaks itself. */
 export type ExternalCallEngine={
   /** Opens the session under this identity. */
@@ -27,6 +30,8 @@ export type NativeCalls={
   decline?:(id:string)=>Promise<void>;
   /** A call the voice engine can carry over Amazon Chime: joins it and answers its credentials (Slack's huddles). */
   chime?:(id:string)=>Promise<ChimeCredentials>;
+  /** A Mattermost Calls plugin call the voice engine joins itself: what it needs. */
+  mattermost?:(id:string)=>Promise<MattermostCallCredentials>;
   /** Whether this room's call can run on the voice engine with `placeExternal`. */
   placeable?:(room:string)=>boolean;
   /** Places this room's call on the engine: resolves once the provider took it. */

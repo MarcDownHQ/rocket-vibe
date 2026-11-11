@@ -498,6 +498,10 @@ object VoiceEngine {
   fun connectJitsi(callId: String, meeting: String, displayName: String, token: String?, title: String): Boolean =
     connectNative(callId, title) { it.start(meeting, displayName, token) }
 
+  /** Joins a Mattermost Calls plugin call natively, audio only; false when this build cannot. */
+  internal fun connectMattermost(callId: String, call: MattermostCall, title: String): Boolean =
+    connectNative(callId, title) { it.startMattermost(call) }
+
   /** Joins an Amazon Chime meeting (a Slack huddle) natively, audio only; false when this build cannot. */
   internal fun connectChime(callId: String, credentials: ChimeCredentials, title: String): Boolean =
     connectNative(callId, title) { it.startChime(credentials) }
