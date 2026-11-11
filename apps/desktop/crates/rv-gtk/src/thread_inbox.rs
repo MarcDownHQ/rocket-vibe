@@ -221,6 +221,9 @@ impl ThreadInbox {
         this.unread.connect_toggled(move |unread| {
             if let Some(this) = weak.upgrade() {
                 this.filter.set(if unread.is_active() { Filter::Unread } else { Filter::Followed });
+                this.entries.borrow_mut().clear();
+                this.next.replace(None);
+                this.read_further.set(false);
                 this.reload();
             }
         });
