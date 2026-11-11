@@ -150,7 +150,7 @@ export async function mattermostUnread(session: Session, options: MmLoginOptions
     const channel = byId.get(String(member.channel_id));
     if (channel === undefined) continue;
     const { unread, mentions } = membershipCounts(channel, member);
-    if (mentions > 0 || (channel.type === 'D' && unread > 0)) return 'attention';
+    if (mentions > 0 || ((channel.type === 'D' || channel.type === 'G') && unread > 0)) return 'attention';
     if (unread > 0) state = 'unread';
   }
   return state;
