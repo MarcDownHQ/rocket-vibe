@@ -614,6 +614,31 @@ test("stopping clears private scheduled state before asynchronous teardown", asy
   assert.deepEqual(timers, ["fixture-timer", "reminder-timer"]);
 });
 
+test("stopping forgets the account's thread totals and their pending read", async () => {
+  const target = Object.assign(app(), {
+    threadTotals: { unread_threads: "3", unread_mentions: "1" } as
+      | { unread_threads: string; unread_mentions: string }
+      | undefined,
+    threadTotalsSeen: "account A cursor",
+    threadTotalsTimer: "totals-timer" as string | undefined,
+    voice: {
+      leave: async () => {
+        throw new Error("fixture teardown failure");
+      },
+    },
+  });
+  const timers: unknown[] = [];
+  const stop = method("stop", {
+    clearInterval: () => {},
+    clearTimeout: (timer: unknown) => timers.push(timer),
+  });
+  await assert.rejects(stop.call(target), /fixture teardown failure/);
+  assert.equal(target.threadTotals, undefined);
+  assert.equal(target.threadTotalsSeen, "");
+  assert.equal(target.threadTotalsTimer, undefined);
+  assert.ok(timers.includes("totals-timer"));
+});
+
 test("scheduled lists reject older reads and a replacement session of the same account", async () => {
   const target = Object.assign(app(), {
     info: { capabilities: { scheduled_messages: true } },

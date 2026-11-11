@@ -554,6 +554,10 @@ export class App implements RowActions {
     clearTimeout(this.presenceTimer);
     this.roomOpening++;
     this.threadOpening++;
+    clearTimeout(this.threadTotalsTimer);
+    this.threadTotalsTimer = undefined;
+    this.threadTotals = undefined;
+    this.threadTotalsSeen = "";
     clearTimeout(this.readTimer);
     this.readTimer = undefined;
     this.readWork = undefined;
