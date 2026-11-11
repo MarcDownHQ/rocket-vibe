@@ -4,7 +4,7 @@ The goal: calls on Teams, Rocket.Chat (Jitsi), kChat (kMeet) and Slack (huddles)
 by the apps themselves, with no web page, no WebView and no browser: our own signalling
 client per provider, our own WebRTC media, the existing call UI. This page records what the
 research and the captures established, the architecture chosen, what is built ("Implementation
-status": Jitsi and kMeet, Slack huddles, Teams calls placed from a chat), the order, and the captures still owed.
+status": Jitsi and kMeet, Slack huddles, Teams calls placed from a chat, Mattermost's Calls plugin), the order, and the captures still owed.
 The fallback (a call window on the provider's web page, Teams' one-time Microsoft sign-in) is in
 [../features/calls.md](../features/calls.md); the decision is in [../decisions.md](../decisions.md).
 
@@ -492,6 +492,45 @@ The windows are built from the Vibez voice page's parts: GTK `chat::voice` expor
 menu lists inputs and outputs (`VoiceController::devices`); SwiftUI and Android have no device menu
 in a native call yet.
 
+### Mattermost Calls plugin, audio (2026-11-11)
+
+Self-hosted Mattermost's calls are the `com.mattermost.calls` plugin (v1.12.3 on the bench), an
+SFU (rtcd) inside the server. Learnt from the plugin's compiled web bundle (its compiled builds
+are MIT; the source is AGPL, read for the protocol only, never copied) and from rtcd's source,
+then run on the bench. kChat has no such plugin: its calls stay kMeet's.
+
+- **Signalling** (rv-call `mattermost`): the client opens **its own** `/api/v4/websocket`
+  (`authentication_challenge`), then `custom_com.mattermost.calls_join {channelID, title, threadID}`;
+  per-connection events carry `data.connID` (`_join` ack, `_error` refusal such as "insufficient
+  permissions" when the channel's calls are off, `_signal` with `data.data` the JSON `{type, sdp |
+  candidate}`); channel events (`_call_state` with `call` as a JSON string of sessions,
+  `_user_joined`, `_user_left`, `_user_muted` / `_user_unmuted`, `_user_voice_on` / `_off`,
+  `_call_end`). The client offers; **the SDP goes out as MessagePack** `{action: ..._sdp, seq,
+  data: {data: <zlib of {type, sdp} JSON>}}` in a binary frame; candidates as `_ice {data: <JSON>}`.
+  `_mute` / `_unmute` / `_leave` act. A session starts muted: the adapter unmutes once its offer
+  went out unless the user muted.
+- **The SFU forwards no one's audio until the client's data channel is open** (rtcd
+  `handleDCNegotiation` waits on `dcOpenCh` before `handleTracks`): the offer opens one
+  (`calls-dc`), which `CallSignaling::data_channel` asks the engine for (sidecar `ensure_pc`, Kotlin
+  `peer()`). Without it the call connected but stayed silent both ways. SDP over the channel
+  (`EnableDCSignaling`) and its lock messages are not used: the server takes its own lock.
+- **Tracks** carry the sender's session id as their stream id, so `Member.id` is the session id
+  and who speaks comes from the audio itself; names come from `GET /plugins/com.mattermost.calls/<channel>`
+  (`call.sessions[].{session_id, user_id}`), read by the apps (rv-core `ensure_plugin_call_people`,
+  the mobile `pluginCalls.personName`).
+- **REST** (rv-core `mattermost/calls.rs`, mobile `pluginCalls.ts`): `/version` says the plugin
+  runs, `/<channel>` whether its calls are `enabled` (else `/config` `DefaultEnabled`), `/config`
+  the `ICEServersConfigs`, `/turn-credentials` when `NeedsTURNCredentials`. An unlicensed server has
+  `GroupCallsAllowed: false`: direct messages only. Its `custom_calls` post (`start_at`, `end_at`)
+  is the call card, `mmcalls:<channel>` its call id; a DM's running one rings like kChat's.
+- **Checked live (2026-11-11)**, two `rv-voice` sidecars as `bob` and `rvadmin` in their DM on the
+  bench, each with a tone: joined, the roster right, both tones received (0 lost), speaking shown
+  from the audio, mute and unmute seen by the other side. **Not run**: the GTK and SwiftUI windows,
+  Android, a channel call on a licensed server, TURN, ringing (off on the bench).
+- On this machine the sidecar hung creating libwebrtc's factory while the GPU driver was stuck
+  (`drm_sched_entity_flush`, the video encoders' probe): the test ran with `/dev/dri` hidden
+  (`unshare -rm`). A machine in that state cannot start any native call.
+
 ## Order
 
 Jitsi first (open protocol, a Rust reference, the server offers, two providers at once;
@@ -518,6 +557,10 @@ Teams meetings and video last.
 - apps/mobile/modules/voice, crates/rv-voice-mobile
 - crates/rv-voice-protocol
 - docs/MATTERMOST.md (kMeet conferences)
+- crates/rv-call/src/mattermost, apps/desktop/crates/rv-core/src/mattermost/calls.rs,
+  apps/mobile/providers/mattermost/pluginCalls.ts
+- The Calls plugin 1.12.3 (`mattermost-plugin-calls-v1.12.3-linux-amd64.tar.gz`, its webapp
+  bundle) and https://github.com/mattermost/rtcd (`service/rtc/sfu.go`, `session.go`, `dc.go`)
 - brain/features/calls.md, brain/architecture/teams.md, brain/architecture/slack-session.md
 - crates/rv-teams/examples/teams-ic3.rs (ic3 token probe), crates/rv-teams/examples/teams-foci.rs
 - https://github.com/aws/amazon-chime-sdk-js/blob/main/protocol/SignalingProtocol.proto

@@ -57,6 +57,15 @@ A huddle runs natively first, audio only, in the same call window as a native Ji
 
 A call started in a chat runs natively, audio only, on the account's own sign-in, in the same call window as a native Jitsi call; Teams' web page is its fallback. See [native calls](../architecture/native-calls.md#teams-calls-placed-from-a-chat-audio-2026-11-06). Otherwise Teams calls open in the app's call window on Teams' web app, like a kMeet call, never in Teams' app or the browser (user decision 2026-10-31). As a fallback, starting one in a chat opens Teams' call link ringing the chat's people (`https://teams.microsoft.com/l/call/0/0?users=<upn,...>`, their sign-in names from the middle tier's short profiles); a channel has no call button. A call card's Join opens a channel call itself (`l/meetup-join/...`) or a chat's conversation page. The window stays on Microsoft's pages, keeps its data across calls (GTK Linux: one Chromium profile per Teams account), and needs one Microsoft sign-in the first time: no token the app holds can sign it in. An incoming Teams call rings with the same prompt as a Rocket.Chat or kChat call: Teams pushes it to a calling registration the apps now make beside the chat one; Decline declines it in Teams, Accept opens the conversation in the call window, where Teams' web app answers it if it is signed in and loads before the caller gives up (unverified live). Mechanism: [teams](../architecture/teams.md) (Calls row).
 
+## Mattermost (Calls plugin)
+
+A Mattermost server running the Calls plugin gets the room's call button where the channel's
+calls are on (a free server: direct messages only), and its call posts become call cards (the
+length once over). A call is the channel's, joined natively in the call window, audio only
+(GTK and SwiftUI through the `rv-voice` sidecar, Android over JNI); there is no page to fall
+back to, so a call that cannot be joined says so. A DM's running call rings like kChat's.
+Mechanism: [native calls](../architecture/native-calls.md#mattermost-calls-plugin-audio-2026-11-11).
+
 ## kChat (kMeet)
 
 kChat calls are kMeet meetings its server opens (`docs/MATTERMOST.md` §6.5): `POST /conferences {channel_id}` starts one and posts its `custom_call`, `POST /conferences/<id>/answer` joins one, both answering the meeting's `url` and a `jwt`. Both apps work as on Rocket.Chat: the room header's call button starts, the call card's Join answers the post's `conference_id`, and the call view opens `url?jwt=`. Since any member can post a `custom_call` with any URL, only an answer's URL on `https://kmeet.infomaniak.com` is opened, so the view's origin lock holds kMeet's origin. Mobile: `Provider.calls` (`providers/mattermost/kmeet.ts`), bound by `lib/providerCalls.ts`; desktop: `Session::start_call`, `join_call`, `call_link` (`mattermost::actions::start_conference`, `answer_conference`). An ended call is "📞 Call · duration".
