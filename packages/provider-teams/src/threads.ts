@@ -87,6 +87,7 @@ export function feedItems(body: unknown): FeedItem[] {
     const activity = doc(properties?.activity);
     const kind = text(activity?.activityType);
     if (!activity || !kind || !KINDS.has(kind)) return [];
+    if (kind === 'mention' && text(activity.activitySubtype) !== 'person') return [];
     const rid = id(activity.sourceThreadId);
     const root = id(activity.sourceReplyChainId);
     const message = id(activity.sourceMessageId);
@@ -142,12 +143,11 @@ export function groupThreads(items: readonly FeedItem[]): ThreadGroup[] {
   return [...groups.values()].sort((a, b) => b.lastReply - a.lastReply);
 }
 
-/** Unread past `mark` (ms); with no mark, when the feed holds an unread item of it. */
+/** Unread when a reply or mention is past `mark` (ms); with no mark, when the feed holds an unread one. */
 export function threadState(group: ThreadGroup, mark: number | null): ThreadState {
-  const unseen = group.items.filter((item) => (mark === null ? item.isRead === false : item.at > mark));
-  const unread = mark === null ? unseen.length > 0 : group.lastReply > mark;
-  if (!unread) return { unread: false, replies: 0, mentions: 0 };
-  const replies = unseen.filter((item) => item.kind !== 'reaction').reduce((n, item) => n + item.count, 0);
+  const unseen = group.items.filter((item) => item.kind !== 'reaction' && (mark === null ? item.isRead === false : item.at > mark));
+  if (unseen.length === 0) return { unread: false, replies: 0, mentions: 0 };
+  const replies = unseen.reduce((n, item) => n + item.count, 0);
   return { unread: true, replies: Math.max(replies, 1), mentions: unseen.filter((item) => item.kind === 'mention').length };
 }
 

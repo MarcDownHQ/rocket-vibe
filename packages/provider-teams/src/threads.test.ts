@@ -206,3 +206,25 @@ test('a long list pages by offset', async () => {
   assert.equal(second.entries.length, 10);
   assert.equal(second.next, null);
 });
+
+test('a reaction moves the thread up but leaves it read', () => {
+  const reaction = item({
+    activityType: 'reaction', activitySubtype: 'like', activityTimestamp: '2026-11-08T12:00:00.000Z', sourceThreadId: CHANNEL,
+    sourceReplyChainId: '1000', sourceMessageId: String(AT('2026-11-03T08:00:00.000Z')), sourceUserId: BOB,
+  }, false);
+  const [group] = groupThreads(feedItems({ messages: [reaction, reply('2026-11-03T08:00:00.000Z')] }));
+  assert.equal(group!.lastReply, AT('2026-11-08T12:00:00.000Z'));
+  assert.deepEqual(threadState(group!, AT('2026-11-03T08:00:00.000Z')), { unread: false, replies: 0, mentions: 0 });
+  assert.deepEqual(threadState(group!, null), { unread: false, replies: 0, mentions: 0 });
+});
+
+test('only a mention of me as a person counts', () => {
+  const mention = (subtype: string) => item({
+    activityType: 'mention', activitySubtype: subtype, activityTimestamp: '2026-11-08T12:00:00.000Z', sourceThreadId: OTHER,
+    sourceReplyChainId: '2000', sourceMessageId: '2300', sourceUserId: ADA,
+  }, false);
+  assert.deepEqual(feedItems({ messages: [mention('team'), mention('channel'), mention('tag')] }), []);
+  const [group] = groupThreads(feedItems({ messages: [mention('person')] }));
+  assert.deepEqual(threadState(group!, null), { unread: true, replies: 1, mentions: 1 });
+});
+
