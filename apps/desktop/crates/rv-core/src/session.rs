@@ -2318,8 +2318,8 @@ impl Session {
     /// Whether the account lists its threads across its rooms.
     pub fn thread_inbox_available(&self) -> bool {
         match self.backend() {
-            Backend::Mattermost(_) | Backend::Slack(_) => true,
-            Backend::RocketChat | Backend::Teams(_) => false,
+            Backend::Mattermost(_) | Backend::Slack(_) | Backend::Teams(_) => true,
+            Backend::RocketChat => false,
         }
     }
 
@@ -2327,8 +2327,8 @@ impl Session {
     /// changed: on returning to the app, and on a timer while it is on screen.
     pub fn thread_inbox_polled(&self) -> bool {
         match self.backend() {
-            Backend::Slack(_) => true,
-            Backend::Mattermost(_) | Backend::RocketChat | Backend::Teams(_) => false,
+            Backend::Slack(_) | Backend::Teams(_) => true,
+            Backend::Mattermost(_) | Backend::RocketChat => false,
         }
     }
 
@@ -2340,7 +2340,8 @@ impl Session {
         let mut page = match self.backend() {
             Backend::Mattermost(mm) => mattermost::threads::page(mm, filter, cursor).await?,
             Backend::Slack(slack) => crate::slack::threads::page(slack, filter, cursor).await?,
-            Backend::RocketChat | Backend::Teams(_) => {
+            Backend::Teams(teams) => crate::teams::threads::page(teams, filter, cursor).await?,
+            Backend::RocketChat => {
                 return Err(RestError::incomplete("thread inbox: not on this server"));
             }
         };
@@ -2354,7 +2355,8 @@ impl Session {
         match self.backend() {
             Backend::Mattermost(_) => mattermost::threads::totals(&self.rest).await,
             Backend::Slack(slack) => crate::slack::threads::totals(slack).await,
-            Backend::RocketChat | Backend::Teams(_) => Ok(thread_inbox::Totals::default()),
+            Backend::Teams(teams) => crate::teams::threads::totals(teams).await,
+            Backend::RocketChat => Ok(thread_inbox::Totals::default()),
         }
     }
 
@@ -2372,7 +2374,13 @@ impl Session {
                 }
                 Ok(())
             }
-            Backend::RocketChat | Backend::Teams(_) => Ok(()),
+            Backend::Teams(teams) => {
+                if crate::teams::threads::mark_read(teams, rid, root).await {
+                    let _ = self.events.send(SessionEvent::Threads(None));
+                }
+                Ok(())
+            }
+            Backend::RocketChat => Ok(()),
         }
     }
 
@@ -2380,7 +2388,12 @@ impl Session {
         match self.backend() {
             Backend::Mattermost(_) => mattermost::threads::mark_all_read(&self.rest).await,
             Backend::Slack(slack) => crate::slack::threads::mark_all_read(slack).await,
-            Backend::RocketChat | Backend::Teams(_) => Ok(()),
+            Backend::Teams(teams) => {
+                crate::teams::threads::mark_all_read(teams).await?;
+                let _ = self.events.send(SessionEvent::Threads(None));
+                Ok(())
+            }
+            Backend::RocketChat => Ok(()),
         }
     }
 
