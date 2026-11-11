@@ -53,7 +53,6 @@ function fallbackIcon(kind: Session['kind']): ImageSourcePropType {
 const POLL_MS = 60_000;
 const TILE = 44;
 
-/** One read of an account that is not open. Its token is never revoked from here. */
 function unreadWithout(old: ReadonlyMap<string, AccountUnread>, host: string): ReadonlyMap<string, AccountUnread> {
   if (!old.has(host)) return old;
   const next = new Map(old);
@@ -61,6 +60,7 @@ function unreadWithout(old: ReadonlyMap<string, AccountUnread>, host: string): R
   return next;
 }
 
+/** One read of an account that is not open. Its token is never revoked from here. */
 async function accountUnread(session: Session): Promise<AccountUnread> {
   if (session.kind === 'vibez') {
     const fresh = await prepareNativeSession(session);
