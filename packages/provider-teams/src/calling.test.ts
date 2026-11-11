@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
 
-import { acknowledgeBody, audioMid, callPushEvent, isCallCallback, nextSubscription, placeCallBody, placeExternalCall, renegotiationOffer, teamsAnswer, teamsOffer, webrtcAnswer, type Caller } from './calling.ts';
+import { acceptBody, acknowledgeBody, answerExternalCall, attachBody, attachedLinks, audioMid, callPushEvent, isCallCallback, nextSubscription, placeCallBody, placeExternalCall, renegotiationOffer, teamsAnswer, teamsOffer, webrtcAnswer, type Caller } from './calling.ts';
 
 const OFFER = 'v=0\r\no=- 1 2 IN IP4 127.0.0.1\r\ns=-\r\nt=0 0\r\na=group:BUNDLE 0\r\n'
   + 'm=audio 9 UDP/TLS/RTP/SAVPF 111\r\nc=IN IP4 0.0.0.0\r\n'
@@ -177,5 +177,49 @@ describe('Teams calling', () => {
     const seen = polled.length;
     for (let i = 0; i < 5; i++) await new Promise((resolve) => setImmediate(resolve));
     assert.ok(polled.length <= seen + 1, 'the lease stops with the call');
+  });
+  test('a ring is answered: attach, the engine\'s answer accepted, then the call runs', async () => {
+    let push: (envelope: Record<string, unknown>) => void = () => {};
+    const posted: [string, Record<string, unknown>][] = [];
+    const said: unknown[] = [];
+    let id = 0;
+    let leftHere: () => void = () => {};
+    const offer = ANSWER.replace('a=sendrecv', 'a=sendrecv');
+    await answerExternalCall({
+      post: async (url, _chain, body) => {
+        posted.push([url, body]);
+        return url === 'https://cc/attach' ? {
+          callInvitation: { links: { acceptance: 'https://cc/accept', subscribe: 'https://b/1' } },
+          additionalActionResponses: [{ output: { links: { leave: 'https://conv/leave' } } }],
+        } : {};
+      },
+      poll: () => new Promise(() => {}),
+      put: async () => {},
+      pushes: (listener) => { push = listener; return () => {}; },
+      id: () => `id${++id}`,
+      me: { mri: '8:orgid:me', name: 'Me' },
+      surl: 'https://t/',
+    }, {
+      start: async (identity) => { said.push(['start', identity]); },
+      offer: () => Promise.reject(new Error('answering')),
+      answer: async () => {},
+      answerOffer: async (sdp) => { said.push(['offered', audioMid(sdp)]); return 'v=0\r\ns=-\r\nt=0 0\r\na=group:BUNDLE 0\r\nm=audio 9 UDP/TLS/RTP/SAVPF 111\r\nc=IN IP4 0.0.0.0\r\na=mid:0\r\n'; },
+      roster: async (members) => { said.push(['roster', members]); },
+      ended: async (reason) => { said.push(['ended', reason]); },
+      left: () => new Promise<void>((resolve) => { leftHere = resolve; }),
+    }, { attach: 'https://cc/attach', offer, mediaLeg: 'LEG', conversation: 'https://conv/c1' });
+    assert.equal(posted[0]![0], 'https://cc/attach');
+    assert.equal((posted[0]![1].additionalActions as { url: string }[])[0]!.url, 'https://conv/c1');
+    assert.deepEqual(said[0], ['start', 'id1']);
+    assert.deepEqual(said[1], ['offered', '0']);
+    const accept = posted.find(([u]) => u === 'https://cc/accept')?.[1] as { callAcceptance: { mediaContent: { mediaLegId: string; blob: string } } };
+    assert.equal(accept.callAcceptance.mediaContent.mediaLegId, 'LEG');
+    assert.ok(accept.callAcceptance.mediaContent.blob.includes('m=x-data 0 '), 'the offer\'s other sections refused');
+    push({ url: 'https://t/callAgent/id1/id3/call/end/', body: { callEnd: { phrase: 'Remote hangup' } } });
+    assert.deepEqual(said.at(-1), ['ended', 'remote_ended']);
+    leftHere();
+    assert.equal(attachedLinks({}), null);
+    assert.equal(attachBody({ mri: 'm', name: 'n', endpoint: 'e', participant: 'p', surl: 'https://t/', random: 'r' }, 'https://c').attach !== undefined, true);
+    assert.equal((acceptBody({ mri: 'm', name: 'n', endpoint: 'e', participant: 'p', surl: 'https://t/', random: 'r' }, 'v=0', null).callAcceptance as { acceptedCallModalities: string[] }).acceptedCallModalities[0], 'Audio');
   });
 });

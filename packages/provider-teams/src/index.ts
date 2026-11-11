@@ -25,6 +25,7 @@ import { NOTES_CREATED, NOTES_SAVE_CONFLICT, notesEdit, notesPage, notesSubmit, 
 import { TEAMS_EVENTS, TEAMS_HISTORY_PAGE, THREAD_COUNTERS, TeamsRooms, TeamsSync, TeamsThreads, TeamsTranslator } from './sync.ts';
 import { TeamsDirectory, channelRoom, chatRoom, conversationOf, conversationTopic, deleted, groupThread, isGraphShare, isGroupChat, mriOf, newGroupChat, newOneOnOne, oneOnOneId, people, profileFields, rootOf, rosterPage, searchHits, str, toMessage } from './translate.ts';
 import { CALL_AGENT_COLLECTION, CALL_COLLECTION, TeamsTrouter, endpointId, type CallPush } from './trouter.ts';
+import type { TeamsAnswering } from './calling.ts';
 import { teamsReadReceipts } from './receipts.ts';
 
 type Doc = Record<string, unknown>;
@@ -235,7 +236,10 @@ export function createTeamsProvider(session: Session, rest: TokenRejection, gene
     return actionsFor(ingestLive).setPinned(team, rid, mid, on);
   };
 
+  /** The ringing calls that can be answered natively, by room. */
+  const answerable = new Map<string, TeamsAnswering>();
   const calls = teamsCalls(client, rooms, session.teamsTenantId ?? '', session.userId, listener instanceof TeamsTrouter ? {
+    answerable,
     route: () => listener.presenceRoute()?.uri.replace(/unifiedPresenceService$/, '') ?? null,
     pushes: (handle) => listener.onEvent((event) => {
       if (event.collection === CALL_AGENT_COLLECTION) handle(event.args[0] as Record<string, unknown>);
@@ -257,6 +261,7 @@ export function createTeamsProvider(session: Session, rest: TokenRejection, gene
       if (signal?.kind === 'ring') {
         const push = event.args[0] as Extract<CallPush, { kind: 'ring' }>;
         if (push.reject) declines.set(signal.callId, push.reject);
+        if (push.answer !== null) answerable.set(signal.rid, push.answer);
       }
       return signal;
     },

@@ -88,7 +88,9 @@ export function chatEvent(envelope: Doc): { name: string; resource: Doc } | null
  *  ended call's id sits in a gzip the app has no inflater for, so it ends
  *  whichever Teams call rings. */
 export type CallPush =
-  | { kind: 'ring'; callId: string; callerMri: string; callerName: string | null; reject: string | null; multiParty: boolean; thread: string | null }
+  | { kind: 'ring'; callId: string; callerMri: string; callerName: string | null; reject: string | null; multiParty: boolean; thread: string | null;
+      /** What answering it here takes, when the push carries it. */
+      answer: { attach: string; offer: string; mediaLeg: string | null; conversation: string } | null }
   | { kind: 'moved' };
 
 /** The presence changes pushed to the chat registration's
@@ -140,6 +142,13 @@ export function callPush(envelope: Doc): CallPush | null {
   const callerMri = text(from?.id);
   if (!callId || !callerMri) return null;
   const reject = text((call?.links as Doc | undefined)?.reject);
+  const attach = text((call?.links as Doc | undefined)?.attach);
+  const media = call?.mediaContent as Doc | undefined;
+  const offer = text(media?.blob);
+  const conversation = text((gp?.conversationInvitation as Doc | undefined)?.conversationController);
+  const answer = attach?.startsWith('https://') && offer !== null && conversation?.startsWith('https://')
+    ? { attach, offer, mediaLeg: text(media?.mediaLegId), conversation }
+    : null;
   return {
     kind: 'ring',
     callId,
@@ -148,6 +157,7 @@ export function callPush(envelope: Doc): CallPush | null {
     reject: reject?.startsWith('https://') ? reject : null,
     multiParty: (gp?.conversationInvitation as Doc | undefined)?.isMultiParty === true,
     thread: threadIn(gp?.groupContext),
+    answer,
   };
 }
 

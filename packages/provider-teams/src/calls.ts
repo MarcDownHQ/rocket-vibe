@@ -11,7 +11,7 @@
  */
 
 import type { ExternalCallEngine, NativeCalls } from '@rocket-vibe/provider-api/calls';
-import { placeExternalCall } from './calling.ts';
+import { answerExternalCall, placeExternalCall, type TeamsAnswering } from './calling.ts';
 import type { TeamsClient } from './client.ts';
 import type { TeamsRooms } from './sync.ts';
 import { callAllowed, callLink, callPeople, channelLink, chatLink, meetupLink, mriOf, objectId, splitId, str } from './translate.ts';
@@ -25,6 +25,8 @@ export type CallSocket = {
   pushes: (listener: (envelope: Record<string, unknown>) => void) => () => void;
   id: () => string;
   name: string;
+  /** The ringing calls that can be answered here, by room. */
+  answerable?: Map<string, TeamsAnswering>;
 };
 
 export function teamsCalls(client: TeamsClient, rooms: TeamsRooms, tenant: string, me: string, socket?: CallSocket): NativeCalls {
@@ -65,21 +67,30 @@ export function teamsCalls(client: TeamsClient, rooms: TeamsRooms, tenant: strin
     if (people.length === 0) return null;
     return { people, thread: people.length > 1 ? rid : null };
   };
+  const deps = (surl: string, s: CallSocket) => ({
+    post: (url: string, chain: string, body: Record<string, unknown>) => client.callingPost(url, chain, s.id(), body),
+    poll: (url: string, chain: string) => client.callingPoll(url, chain, s.id()),
+    put: (url: string, chain: string, body: Record<string, unknown>) => client.callingPut(url, chain, s.id(), body),
+    pushes: s.pushes,
+    id: s.id,
+    me: { mri: me, name: s.name },
+    surl,
+  });
   const external = socket === undefined ? {} : {
     placeable: (room: string) => targets(room) !== null && socket.route() !== null,
     placeExternal: async (room: string, engine: ExternalCallEngine) => {
       const target = targets(room);
       const surl = socket.route();
       if (target === null || surl === null) throw new Error('call_not_placeable');
-      await placeExternalCall({
-        post: (url, chain, body) => client.callingPost(url, chain, socket.id(), body),
-        poll: (url, chain) => client.callingPoll(url, chain, socket.id()),
-        put: (url, chain, body) => client.callingPut(url, chain, socket.id(), body),
-        pushes: socket.pushes,
-        id: socket.id,
-        me: { mri: me, name: socket.name },
-        surl,
-      }, engine, target.people, target.thread);
+      await placeExternalCall(deps(surl, socket), engine, target.people, target.thread);
+    },
+    answerable: (room: string) => socket.answerable?.has(room) === true && socket.route() !== null,
+    answerExternal: async (room: string, engine: ExternalCallEngine) => {
+      const ring = socket.answerable?.get(room);
+      const surl = socket.route();
+      if (ring === undefined || surl === null) throw new Error('call_not_answerable');
+      socket.answerable?.delete(room);
+      await answerExternalCall(deps(surl, socket), engine, ring);
     },
   };
   return {
