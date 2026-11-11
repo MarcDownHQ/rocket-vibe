@@ -590,3 +590,7 @@ A Slack message's `image_url` comes from anyone who can post an attachment, and 
 ## Native Teams signalling lives in the app, not the sidecar (2026-11-06)
 
 Jitsi and Chime sessions run in the voice sidecar, as they need only what they are handed at the start. Teams' calling needs the account's token refresh and pushes on its Trouter socket, which the app already holds, so the app speaks the signalling and the sidecar only offers and carries the media (`ConnectExternal`). A second Trouter socket and token copies in the sidecar would have duplicated both for no gain. See [native-calls](architecture/native-calls.md#teams-calls-placed-from-a-chat-audio-2026-11-06).
+
+## WhatsApp calls: the engine serves its audio on localhost (2026-11-11)
+
+whatsapp-rust speaks a WhatsApp call whole and hands its audio as 16 kHz PCM channels inside the process that runs it, while the audio devices, echo canceller and mix live in the voice sidecar on desktop and in Kotlin on Android. Rather than a PCM channel per host (rv-core's thread, the JNA library), the engine serves the call's audio on a TCP socket of its own on 127.0.0.1, guarded by a token: the sidecar and Kotlin connect to it the same way. libopus is left out: its C build is not wired for the apps' toolchains, and MLow, WhatsApp's default, needs it only for a peer's standard Opus frames. See [native-calls](architecture/native-calls.md#whatsapp-1-1-calls-audio-2026-11-11).

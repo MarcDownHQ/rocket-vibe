@@ -4,7 +4,7 @@ The goal: calls on Teams, Rocket.Chat (Jitsi), kChat (kMeet) and Slack (huddles)
 by the apps themselves, with no web page, no WebView and no browser: our own signalling
 client per provider, our own WebRTC media, the existing call UI. This page records what the
 research and the captures established, the architecture chosen, what is built ("Implementation
-status": Jitsi and kMeet, Slack huddles, Teams calls placed from a chat, Mattermost's Calls plugin), the order, and the captures still owed.
+status": Jitsi and kMeet, Slack huddles, Teams calls placed from a chat, Mattermost's Calls plugin, WhatsApp 1:1 calls), the order, and the captures still owed.
 The fallback (a call window on the provider's web page, Teams' one-time Microsoft sign-in) is in
 [../features/calls.md](../features/calls.md); the decision is in [../decisions.md](../decisions.md).
 
@@ -545,6 +545,35 @@ then run on the bench. kChat has no such plugin: its calls stay kMeet's.
 - On this machine the sidecar hung creating libwebrtc's factory while the GPU driver was stuck
   (`drm_sched_entity_flush`, the video encoders' probe): the test ran with `/dev/dri` hidden
   (`unshare -rm`). A machine in that state cannot start any native call.
+
+### WhatsApp 1:1 calls, audio (2026-11-11)
+
+Unlike every other provider, WhatsApp's call is not WebRTC the sidecar can join: whatsapp-rust
+(vendored, `crates/rv-whatsapp`) speaks it whole, signalling (`<offer>`, `<accept>`, the callKey
+encrypted per device), the relay (one UDP socket, DTLS, SCTP and a data channel, `voip-relay-native`)
+and Meta's MLow codec (`voip-mlow`, pure Rust; `voip-libopus` is left out, its C build not wired,
+so a peer's standard Opus or CELT escape frames are not decoded). Its audio is PCM, 16 kHz mono in
+60 ms frames of 960 samples (`AudioSource` / `AudioSink` channels).
+
+- **The engine** (`engine/src/calls.rs`) keeps each ringing call's `IncomingCall` (`Ringing.incoming`),
+  answers (`accept_call`) or places (`place_call`) with PCM channels, and serves them on a TCP socket of
+  its own on 127.0.0.1 (a random port, a token line first, then 1920-byte frames both ways), so the
+  app's audio engine carries the sound whichever process holds the engine: rv-core's thread on desktop,
+  the app's own process through JNA on Android. Its `call` frames say `placed` (the real call id),
+  `connecting` (with `host:port#token`), `active` (media connected) and `ended`.
+- **Desktop**: `WaSession::carry_call` sends the command, waits for `connecting`, starts the sidecar on
+  it (`Command::ConnectPcm`), names the peer (`RemoteRoster`) and follows the frames, the microphone
+  (`mute_call`) and the hang-up (`hangup_call`). The sidecar (`call::run_pcm`) taps the frames the room
+  would hear (echo cancelled, denoised, `Mix::set_tap`), averages them down to 16 kHz and sends a frame
+  every 60 ms (silence while muted); the far side's frames are interpolated to 48 kHz stereo and fed to
+  the mix 10 ms at a time behind an 80 ms cushion. Checked with an echo server: one frame every 60 ms,
+  the echoed tone heard and shown speaking.
+- **Android**: the provider's `carryWhatsAppCall` and the voice module's PCM mode
+  (`JitsiSession.startPcm`: `AudioRecord` `VOICE_COMMUNICATION` with `AcousticEchoCanceler` and
+  `NoiseSuppressor`, `AudioTrack` `USAGE_VOICE_COMMUNICATION`, 16 kHz). The library cross-compiles for
+  arm64 with the call features.
+- **Not run**: a call with a phone, either way, on either app. SwiftUI has no WhatsApp account yet.
+  Group and video calls (built in the library) are not offered.
 
 ## Order
 

@@ -10,6 +10,7 @@ release, and its notes are that version's section here.
 ### Added
 
 - Voice: speaking with the microphone off in a voice room shows a reminder that you are muted (nothing is sent).
+- WhatsApp (experimental): calls ring in the app, and a 1:1 call is answered and placed inside it, audio only; video and group calls stay on the phone.
 - Teams (experimental): an incoming call is answered inside the app, audio only, when Teams sends its offer with the ring; its page stays the fallback.
 - Mattermost: calls through the server's Calls plugin run inside the app, audio only: the room's call button where the channel's calls are on, Join on the call card, and a direct message's call rings.
 - Notes: Slack canvases keep bold, italic, strikethrough, code and links, and checklist items can be ticked; the whole formatting bar is available there.
