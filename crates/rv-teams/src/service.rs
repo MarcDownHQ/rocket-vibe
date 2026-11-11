@@ -768,6 +768,57 @@ impl Service {
         Ok(serde_json::from_str(&text).unwrap_or(Value::Null))
     }
 
+    /// A long poll of the conversation's broker, on the calling stack: its answer.
+    pub async fn calling_poll(&self, url: &str, chain: &str) -> Result<Value, RestError> {
+        let url = calling_url(url).ok_or_else(|| RestError::incomplete("call: not a Teams calling link"))?;
+        let bearer = self.tokens.calling().await?;
+        let response = self
+            .http
+            .get(url)
+            .bearer_auth(bearer.as_str())
+            .header("x-microsoft-skype-chain-id", chain)
+            .header("x-microsoft-skype-message-id", crate::calling::random_id())
+            .header("x-microsoft-skype-client", crate::calling::CLIENT)
+            .header("x-ms-migration", "True")
+            .header("x-usebatching", "1")
+            .header("origin", "https://teams.cloud.microsoft")
+            .header("referer", "https://teams.cloud.microsoft/")
+            .send()
+            .await
+            .map_err(|e| RestError::incomplete(&format!("call: {}", e.without_url())))?;
+        let status = response.status();
+        let text = response.text().await.unwrap_or_default();
+        if !status.is_success() {
+            return Err(RestError::incomplete(&format!("call: {status}")));
+        }
+        Ok(serde_json::from_str(&text).unwrap_or(Value::String(text)))
+    }
+
+    /// A PUT to the calling stack (`updateEndpointMetadata`).
+    pub async fn calling_put(&self, url: &str, chain: &str, body: &Value) -> Result<(), RestError> {
+        let url = calling_url(url).ok_or_else(|| RestError::incomplete("call: not a Teams calling link"))?;
+        let bearer = self.tokens.calling().await?;
+        let response = self
+            .http
+            .put(url)
+            .bearer_auth(bearer.as_str())
+            .header("x-microsoft-skype-chain-id", chain)
+            .header("x-microsoft-skype-message-id", crate::calling::random_id())
+            .header("x-microsoft-skype-client", crate::calling::CLIENT)
+            .header("x-ms-migration", "True")
+            .header("origin", "https://teams.cloud.microsoft")
+            .header("referer", "https://teams.cloud.microsoft/")
+            .json(body)
+            .send()
+            .await
+            .map_err(|e| RestError::incomplete(&format!("call: {}", e.without_url())))?;
+        if response.status().is_success() {
+            Ok(())
+        } else {
+            Err(RestError::incomplete(&format!("call: {}", response.status())))
+        }
+    }
+
     /// How far each member read a conversation (the chat service's
     /// `consumptionhorizons`): each member's MRI and the arrival time of the
     /// last message they read, as Teams' web app reads it for its receipts.

@@ -145,6 +145,100 @@ pub fn webrtc_answer(sdp: &str) -> Option<String> {
     Some(out)
 }
 
+/// The first audio section's `a=mid`.
+pub fn audio_mid(sdp: &str) -> Option<&str> {
+    sdp.lines().skip_while(|l| !l.starts_with("m=audio ")).find_map(|l| l.strip_prefix("a=mid:"))
+}
+
+fn with_mid(sdp: &str, mid: &str) -> String {
+    let mut out = String::with_capacity(sdp.len());
+    for line in sdp.lines() {
+        if line.starts_with("a=mid:") {
+            out.push_str(&format!("a=mid:{mid}\r\n"));
+        } else if line.starts_with("a=group:BUNDLE") {
+            out.push_str(&format!("a=group:BUNDLE {mid}\r\n"));
+        } else {
+            out.push_str(line);
+            out.push_str("\r\n");
+        }
+    }
+    out
+}
+
+/// A new offer of Teams' in plain WebRTC, under the `mid` this call already negotiated:
+/// libwebrtc refuses a later offer whose section has another one.
+pub fn renegotiation_offer(sdp: &str, session_mid: &str) -> Option<String> {
+    Some(with_mid(&webrtc_answer(sdp)?, session_mid))
+}
+
+/// `RV_CALL_DEBUG=1`: each section of an SDP: its kind, `mid` and direction.
+pub fn sdp_sections(sdp: &str) -> String {
+    let mut out = Vec::new();
+    for line in sdp.lines() {
+        if let Some(rest) = line.strip_prefix("m=") {
+            let mut fields = rest.split(' ');
+            out.push(format!("{} port {}", fields.next().unwrap_or(""), fields.next().unwrap_or("")));
+        } else if let (Some(last), Some(mid)) = (out.last_mut(), line.strip_prefix("a=mid:")) {
+            let last: &mut String = last;
+            last.push_str(&format!(" mid {mid}"));
+        } else if let Some(last) = out.last_mut()
+            && matches!(line, "a=sendrecv" | "a=sendonly" | "a=recvonly" | "a=inactive")
+        {
+            last.push_str(&format!(" {}", &line[2..]));
+        }
+    }
+    out.join("; ")
+}
+
+/// A local WebRTC answer to Teams' `offer`, in Teams' dialect: the same sections in
+/// the same order, each but the audio one refused with port 0, as its own client does.
+pub fn teams_answer(answer: &str, offer: &str) -> String {
+    let answer = audio_mid(offer).map_or_else(|| answer.to_owned(), |mid| with_mid(answer, mid));
+    let audio = teams_offer(&answer);
+    let mut sections: Vec<Vec<&str>> = vec![Vec::new()];
+    for line in offer.lines() {
+        if line.starts_with("m=") {
+            sections.push(Vec::new());
+        }
+        sections.last_mut().expect("never empty").push(line);
+    }
+    let mut out = String::with_capacity(audio.len() + 128);
+    let (head, body) = audio.split_once("m=audio ").map_or((audio.as_str(), ""), |(h, b)| (h, b));
+    out.push_str(head);
+    let mut placed = false;
+    for section in sections.iter().skip(1) {
+        let line = section[0];
+        if line.starts_with("m=audio ") && !placed {
+            placed = true;
+            out.push_str("m=audio ");
+            out.push_str(body);
+            continue;
+        }
+        let mut fields = line.splitn(3, ' ');
+        let (kind, _port, rest) = (fields.next().unwrap_or(""), fields.next(), fields.next().unwrap_or(""));
+        out.push_str(&format!("{kind} 0 {rest}\r\n"));
+        if let Some(mid) = section.iter().find(|l| l.starts_with("a=mid:")) {
+            out.push_str(mid);
+            out.push_str("\r\n");
+        }
+    }
+    out
+}
+
+/// `mediaAnswer`'s body answering a [`CallEvent::Negotiation`].
+pub fn answer_negotiation(answer: &str, media_leg: Option<&str>) -> Value {
+    json!({"mediaAnswer": {
+        "callModalities": ["Audio"],
+        "mediaContent": {
+            "blob": answer,
+            "contentType": "application/sdp-ngc-1.0",
+            "mediaLegId": media_leg,
+            "escalationOccurring": false,
+            "newOffer": false,
+        },
+    }})
+}
+
 /// What a push to a call's callback means.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CallEvent {
@@ -152,11 +246,19 @@ pub enum CallEvent {
     Accepted {
         sdp: String,
         acknowledge: Option<String>,
+        call_leg: Option<String>,
         keep_alive_seconds: Option<u64>,
     },
     /// The call is over, with Teams' own wording when it gives one.
     Ended {
         phrase: Option<String>,
+    },
+    /// Teams offers anew on the running call (the other side held or resumed it, or
+    /// it moved): answer on `answer_link`, or the media stops.
+    Negotiation {
+        sdp: String,
+        answer_link: String,
+        media_leg: Option<String>,
     },
     /// Who is in the call now, as a delta: an account with no endpoint left.
     Roster(Vec<RosterChange>),
@@ -198,6 +300,17 @@ pub fn pushed_body(envelope: &Value) -> Value {
     serde_json::from_str(&text).unwrap_or(Value::String(text))
 }
 
+/// A ring's `gp` (base64 JSON) or `cp` (base64 gzip JSON).
+pub fn decode_push_part(encoded: &str) -> Option<Value> {
+    if let Some(text) = gunzip(encoded) {
+        return serde_json::from_str(&text).ok();
+    }
+    let engine = base64::engine::general_purpose::STANDARD;
+    let plain =
+        engine.decode(encoded).or_else(|_| base64::engine::general_purpose::URL_SAFE_NO_PAD.decode(encoded)).ok()?;
+    serde_json::from_slice(&plain).ok()
+}
+
 fn gunzip(encoded: &str) -> Option<String> {
     let bytes = base64::engine::general_purpose::STANDARD.decode(encoded).ok()?;
     let mut out = String::new();
@@ -218,7 +331,20 @@ pub fn call_event(envelope: &Value) -> CallEvent {
         return CallEvent::Accepted {
             sdp: sdp.to_owned(),
             acknowledge: accepted.pointer("/links/acknowledgement").and_then(Value::as_str).map(str::to_owned),
+            call_leg: accepted.pointer("/links/callLeg").and_then(Value::as_str).map(str::to_owned),
             keep_alive_seconds: accepted.get("callKeepAliveInterval").and_then(Value::as_u64),
+        };
+    }
+    if let Some(negotiation) = body.get("mediaNegotiation")
+        && let (Some(sdp), Some(link)) = (
+            negotiation.pointer("/mediaContent/blob").and_then(Value::as_str),
+            negotiation.pointer("/links/mediaAnswer").and_then(Value::as_str),
+        )
+    {
+        return CallEvent::Negotiation {
+            sdp: sdp.to_owned(),
+            answer_link: link.to_owned(),
+            media_leg: negotiation.pointer("/mediaContent/mediaLegId").and_then(Value::as_str).map(str::to_owned),
         };
     }
     if envelope.get("url").and_then(Value::as_str).is_some_and(|u| u.contains("/rosterUpdate"))
@@ -232,6 +358,13 @@ pub fn call_event(envelope: &Value) -> CallEvent {
         }
     }
     CallEvent::Other
+}
+
+/// Whether two links name the same conversation (`.../conv/<id>/...`), whichever
+/// proxy or query they went through.
+pub fn same_conversation(a: &str, b: &str) -> bool {
+    let id = |url: &str| url.split("/conv/").nth(1).and_then(|t| t.split(['/', '?']).next().map(str::to_owned));
+    id(a).is_some() && id(a) == id(b)
 }
 
 /// A version 4 UUID, as the calling stack's ids are.
@@ -372,6 +505,25 @@ pub fn invite_test_bot(caller: &Caller, participant: &str) -> Value {
     })
 }
 
+/// The call leg's registration of this client's callbacks, where the call controller
+/// sends what follows the acceptance.
+pub fn register_on_leg(caller: &Caller) -> Value {
+    let mut body = acknowledge_acceptance(caller);
+    body["callParticipantUpdate"] = body["callAcceptanceAcknowledgement"].clone();
+    body
+}
+
+/// `updateEndpointMetadata`'s body, as Teams' web client sends it once placed.
+pub fn endpoint_metadata(caller: &Caller) -> Value {
+    json!({"participants": {"from": caller.from()}, "endpointMetadata": {"holographicCapabilities": 3}})
+}
+
+/// The next long poll of the conversation's broker, from an answer: its lease is 30 s
+/// (`expirationTimeInSec`), and a client that lets it lapse loses the call.
+pub fn next_subscription(answer: &Value) -> Option<String> {
+    answer.get("nextSubscribeUrl").and_then(Value::as_str).filter(|u| u.starts_with("https://")).map(str::to_owned)
+}
+
 /// `leave`'s body.
 pub fn leave_call(caller: &Caller) -> Value {
     json!({
@@ -383,6 +535,30 @@ pub fn leave_call(caller: &Caller) -> Value {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_new_offer_keeps_the_calls_mid_and_its_answer_the_offers() {
+        let offer = "v=0\r\ns=-\r\nt=0 0\r\na=group:BUNDLE 7 8\r\nm=audio 5 RTP/SAVP 111\r\nc=IN IP4 1.2.3.4\r\n\
+            a=inactive\r\na=mid:7\r\nm=video 5 RTP/SAVP 34\r\na=mid:8\r\n";
+        let plain = renegotiation_offer(offer, "0").unwrap();
+        assert_eq!(audio_mid(&plain), Some("0"));
+        assert!(plain.contains("a=group:BUNDLE 0\r\n") && plain.contains("a=inactive") && !plain.contains("m=video"));
+        let local = "v=0\r\ns=-\r\nt=0 0\r\na=group:BUNDLE 0\r\nm=audio 9 UDP/TLS/RTP/SAVPF 111\r\nc=IN IP4 0.0.0.0\r\n\
+            a=inactive\r\na=mid:0\r\n";
+        let answer = teams_answer(local, offer);
+        assert_eq!(audio_mid(&answer), Some("7"));
+        assert!(answer.contains("a=group:BUNDLE 7\r\n") && answer.contains("m=video 0 ") && answer.contains("a=mid:8"));
+        assert_eq!(sdp_sections(offer), "audio port 5 inactive mid 7; video port 5 mid 8");
+    }
+
+    #[test]
+    fn a_conversation_is_known_through_its_proxy_and_query() {
+        let direct = "https://conv-euno-05-prod-aks.conv.skype.com/conv/h5HP/";
+        let proxied = "https://api.flightproxy.teams.microsoft.com/api/v2/ep/conv.skype.com/conv/h5HP?i=10";
+        assert!(same_conversation(direct, proxied));
+        assert!(!same_conversation(direct, "https://conv.skype.com/conv/other/"));
+        assert!(!same_conversation("https://x/", "https://x/"));
+    }
 
     const OFFER: &str = "v=0\r\no=- 1 2 IN IP4 127.0.0.1\r\ns=-\r\nt=0 0\r\na=group:BUNDLE 0\r\n\
         m=audio 9 UDP/TLS/RTP/SAVPF 111\r\nc=IN IP4 0.0.0.0\r\n\
@@ -444,6 +620,44 @@ mod tests {
     }
 
     #[test]
+    fn an_offer_from_teams_is_answered_in_its_order() {
+        let offer = "v=0\r\nt=0 0\r\nm=audio 3480 RTP/SAVP 120 111\r\nc=IN IP4 52.1.2.3\r\na=mid:0\r\n\
+            m=video 0 RTP/SAVP 102\r\na=mid:1\r\nm=x-data 3480 RTP/SAVP 127\r\na=mid:3\r\n";
+        assert!(webrtc_answer(offer).unwrap().contains("m=audio 3480 UDP/TLS/RTP/SAVPF 120 111\r\n"));
+        let local = "v=0\r\nt=0 0\r\na=group:BUNDLE 0\r\nm=audio 9 UDP/TLS/RTP/SAVPF 111\r\nc=IN IP4 0.0.0.0\r\n\
+            a=mid:0\r\na=sendonly\r\na=candidate:2 1 udp 22 192.168.1.5 222 typ host generation 0\r\n";
+        let answer = teams_answer(local, offer);
+        assert!(answer.contains("m=audio 222 RTP/SAVP 111\r\n"), "{answer}");
+        assert!(answer.contains("a=sendonly\r\n"));
+        assert!(answer.contains("m=video 0 RTP/SAVP 102\r\na=mid:1\r\n"), "{answer}");
+        assert!(answer.contains("m=x-data 0 RTP/SAVP 127\r\na=mid:3\r\n"), "{answer}");
+        assert!(answer.find("m=audio").unwrap() < answer.find("m=video").unwrap());
+    }
+
+    #[test]
+    fn the_broker_says_where_to_poll_next() {
+        let answer = json!({"message": "", "nextSubscribeUrl": "https://x/subscribe/1/0", "expirationTimeInSec": 30});
+        assert_eq!(next_subscription(&answer).as_deref(), Some("https://x/subscribe/1/0"));
+        assert_eq!(next_subscription(&json!({"nextSubscribeUrl": "http://x"})), None);
+    }
+
+    #[test]
+    fn a_new_offer_on_the_call_is_read() {
+        let push = json!({"body": {"mediaNegotiation": {
+            "links": {"mediaAnswer": "https://cc/answer"},
+            "mediaContent": {"blob": "v=0", "mediaLegId": "LEG"},
+        }}});
+        assert_eq!(
+            call_event(&push),
+            CallEvent::Negotiation {
+                sdp: "v=0".into(),
+                answer_link: "https://cc/answer".into(),
+                media_leg: Some("LEG".into()),
+            }
+        );
+    }
+
+    #[test]
     fn pushes_say_what_happened() {
         let accepted = json!({"url": "https://x/callAgent/e/r/call/acceptance/", "body": json!({"callAcceptance": {
             "callKeepAliveInterval": 2700,
@@ -454,6 +668,7 @@ mod tests {
             CallEvent::Accepted {
                 sdp: "v=0".into(),
                 acknowledge: Some("https://cc/ack".into()),
+                call_leg: None,
                 keep_alive_seconds: Some(2700),
             }
         );

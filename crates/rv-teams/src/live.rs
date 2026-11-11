@@ -361,6 +361,13 @@ impl Actor {
                     self.emit(LiveEvent::Event { name: PRESENCE_EVENT.to_owned(), data, broadcast: Value::Null });
                 } else if frames::call_push(&envelope).is_some() {
                     self.emit(LiveEvent::Event { name: CALL_EVENT.to_owned(), data: envelope, broadcast: Value::Null });
+                } else if std::env::var("RV_CALL_DEBUG").as_deref() == Ok("1") {
+                    let url = envelope.get("url").and_then(Value::as_str).unwrap_or("");
+                    let path: Vec<&str> = url.split('?').next().unwrap_or("").rsplit('/').take(3).collect();
+                    let body = super::calling::pushed_body(&envelope);
+                    let keys: Vec<&str> =
+                        body.as_object().map(|o| o.keys().map(String::as_str).collect()).unwrap_or_default();
+                    eprintln!("teams call: unclaimed push {path:?} {keys:?}");
                 }
                 true
             }

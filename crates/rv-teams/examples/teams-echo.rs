@@ -219,6 +219,7 @@ async fn main() {
                             CallEvent::Accepted { sdp, .. } => format!("accepted, {} bytes of SDP", sdp.len()),
                             CallEvent::Ended { phrase } => format!("ended {phrase:?}"),
                             CallEvent::Roster(changes) => format!("roster {changes:?}"),
+                            CallEvent::Negotiation { .. } => "a new offer".to_owned(),
                             CallEvent::Other => shape(&calling::pushed_body(&envelope), 1),
                         });
                         match event {
@@ -241,7 +242,7 @@ async fn main() {
                                 }
                             }
                             CallEvent::Ended { .. } => break,
-                            CallEvent::Roster(_) | CallEvent::Other => {}
+                            CallEvent::Negotiation { .. } | CallEvent::Roster(_) | CallEvent::Other => {}
                         }
                     }
                     _ => {}
