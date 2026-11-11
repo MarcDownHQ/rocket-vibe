@@ -395,9 +395,29 @@ meetings with video (2 to 3 months more).
   forward slashes, UDP candidates without `MTURNID`, no `tcp-pass`, `a=x-*`, `a=label`, `a=ptime`.
   Teams' media server offers public UDP candidates, so no TURN was needed; the relay token
   (`api/v2/ep/relay/token`, from Microslop) is not used, which a network blocking UDP would need.
+- **Keeping it up** (found live, 2026-11-07): the `epconv` answer's `links.subscribe` is the
+  conversation's broker, a long poll (`GET`, `x-usebatching: 1`) answering `{message, nextSubscribeUrl,
+  expirationTimeInSec: 30}`: a client that stops polling loses its media about 35 s in (ICE disconnected,
+  then failed, no `callEnd`), which the echo bot does not show. rv-core `hold_subscription` keeps polling at
+  each `nextSubscribeUrl` for the whole call. As Teams' web client does, the app also `PUT`s
+  `updateEndpointMetadata` and, once accepted, registers on `links.callLeg`
+  (`{callAcceptanceAcknowledgement, callParticipantUpdate}`, both the same links). With these a call with a
+  person ran 3 minutes with no loss.
+- **Hold and resume** are Teams' renegotiations: `call/mediaRenegotiation/` pushes `mediaNegotiation
+  {mediaContent {blob, mediaLegId}, links {mediaAnswer}}`, answered by a `mediaAnswer` POST. **Teams
+  renumbers the audio section's `a=mid` in such an offer**, which libwebrtc refuses ("The order of m-lines in
+  subsequent offer doesn't match"): the offer goes to the sidecar (`Command::RemoteOffer`, `Event::LocalAnswer`)
+  under the call's own `mid` (`renegotiation_offer`), and the answer goes back under Teams' `mid` with every
+  section of its offer, refused ones at port 0 (`teams_answer`). A hold that was refused kept the microphone
+  flowing to the other side. Android does the same through `remoteOffer`.
 - **Ending**: the other side's `callEnd`/`conversationEnd` ends the voice session with `remote_ended`,
   90 s without an answer with `no_answer`. Neither is a join failure (`Ended::is_join_failure`), so the page
   does not open: it would ring them again.
+  When no `callEnd` reaches this endpoint (seen once: the call went on until its media failed), the calling
+  registration's `evt` 116 push naming this conversation (`cp.conversationController`, gzip) ends it too
+  (`frames::conversation_over`, `same_conversation`), believed only 5 s after the answer since the push that
+  follows an answer is not yet known to be 115 rather than 116. Android has no inflater for that gzip: it
+  relies on `callEnd`.
 - **Who speaks**: one mixed stream, so a person's own level is known only with one person in the call.
 - **Checked live (2026-11-06)**, Microsoft's Test Call (`UserInitiatedTestCall`, `to: []`, then the bot
   `28:cf28171e-...` invited by `addParticipant`; it rings no one), a tone from `rv-voice`, through
@@ -407,9 +427,10 @@ meetings with video (2 to 3 months more).
   day**, the GTK AppImage calling an account in Teams' web app in the same tenant, four short calls (5 to 15 s):
   the native window opened, a decline ended it with its message and no page, the user heard audio both ways on a
   real microphone and speakers, the name and speaking indicator were right, and hanging up from either side
-  ended it; 0 packets lost, no fallback. The media server connects before the callee answers, so `connected`
-  comes while it rings (the window shows "waiting" until someone else is in the roster). **Not run**: a call
-  longer than 15 s with a person; a group chat's call; another network; SwiftUI (macOS CI only), Android on a
+  ended it; 0 packets lost, no fallback. A call past 35 s died until the broker lease was held; with it a call
+ran 3 minutes (2026-11-07). The `a=mid` rewrite for hold and resume is in place but not yet run with a person. The media server connects before the callee answers, so `connected`
+  comes while it rings (the window shows "waiting" until someone else is in the roster). **Not run**: hold and resume after the
+  `a=mid` fix; a group chat's call; another network; SwiftUI (macOS CI only), Android on a
   device (Kotlin compiled only). **Owed**: answering an incoming call
   natively (Accept still opens Teams' page), meetings, channels. `callKeepAliveInterval` (2700 s) is
   unexplained: no capture shows what it wants, so a call past 45 minutes may end.
