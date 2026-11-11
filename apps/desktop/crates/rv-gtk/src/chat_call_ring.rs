@@ -71,15 +71,7 @@ impl ChatPage {
             match response {
                 "accept" => {
                     session.dismiss_call();
-                    let (weak, session, id, room) = (Rc::downgrade(&this), session.clone(), id.clone(), room.clone());
-                    glib::spawn_future_local(async move {
-                        let url = on_tokio(async move { session.join_call(&id).await }).await;
-                        let Some(this) = weak.upgrade() else { return };
-                        match url {
-                            Ok(url) => this.open_call(&url, &room),
-                            Err(_) => this.toast(t("call.failed").to_owned()),
-                        }
-                    });
+                    this.accept_call(&session, &id, &room);
                 }
                 "decline" => {
                     let (session, id) = (session.clone(), id.clone());
@@ -95,6 +87,38 @@ impl ChatPage {
         }
         self.incoming_call.replace(Some((call.call_id, dialog.clone())));
         crate::widgets::present(&dialog, Some(&self.split));
+    }
+
+    /// Joins a call that rang: a Teams call answered natively when it can be, any
+    /// other the way its call card's Join does.
+    pub(crate) fn accept_call(self: &Rc<Self>, session: &Arc<Session>, id: &str, room: &str) {
+        if rv_core::voice::available() && session.teams_call_answerable(id) {
+            let (weak, session2, id2, room2) = (Rc::downgrade(self), session.clone(), id.to_owned(), room.to_owned());
+            let call = crate::native_call::Call::Account(
+                session.clone(),
+                rv_core::teams_call::Target::Incoming(id.to_owned()),
+            );
+            crate::native_call::open(call, room, crate::native_call::Names::none(), move || {
+                if let Some(this) = weak.upgrade() {
+                    this.toast(t("call.native_fallback").to_owned());
+                    this.join_ringing_call(&session2, &id2, &room2);
+                }
+            });
+            return;
+        }
+        self.join_ringing_call(session, id, room);
+    }
+
+    fn join_ringing_call(self: &Rc<Self>, session: &Arc<Session>, id: &str, room: &str) {
+        let (weak, session, id, room) = (Rc::downgrade(self), session.clone(), id.to_owned(), room.to_owned());
+        glib::spawn_future_local(async move {
+            let url = on_tokio(async move { session.join_call(&id).await }).await;
+            let Some(this) = weak.upgrade() else { return };
+            match url {
+                Ok(url) => this.open_call(&url, &room),
+                Err(_) => this.toast(t("call.failed").to_owned()),
+            }
+        });
     }
 
     /// The system notification's Accept or Decline, as the dialog's buttons.

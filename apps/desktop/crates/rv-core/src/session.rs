@@ -274,6 +274,9 @@ pub struct Session {
     rings: Mutex<crate::call_ring::Rings>,
     /// Pushes to the callbacks of the Teams calls placed here.
     pub(crate) teams_call_pushes: broadcast::Sender<Value>,
+    /// The Teams calls ringing here that can be answered natively, by room: the
+    /// call's id, its caller and what answering takes.
+    pub(crate) teams_answerable: Mutex<HashMap<String, (String, String, crate::teams::frames::Answering)>>,
 }
 
 /// Exponential back-off from 1 s to `MAX_RECONNECT_DELAY_MS`, with up to 1 s of jitter.
@@ -504,6 +507,7 @@ impl Session {
             notification_preference: Mutex::new("default".to_owned()),
             rings: Mutex::default(),
             teams_call_pushes: broadcast::channel(64).0,
+            teams_answerable: Mutex::default(),
             e2e: Mutex::default(),
             custom_emoji: Mutex::default(),
             custom_emoji_names: Mutex::default(),
@@ -2381,6 +2385,12 @@ impl Session {
     }
 
     /// Whether a Teams call in this room can be placed natively.
+    /// Whether the Teams call ringing in this room can be answered natively.
+    pub fn teams_call_answerable(&self, rid: &str) -> bool {
+        let Backend::Teams(teams) = self.backend() else { return false };
+        teams.call_route().is_some() && self.teams_answerable.lock().unwrap().contains_key(rid)
+    }
+
     pub fn teams_call_possible(&self, rid: &str) -> bool {
         let Backend::Teams(teams) = self.backend() else { return false };
         teams.call_targets(rid).is_some() && teams.call_route().is_some()
@@ -2513,6 +2523,12 @@ impl Session {
                     (!ring.multi_party).then(|| crate::teams::translate::one_on_one_id(me, &ring.caller_mri)).flatten()
                 });
                 let Some(rid) = rid else { return };
+                if let Some(answer) = ring.answer.clone() {
+                    self.teams_answerable
+                        .lock()
+                        .unwrap()
+                        .insert(rid.clone(), (ring.call_id.clone(), ring.caller_mri.clone(), answer));
+                }
                 let call = crate::call_ring::IncomingCall {
                     message_id: ring.call_id,
                     rid: rid.clone(),

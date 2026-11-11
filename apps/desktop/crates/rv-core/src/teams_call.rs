@@ -30,6 +30,8 @@ pub enum Target {
     People(Vec<String>),
     /// Microsoft's Test Call bot, which plays back what it hears and rings no one.
     TestCall,
+    /// The call ringing in this chat, answered here.
+    Incoming(String),
 }
 
 struct Identity {
@@ -39,6 +41,8 @@ struct Identity {
     participant: String,
     route: String,
     random: String,
+    /// The `x-microsoft-skype-chain-id` of every request of this call.
+    chain: String,
 }
 
 impl Identity {
@@ -67,7 +71,11 @@ impl Session {
     ) -> Result<(), RestError> {
         let Backend::Teams(teams) = self.backend() else { return Err(RestError::incomplete("call: not Teams")) };
         let route = teams.call_route().ok_or_else(|| RestError::incomplete("call: socket not registered"))?;
+        if let Target::Incoming(rid) = &target {
+            return self.answer_teams_call(voice, rid, route, label).await;
+        }
         let (to, thread) = match &target {
+            Target::Incoming(_) => unreachable!("answered above"),
             Target::TestCall => (Vec::new(), None),
             Target::People(people) => (people.clone(), None),
             Target::Room(rid) => {
@@ -81,6 +89,7 @@ impl Session {
             participant: calling::random_id(),
             route,
             random: calling::random_id(),
+            chain: calling::random_id(),
         };
         voice
             .connect_external(label, &identity.endpoint)
@@ -90,7 +99,7 @@ impl Session {
             voice.disconnect().await;
             return Err(RestError::incomplete("call: no offer"));
         };
-        let chain = calling::random_id();
+        let chain = identity.chain.clone();
         let mut pushes = self.teams_call_pushes.subscribe();
         let body = calling::place_call(
             &identity.caller(),
@@ -110,7 +119,7 @@ impl Session {
         let voice = voice.clone();
         tokio::spawn(async move {
             let test = target == Target::TestCall;
-            drive(&session, &voice, &identity, &chain, &created, test, &mut pushes).await;
+            drive(&session, &voice, &identity, &created, test, None, &mut pushes).await;
         });
         Ok(())
     }
@@ -139,6 +148,80 @@ fn shape(v: &Value, depth: usize) -> String {
         },
         Value::String(s) => format!("s{}", s.len()),
         other => other.to_string(),
+    }
+}
+
+impl Session {
+    /// Answers the call ringing in `rid` on `voice`: attaches this endpoint to it,
+    /// answers its offer through the sidecar and accepts it; then the call runs as a
+    /// placed one does. An error leaves nothing running.
+    async fn answer_teams_call(
+        self: &Arc<Self>,
+        voice: &VoiceController,
+        rid: &str,
+        route: String,
+        label: &str,
+    ) -> Result<(), RestError> {
+        let Backend::Teams(teams) = self.backend() else { return Err(RestError::incomplete("call: not Teams")) };
+        let (call_id, _caller, answer) = self
+            .teams_answerable
+            .lock()
+            .unwrap()
+            .remove(rid)
+            .ok_or_else(|| RestError::incomplete("call: nothing rings here"))?;
+        let identity = Identity {
+            mri: self.info.user_id.clone(),
+            name: self.info.username.clone(),
+            endpoint: calling::random_id(),
+            participant: calling::random_id(),
+            route,
+            random: calling::random_id(),
+            chain: calling::random_id(),
+        };
+        let chain = identity.chain.clone();
+        let mut pushes = self.teams_call_pushes.subscribe();
+        let attached = teams
+            .service
+            .calling_post(&answer.attach, &chain, &calling::attach_call(&identity.caller(), &answer.conversation))
+            .await?;
+        let created =
+            calling::attached(&attached).ok_or_else(|| RestError::incomplete("call: attach answered nothing"))?;
+        let acceptance = created
+            .pointer("/links/acceptance")
+            .and_then(Value::as_str)
+            .ok_or_else(|| RestError::incomplete("call: no acceptance link"))?
+            .to_owned();
+        let Some(plain) = calling::webrtc_answer(&answer.offer) else {
+            return Err(RestError::incomplete("call: an offer without audio"));
+        };
+        voice
+            .connect_external_answering(label, &identity.endpoint)
+            .await
+            .map_err(|e| RestError::incomplete(&format!("call: {e}")))?;
+        let Some(local) = voice.answer_remote_offer(&plain).await else {
+            voice.disconnect().await;
+            return Err(RestError::incomplete("call: no answer"));
+        };
+        let body = calling::accept_call(
+            &identity.caller(),
+            &calling::teams_answer(&local, &answer.offer),
+            answer.media_leg.as_deref(),
+        );
+        if let Err(e) = teams.service.calling_post(&acceptance, &chain, &body).await {
+            voice.disconnect().await;
+            return Err(e);
+        }
+        if std::env::var("RV_CALL_DEBUG").as_deref() == Ok("1") {
+            eprintln!("teams call: answered {call_id}");
+        }
+        self.dismiss_call();
+        let mid = calling::audio_mid(&plain).map(str::to_owned);
+        let session = self.clone();
+        let voice = voice.clone();
+        tokio::spawn(async move {
+            drive(&session, &voice, &identity, &created, false, mid, &mut pushes).await;
+        });
+        Ok(())
     }
 }
 
@@ -220,19 +303,21 @@ async fn drive(
     session: &Arc<Session>,
     voice: &VoiceController,
     identity: &Identity,
-    chain: &str,
     created: &Value,
     test: bool,
+    // The audio section's mid of a call answered here, accepted already.
+    accepted: Option<String>,
     pushes: &mut tokio::sync::broadcast::Receiver<Value>,
 ) {
     let Backend::Teams(teams) = session.backend() else { return };
+    let chain = identity.chain.as_str();
     let links = created.get("links").unwrap_or(&Value::Null);
     let conversation = created.get("conversationController").and_then(Value::as_str).unwrap_or("");
     let mut changes = voice.changes();
     let mut roster: BTreeMap<String, String> = BTreeMap::new();
-    let mut answered = false;
-    let mut answered_at: Option<tokio::time::Instant> = None;
-    let mut session_mid: Option<String> = None;
+    let mut answered = accepted.is_some();
+    let mut answered_at = answered.then(tokio::time::Instant::now);
+    let mut session_mid: Option<String> = accepted;
     // Teams' conversation holds this client through this long poll's 30 s lease.
     let broker = links.get("subscribe").and_then(Value::as_str).map(|first| {
         let (session, chain, first) = (session.clone(), chain.to_owned(), first.to_owned());
