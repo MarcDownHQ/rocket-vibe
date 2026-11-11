@@ -45,7 +45,9 @@ async fn bridge(stopped: tokio::sync::watch::Receiver<bool>) -> std::io::Result<
     let (mic_tx, microphone) = async_channel::bounded::<Vec<i16>>(8);
     let (speaker, spk_rx) = async_channel::bounded::<Vec<i16>>(8);
     tokio::spawn(async move {
-        let Ok(Ok((socket, _))) = tokio::time::timeout(AUDIO_WAIT, listener.accept()).await else { return };
+        let Ok(Ok((socket, _))) = tokio::time::timeout(AUDIO_WAIT, listener.accept()).await else {
+            return;
+        };
         drop(listener);
         let _ = socket.set_nodelay(true);
         let (read, mut write) = socket.into_split();
@@ -85,7 +87,11 @@ async fn bridge(stopped: tokio::sync::watch::Receiver<bool>) -> std::io::Result<
         };
         tokio::join!(inbound, outbound);
     });
-    Ok(Bridge { address, microphone, speaker })
+    Ok(Bridge {
+        address,
+        microphone,
+        speaker,
+    })
 }
 
 impl Engine {
@@ -106,7 +112,13 @@ impl Engine {
     /// the audio socket, `active` once the media flows, `ended` when it stops.
     pub(crate) async fn accept_call(self: Arc<Self>, cmd: Command) {
         let ringing = self.calls.lock().expect("calls").remove(&cmd.id);
-        let (Some(Ringing { creator, incoming, .. }), Some(client)) = (ringing, self.ready()) else {
+        let (
+            Some(Ringing {
+                creator, incoming, ..
+            }),
+            Some(client),
+        ) = (ringing, self.ready())
+        else {
             return self.call_frame(&cmd.id, "", "ended", "", "not_ringing");
         };
         let peer = self.canonical(&creator).await.to_string();
@@ -114,9 +126,17 @@ impl Engine {
         let Ok(bridge) = bridge(stopped).await else {
             return self.call_frame(&cmd.id, &peer, "ended", "", "audio_failed");
         };
-        let started = client.voip().accept(&incoming).audio(bridge.microphone, bridge.speaker).start().await;
+        let started = client
+            .voip()
+            .accept(&incoming)
+            .audio(bridge.microphone, bridge.speaker)
+            .start()
+            .await;
         match started {
-            Ok(handle) => self.run_call(cmd.id, peer, handle, bridge.address, stop).await,
+            Ok(handle) => {
+                self.run_call(cmd.id, peer, handle, bridge.address, stop)
+                    .await
+            }
             Err(e) => {
                 log::warn!("call not accepted: {e}");
                 let _ = stop.send(true);
@@ -128,22 +148,31 @@ impl Engine {
     /// Calls `cmd.chat`, a person, audio only: `calling` with the audio socket,
     /// `active` once answered and the media flows, `ended` when it stops.
     pub(crate) async fn place_call(self: Arc<Self>, cmd: Command) {
-        let Some(peer) = crate::content::valid_chat(&cmd.chat).filter(|j| !crate::content::is_group(&j.to_string()))
+        let Some(peer) = crate::content::valid_chat(&cmd.chat)
+            .filter(|j| !crate::content::is_group(&j.to_string()))
         else {
             return self.call_frame(&cmd.id, &cmd.chat, "ended", "", "not_callable");
         };
-        let Some(client) = self.ready() else { return self.call_frame(&cmd.id, &cmd.chat, "ended", "", "not_connected") };
+        let Some(client) = self.ready() else {
+            return self.call_frame(&cmd.id, &cmd.chat, "ended", "", "not_connected");
+        };
         let (stop, stopped) = tokio::sync::watch::channel(false);
         let Ok(bridge) = bridge(stopped).await else {
             return self.call_frame(&cmd.id, &cmd.chat, "ended", "", "audio_failed");
         };
-        let started = client.voip().call(&peer).audio(bridge.microphone, bridge.speaker).start().await;
+        let started = client
+            .voip()
+            .call(&peer)
+            .audio(bridge.microphone, bridge.speaker)
+            .start()
+            .await;
         match started {
             Ok(handle) => {
                 let id = handle.call_id().to_owned();
                 // The app knows the call by the id it asked with until this frame names the real one.
                 self.call_frame(&cmd.id, &cmd.chat, "placed", &id, "");
-                self.run_call(id, cmd.chat, handle, bridge.address, stop).await;
+                self.run_call(id, cmd.chat, handle, bridge.address, stop)
+                    .await;
             }
             Err(e) => {
                 log::warn!("call not placed: {e}");
@@ -161,7 +190,10 @@ impl Engine {
         address: String,
         stop: tokio::sync::watch::Sender<bool>,
     ) {
-        if let Some(previous) = self.active.lock().await.replace(Active { id: id.clone(), handle: handle.clone() }) {
+        if let Some(previous) = self.active.lock().await.replace(Active {
+            id: id.clone(),
+            handle: handle.clone(),
+        }) {
             let _ = previous.handle.terminate().await;
         }
         self.call_frame(&id, &peer, "connecting", &address, "");
@@ -169,7 +201,9 @@ impl Engine {
         let engine = Arc::clone(&self);
         let (watch_id, watch_peer) = (id.clone(), peer.clone());
         let watcher = tokio::spawn(async move {
-            let Some(events) = events.as_mut() else { return };
+            let Some(events) = events.as_mut() else {
+                return;
+            };
             let mut active = false;
             while let Ok(event) = events.recv().await {
                 use whatsapp_rust::voip::CallEvent;
@@ -215,7 +249,13 @@ impl Engine {
 
     /// The other side ended or refused the call carried here.
     pub(crate) async fn remote_ended(&self, id: &str) {
-        let handle = self.active.lock().await.as_ref().filter(|a| a.id == id).map(|a| a.handle.clone());
+        let handle = self
+            .active
+            .lock()
+            .await
+            .as_ref()
+            .filter(|a| a.id == id)
+            .map(|a| a.handle.clone());
         if let Some(handle) = handle {
             handle.hangup_local().await;
         }
