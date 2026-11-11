@@ -576,14 +576,16 @@ pub async fn mark_inbox_read(
             .fetch_all(&mut *tx)
             .await?;
     // In one order, so two of these cannot deadlock over the rooms they share.
-    sqlx::query("SELECT id FROM rooms WHERE id=ANY($1) ORDER BY id FOR UPDATE")
-        .bind(&rooms)
-        .execute(&mut *tx)
-        .await?;
+    let locked: Vec<String> =
+        sqlx::query_scalar("SELECT id FROM rooms WHERE id=ANY($1) ORDER BY id FOR UPDATE")
+            .bind(&rooms)
+            .fetch_all(&mut *tx)
+            .await?;
     let targets: Vec<(String, String, i64)> = sqlx::query_as(&format!(
-        "SELECT f.room_id,f.root_id,(SELECT max(r.position) FROM messages r WHERE r.room_id=f.room_id AND r.reply_to=f.root_id AND NOT r.deleted) {unread_threads} ORDER BY f.room_id"
+        "SELECT f.room_id,f.root_id,(SELECT max(r.position) FROM messages r WHERE r.room_id=f.room_id AND r.reply_to=f.root_id AND NOT r.deleted) {unread_threads} AND f.room_id=ANY($2) ORDER BY f.room_id"
     ))
     .bind(&actor.id)
+    .bind(&locked)
     .fetch_all(&mut *tx)
     .await?;
     let mut applied = 0;
