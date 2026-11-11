@@ -461,3 +461,17 @@ test('a chat Teams hides is listed again once opened, and a catch-up does not hi
   assert.equal(rooms.revealed.has(rid), true);
   assert.equal(rooms.reveal('19:unknown'), null);
 });
+
+test('the activity feed is read from the notifications conversation, back links on the chat host only', async () => {
+  const feed = `${CHAT}/v1/users/ME/conversations/48%3Anotifications/messages?pageSize=200&startTime=1&view=msnp24Equivalent`;
+  const older = `${CHAT}/v1/users/ME/conversations/48%3Anotifications/messages?syncState=older`;
+  const { calls, client } = fake((call) => call.url === feed
+    ? { body: { messages: [{ id: '2' }], _metadata: { backwardLink: older } } }
+    : call.url === older
+      ? { body: { messages: [{ id: '1' }], _metadata: { backwardLink: 'https://elsewhere.example/v1/next' } } }
+      : { status: 404 });
+  const pages = await client.activityFeed();
+  assert.deepEqual(pages.map((p) => (p.messages as Doc[])[0]?.id), ['2', '1']);
+  assert.deepEqual(calls.map((c) => [c.method, c.url]), [['GET', feed], ['GET', older]]);
+  assert.equal(calls[0].headers.authentication, 'skypetoken=skype-fixture');
+});

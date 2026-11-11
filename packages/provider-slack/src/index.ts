@@ -92,7 +92,7 @@ export function createSlackProvider(session: Session, rest: TokenRejection, gene
   const rtm = options.listener ?? new SlackRtm(client, (frame) => live.expand(frame));
   const listener = rtm;
   if (rtm instanceof SlackRtm) rtm.onLoss(() => live.presence.clear());
-  const actions = new SlackActions({ client, directory, history, live, translator, saved, canvas: options.canvas ?? null });
+  const actions = new SlackActions({ client, directory, history, live, translator, saved, myId: session.userId, roomNames, canvas: options.canvas ?? null });
 
   return {
     identity: { kind: 'slack', origin: session.baseUrl, accountId: session.userId, instanceId: null, generation: null },

@@ -4,6 +4,12 @@ import { pickTimeDialog } from "./time-picker";
 import { gifs } from "./social";
 import { messageMenu, type MenuAction } from "./ui/menu";
 import { showThread } from "./ui/thread";
+import {
+  inboxAddress,
+  inboxUrl,
+  type InboxFilter,
+  type InboxTab,
+} from "./thread-inbox";
 import { emptyTimeline, timelineBanner } from "./ui/banners";
 import { paintTimeline } from "./ui/messages";
 import { clearView } from "./ui/portals";
@@ -40,6 +46,7 @@ import type {
   MessagePage,
   Room,
   ReadState,
+  ThreadInboxTotals,
   ThreadPage,
   SyncBatch,
   LiveState,
@@ -246,6 +253,14 @@ export class App implements RowActions {
   strip = el("div", "upload-strip");
   replyBar = el("div", "reply-bar");
   threadPane = el("aside", "thread-pane");
+  /** The sidebar's Threads panel, as the address says. */
+  threadsTab?: InboxTab;
+  threadsFilter: InboxFilter = "all";
+  /** The thread the address opened, not one opened from the room's timeline. */
+  addressThread?: string;
+  threadTotals?: ThreadInboxTotals;
+  private threadTotalsSeen = "";
+  private threadTotalsTimer?: ReturnType<typeof setTimeout>;
   notesPane = el("aside", "notes-pane");
   /** Ends the open notes pane's reading and keeps an edit in progress. */
   notesClose?: () => void;
@@ -335,10 +350,24 @@ export class App implements RowActions {
         const id = location.pathname.startsWith("/room/")
           ? decodeURIComponent(location.pathname.slice(6))
           : undefined;
-        if (!id || !this.model.rooms.has(id)) return;
+        const address = inboxAddress(location.search);
+        if (!id) {
+          // Back from a thread opened with no room behind it.
+          if (this.room && (this.threadsTab || address.tab)) {
+            const previous = this.privateChat;
+            this.privateChat = undefined;
+            void previous?.close();
+            this.clearRoom();
+          }
+          this.followThreadsUrl();
+          this.refresh();
+          return;
+        }
+        if (!this.model.rooms.has(id)) return;
         // The same room: only its notes moved, the conversation stays as it is.
         if (id === this.room) this.followNotesUrl();
-        else void this.openRoom(id, false);
+        else void this.openRoom(id, false, !address.thread);
+        this.followThreadsUrl();
       },
       { signal: this.lifetime.signal },
     );
@@ -411,7 +440,7 @@ export class App implements RowActions {
           this.root &&
           !document.querySelector("dialog[open]")
         ) {
-          this.closeThread();
+          this.leaveThread();
         }
       },
       { signal: this.lifetime.signal },
@@ -525,6 +554,10 @@ export class App implements RowActions {
     clearTimeout(this.presenceTimer);
     this.roomOpening++;
     this.threadOpening++;
+    clearTimeout(this.threadTotalsTimer);
+    this.threadTotalsTimer = undefined;
+    this.threadTotals = undefined;
+    this.threadTotalsSeen = "";
     clearTimeout(this.readTimer);
     this.readTimer = undefined;
     this.readWork = undefined;
@@ -806,8 +839,17 @@ export class App implements RowActions {
       if (this.room) await this.refreshPermissions(this.room);
       else if (location.pathname.startsWith("/room/")) {
         const target = decodeURIComponent(location.pathname.slice(6));
-        if (this.model.rooms.has(target)) await this.openRoom(target, false);
+        if (this.model.rooms.has(target)) {
+          const opened = this.openRoom(
+            target,
+            false,
+            !inboxAddress(location.search).thread,
+          );
+          this.followThreadsUrl();
+          await opened;
+        }
       }
+      this.followThreadsUrl();
       const ticket = await this.api.request<{ ticket: string }>(
         "/api/v1/sync/ticket",
         "POST",
@@ -1007,7 +1049,8 @@ export class App implements RowActions {
       ? decodeURIComponent(location.pathname.slice(6))
       : undefined;
     if (target && this.model.rooms.has(target))
-      void this.openRoom(target, false);
+      void this.openRoom(target, false, !inboxAddress(location.search).thread);
+    this.followThreadsUrl();
   }
   bindShellEvents(): () => void {
     const lifetime = new AbortController();
@@ -1183,17 +1226,9 @@ export class App implements RowActions {
     }
     window.dispatchEvent(new Event("rv-profile-update"));
     window.dispatchEvent(new Event("rv-model-update"));
+    this.scheduleThreadTotals();
     this.renderRooms();
-    if (this.room && !this.model.rooms.has(this.room)) {
-      this.room = undefined;
-      this.root = undefined;
-      this.threadPane.hidden = true;
-      this.hideNotes();
-      stopMedia(this.timeline);
-      clearView(this.timeline);
-      this.composer.value = "";
-      this.quote = undefined;
-    }
+    if (this.room && !this.model.rooms.has(this.room)) this.clearRoom();
     if (this.privateChat && !this.privateChat.active) {
       void this.privateChat.close();
       this.privateChat = undefined;
@@ -1314,6 +1349,136 @@ export class App implements RowActions {
       params: (match[2] || "").trim(),
     });
   }
+  /** The sidebar's Threads row and panel: each step is a state back and forward return to. */
+  showThreads(
+    tab: InboxTab | undefined,
+    filter: InboxFilter = this.threadsFilter,
+  ): void {
+    history.pushState(
+      null,
+      "",
+      inboxUrl(
+        this.room,
+        tab,
+        // Leaving the panel keeps a thread open; the room behind it stays unread.
+        inboxAddress(location.search).thread,
+        filter,
+      ),
+    );
+    this.followThreadsUrl();
+  }
+  /** A row of the panel. The room behind the thread opens without being read. */
+  openInboxThread(room: string, root: string): void {
+    history.pushState(
+      { threadFromInbox: true },
+      "",
+      inboxUrl(room, this.threadsTab, root, this.threadsFilter),
+    );
+    if (room !== this.room) void this.openRoom(room, false, false).catch(toast);
+    this.followThreadsUrl();
+  }
+  /** The panel and the thread as the address says. */
+  followThreadsUrl(): void {
+    const enabled = !!this.info?.capabilities.thread_inbox;
+    const address = inboxAddress(location.search),
+      tab = enabled ? address.tab : undefined,
+      filter = tab ? address.filter : "all";
+    if (tab !== this.threadsTab || filter !== this.threadsFilter) {
+      this.threadsTab = tab;
+      this.threadsFilter = filter;
+      this.renderRooms();
+    }
+    const thread = enabled ? address.thread : undefined;
+    if (!thread) {
+      if (this.addressThread) {
+        this.addressThread = undefined;
+        if (this.root) this.closeThread();
+        this.renderRooms();
+      }
+      return;
+    }
+    if (this.addressThread === thread || !this.room) return;
+    this.addressThread = thread;
+    const room = this.room;
+    void this.openThread(room, thread)
+      .catch((error) => {
+        toast(error);
+        if (this.addressThread !== thread) return;
+        this.addressThread = undefined;
+        history.replaceState(
+          null,
+          "",
+          inboxUrl(room, this.threadsTab, undefined, this.threadsFilter),
+        );
+      })
+      .then(() => this.renderRooms());
+  }
+  /** The thread's back button and Escape: a thread from the address leaves it too. */
+  leaveThread(): void {
+    if (!this.addressThread) {
+      this.closeThread();
+      return;
+    }
+    if (history.state?.threadFromInbox) {
+      history.back();
+      return;
+    }
+    history.replaceState(
+      null,
+      "",
+      inboxUrl(this.room, this.threadsTab, undefined, this.threadsFilter),
+    );
+    this.followThreadsUrl();
+  }
+  /** At most one read per second, and only once the account's journal moved. */
+  private scheduleThreadTotals(): void {
+    if (
+      !this.info?.capabilities.thread_inbox ||
+      !this.account ||
+      this.threadTotalsTimer ||
+      this.threadTotalsSeen === this.model.cursor
+    )
+      return;
+    this.threadTotalsTimer = setTimeout(() => {
+      this.threadTotalsTimer = undefined;
+      void this.refreshThreadTotals();
+    }, 1000);
+  }
+  private async refreshThreadTotals(): Promise<void> {
+    const account = this.account?.key,
+      generation = this.generation,
+      cursor = this.model.cursor;
+    if (!account) return;
+    this.threadTotalsSeen = cursor;
+    try {
+      const totals = await this.api.request<ThreadInboxTotals>(
+        "/api/v1/threads/totals",
+      );
+      if (account !== this.account?.key || generation !== this.generation)
+        return;
+      this.threadTotals = totals;
+      this.renderRooms();
+      window.dispatchEvent(new Event("rv-thread-inbox"));
+    } catch {
+      if (this.threadTotalsSeen === cursor) this.threadTotalsSeen = "";
+    }
+  }
+  async markAllThreadsRead(): Promise<void> {
+    await this.api.request("/api/v1/threads/read", "POST", {
+      operation_id: operation(),
+    });
+    await this.refreshThreadTotals();
+  }
+  clearRoom(): void {
+    this.room = undefined;
+    this.root = undefined;
+    this.threadPane.hidden = true;
+    this.hideNotes();
+    stopMedia(this.timeline);
+    clearView(this.timeline);
+    this.composer.value = "";
+    this.quote = undefined;
+  }
   /** The header's notes button: each way is a state back and forward return to. */
   toggleNotes(): void {
     if (!this.room) return;
@@ -1370,8 +1535,10 @@ export class App implements RowActions {
     this.replyBar.hidden = true;
     stopMedia(this.timeline);
     clearView(this.timeline);
-    if (navigate) history.pushState(null, "", "/room/" + segment(id));
-    else this.followNotesUrl();
+    if (navigate) {
+      history.pushState(null, "", "/room/" + segment(id));
+      this.followThreadsUrl();
+    } else this.followNotesUrl();
     // A sent one leaves the list silently: read it again while the room shows.
     clearInterval(this.scheduledTimer);
     void this.refreshScheduled().catch(() => {});
@@ -2300,6 +2467,7 @@ export class App implements RowActions {
   viewingRoom(): boolean {
     return (
       !!this.room &&
+      !inboxAddress(location.search).thread &&
       document.hasFocus() &&
       !document.hidden &&
       (this.main.contains(document.activeElement) ||
@@ -2473,12 +2641,13 @@ export class App implements RowActions {
       await this.privateChat?.thread(message);
       return;
     }
+    await this.openThread(message.room_id, message.reply_to || message.id);
+  }
+  async openThread(id: string, root: string): Promise<void> {
     const room = this.room,
       account = this.account?.key;
-    if (!account || room !== message.room_id || !this.model.rooms.has(room))
-      return;
-    const root = message.reply_to || message.id,
-      opening = this.roomOpening,
+    if (!account || room !== id || !this.model.rooms.has(room)) return;
+    const opening = this.roomOpening,
       threadOpening = ++this.threadOpening,
       current = this.roomFence(room),
       active = () =>
@@ -2544,6 +2713,7 @@ export class App implements RowActions {
   closeThread(): void {
     void this.privateChat?.closeThread();
     this.threadOpening++;
+    this.addressThread = undefined;
     this.root = undefined;
     this.threadPane.hidden = true;
     stopMedia(this.threadTimeline);

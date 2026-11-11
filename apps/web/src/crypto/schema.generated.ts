@@ -1584,6 +1584,12 @@ export const nativeSchema = {
             "`PUT /api/v1/messages/{id}/follow` and `Message.personal_follow`.",
           type: "boolean",
         },
+        thread_inbox: {
+          default: false,
+          description:
+            "`GET /api/v1/threads`, `GET /api/v1/threads/totals` and\n`POST /api/v1/threads/read`: the account's followed threads in every room.",
+          type: "boolean",
+        },
         thread_list: {
           default: false,
           description:
@@ -3812,6 +3818,16 @@ export const nativeSchema = {
         },
       },
       required: ["position"],
+      type: "object",
+    },
+    MarkThreadsRead: {
+      description: "`POST /api/v1/threads/read`.",
+      properties: {
+        operation_id: {
+          type: "string",
+        },
+      },
+      required: ["operation_id"],
       type: "object",
     },
     Message: {
@@ -7707,6 +7723,96 @@ export const nativeSchema = {
       required: ["root", "last_reply_position", "following", "unread"],
       type: "object",
     },
+    ThreadInbox: {
+      description:
+        "`GET /api/v1/threads?filter=followed|unread&before=&limit=`.",
+      properties: {
+        next: {
+          description: "The next page's `before`, absent on the last page.",
+          type: ["string", "null"],
+        },
+        threads: {
+          description: "Latest reply first.",
+          items: {
+            $ref: "#/$defs/ThreadInboxEntry",
+          },
+          type: "array",
+        },
+      },
+      required: ["threads"],
+      type: "object",
+    },
+    ThreadInboxEntry: {
+      description: "One followed thread in `ThreadInbox`.",
+      properties: {
+        following: {
+          type: "boolean",
+        },
+        last_reply_at: {
+          type: "string",
+        },
+        last_reply_position: {
+          description:
+            "Highest non-deleted reply position: the list's order and its cursor.",
+          type: "string",
+        },
+        mentions: {
+          description: "Those of `unread` that mention the reader by name.",
+          type: "string",
+        },
+        participants: {
+          description: "Up to five distinct repliers, the most recent first.",
+          items: {
+            $ref: "#/$defs/ThreadParticipant",
+          },
+          type: "array",
+        },
+        replies: {
+          description: "Non-deleted replies.",
+          type: "string",
+        },
+        room_id: {
+          type: "string",
+        },
+        root: {
+          $ref: "#/$defs/Message",
+          description:
+            "The root, with its `thread` summary and the reader's `personal_follow`.",
+        },
+        unread: {
+          description:
+            "Replies by others after the reader's thread read position.",
+          type: "string",
+        },
+      },
+      required: [
+        "root",
+        "room_id",
+        "last_reply_position",
+        "last_reply_at",
+        "replies",
+        "participants",
+        "following",
+        "unread",
+        "mentions",
+      ],
+      type: "object",
+    },
+    ThreadInboxTotals: {
+      description: "`GET /api/v1/threads/totals`.",
+      properties: {
+        unread_mentions: {
+          description: "The sum of those threads' `mentions`.",
+          type: "string",
+        },
+        unread_threads: {
+          description: "Followed threads with at least one unread reply.",
+          type: "string",
+        },
+      },
+      required: ["unread_threads", "unread_mentions"],
+      type: "object",
+    },
     ThreadList: {
       description:
         "`GET /api/v1/rooms/{id}/threads?filter=all|following&before=&limit=`.",
@@ -7746,6 +7852,30 @@ export const nativeSchema = {
         },
       },
       required: ["root", "messages", "has_more", "read_state"],
+      type: "object",
+    },
+    ThreadParticipant: {
+      description: "Someone who replied in a thread of `ThreadInbox`.",
+      properties: {
+        avatar_file_id: {
+          description:
+            "`/api/v1/avatars/{id}`; absent without a photo, and for a disabled or\ndeleted account.",
+          type: ["string", "null"],
+        },
+        deleted: {
+          type: "boolean",
+        },
+        display_name: {
+          type: "string",
+        },
+        id: {
+          type: "string",
+        },
+        username: {
+          type: "string",
+        },
+      },
+      required: ["id", "username", "display_name"],
       type: "object",
     },
     ThreadReadState: {
@@ -7789,6 +7919,24 @@ export const nativeSchema = {
         },
       },
       required: ["replies"],
+      type: "object",
+    },
+    ThreadsReadReceipt: {
+      properties: {
+        applied_revision: {
+          description:
+            'The highest revision it published, `"0"` when nothing was unread.',
+          type: "string",
+        },
+        operation_id: {
+          type: "string",
+        },
+        threads: {
+          description: "Threads this operation advanced, the same on a replay.",
+          type: "string",
+        },
+      },
+      required: ["operation_id", "threads", "applied_revision"],
       type: "object",
     },
     Trigger: {
@@ -8784,6 +8932,9 @@ export const nativeSchema = {
     mark_thread_read: {
       $ref: "#/$defs/MarkThreadRead",
     },
+    mark_threads_read: {
+      $ref: "#/$defs/MarkThreadsRead",
+    },
     message: {
       $ref: "#/$defs/Message",
     },
@@ -8856,11 +9007,20 @@ export const nativeSchema = {
     sync_batch: {
       $ref: "#/$defs/SyncBatch",
     },
+    thread_inbox: {
+      $ref: "#/$defs/ThreadInbox",
+    },
+    thread_inbox_totals: {
+      $ref: "#/$defs/ThreadInboxTotals",
+    },
     thread_list: {
       $ref: "#/$defs/ThreadList",
     },
     thread_page: {
       $ref: "#/$defs/ThreadPage",
+    },
+    threads_read_receipt: {
+      $ref: "#/$defs/ThreadsReadReceipt",
     },
     update_preferences: {
       $ref: "#/$defs/UpdatePreferences",
@@ -8911,7 +9071,11 @@ export const nativeSchema = {
     "message_page",
     "thread_page",
     "thread_list",
+    "thread_inbox",
+    "thread_inbox_totals",
     "mark_thread_read",
+    "mark_threads_read",
+    "threads_read_receipt",
     "snapshot",
     "snapshot_page",
     "sync_batch",

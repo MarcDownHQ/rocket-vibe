@@ -129,6 +129,52 @@ impl Chat {
         }
     }
 
+    /// Whether the account lists its threads across its rooms.
+    pub fn thread_inbox_available(&self) -> bool {
+        match self {
+            Chat::Legacy(session) => session.thread_inbox_available(),
+            Chat::Native(session) => session.thread_inbox_available(),
+            Chat::WhatsApp(_) => false,
+        }
+    }
+
+    /// Whether nothing tells when the list changes, so that it is read again
+    /// on a timer and on returning to the app.
+    pub fn thread_inbox_polled(&self) -> bool {
+        match self {
+            Chat::Legacy(session) => session.thread_inbox_polled(),
+            Chat::Native(_) | Chat::WhatsApp(_) => false,
+        }
+    }
+
+    pub async fn thread_inbox(
+        &self,
+        filter: crate::thread_inbox::Filter,
+        cursor: Option<&str>,
+    ) -> Result<crate::thread_inbox::Page, RestError> {
+        match self {
+            Chat::Legacy(session) => session.thread_inbox(filter, cursor).await,
+            Chat::Native(session) => session.thread_inbox(filter, cursor).await.map_err(native::rest_error),
+            Chat::WhatsApp(_) => Err(RestError::incomplete("thread inbox: not on this server")),
+        }
+    }
+
+    pub async fn thread_totals(&self) -> Result<crate::thread_inbox::Totals, RestError> {
+        match self {
+            Chat::Legacy(session) => session.thread_totals().await,
+            Chat::Native(session) => session.thread_totals().await.map_err(native::rest_error),
+            Chat::WhatsApp(_) => Ok(Default::default()),
+        }
+    }
+
+    pub async fn mark_all_threads_read(&self) -> Result<(), RestError> {
+        match self {
+            Chat::Legacy(session) => session.mark_all_threads_read().await,
+            Chat::Native(session) => session.mark_all_threads_read().await.map_err(native::rest_error),
+            Chat::WhatsApp(_) => Ok(()),
+        }
+    }
+
     /// People and channels matching `query`, for "New conversation".
     pub async fn spotlight(&self, query: &str) -> Result<Vec<Found>, RestError> {
         match self {

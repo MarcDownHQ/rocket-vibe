@@ -14,6 +14,7 @@
  * account, listed by `GET https://kchat.infomaniak.com/api/v4/users/me/servers`.
  */
 
+import type { AccountUnread } from '@rocket-vibe/provider-api/session';
 import type { Session } from '../../lib/auth.ts';
 import { originOf } from '../../lib/origin.ts';
 import type { ProviderKind } from '../../lib/provider.ts';
@@ -137,17 +138,20 @@ function sessionFrom(baseUrl: string, token: string, me: Record<string, unknown>
 }
 
 /** Does an account that is not open have something unread? One read per list, token never revoked from here. */
-export async function mattermostUnread(session: Session, options: MmLoginOptions = {}): Promise<boolean> {
+export async function mattermostUnread(session: Session, options: MmLoginOptions = {}): Promise<AccountUnread> {
   const client = new MmClient(session.baseUrl, session.authToken, { fetch: options.fetch });
   const [channels, members] = await Promise.all([
     client.get<Record<string, unknown>[]>('/users/me/channels', { quiet: true }),
     client.pages<Record<string, unknown>>('/users/me/channel_members', { quiet: true }),
   ]);
   const byId = new Map((Array.isArray(channels) ? channels : []).map((c) => [String(c.id), c]));
-  return (Array.isArray(members) ? members : []).some((member) => {
+  let state: AccountUnread = 'none';
+  for (const member of Array.isArray(members) ? members : []) {
     const channel = byId.get(String(member.channel_id));
-    if (channel === undefined) return false;
+    if (channel === undefined) continue;
     const { unread, mentions } = membershipCounts(channel, member);
-    return unread > 0 || mentions > 0;
-  });
+    if (mentions > 0 || ((channel.type === 'D' || channel.type === 'G') && unread > 0)) return 'attention';
+    if (unread > 0) state = 'unread';
+  }
+  return state;
 }

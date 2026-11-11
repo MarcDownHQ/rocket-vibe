@@ -15,6 +15,10 @@ section here.
 - Notes: Slack canvases keep bold, italic, strikethrough, code and links, and checklist items can be ticked; the whole formatting bar is available there.
 - Notes: Teams task lists show assignees, due dates and buckets; single tasks can be added and removed, and a save can create a new table or task list.
 - Teams (experimental): a call started in a chat runs inside the app, audio only, with no Microsoft sign-in in a browser window; Teams' page stays the fallback. It stays up past the first half minute, holds and resumes when the other side does, and ends when the other side hangs up.
+- Mattermost and kChat: a Threads view lists the threads you follow across the whole account, with an Unread tab, an unread badge and "Mark all as read"; a thread opens beside the list. A thread's bell follows or unfollows it, and opening one marks it read without marking its channel read.
+- Threads view: All, Participated, Mentioned and Others chips inside the Followed and Unread tabs. A thread in a direct conversation counts as participated, and a short list reads a few more pages by itself before offering "Load more" (GTK, macOS).
+- Slack and Vibez: the Threads view, with follow and unfollow from a thread's bell; on Slack it refreshes on thread replies, on returning to the app and every 30 s while it is on screen (GTK, macOS).
+- Teams (experimental): the Threads view lists the channel threads from your Teams activity (replies to you, replies in threads you took part in, mentions), about three weeks back. Unread and "Mark all as read" are kept on this computer; Teams itself is not told (GTK, macOS).
 - Slack (experimental): a huddle runs inside the app, audio only, in its own call window (who is there, who speaks, mute, deafen, hang up); its page stays the fallback when the join fails.
 - Notes open beside the conversation instead of in a dialog, the room list hidden meanwhile. Back returns to the conversation with the list restored, forward reopens the notes, and an unsaved edit comes back when they reopen.
 - Notes: the editor has a formatting bar (bold, italic, strikethrough, heading, link, code, quote, lists). Slack canvases offer the block formats only, since they keep no inline formatting.
@@ -32,6 +36,7 @@ section here.
 - Slack (experimental): the cards bots and integrations attach to a message now show, as they do on Android, with their links, mentions and colours.
 - macOS: a GIF attachment plays instead of showing its first frame, in the message and the full-size viewer, on every server; one scrolled away and back no longer stays frozen.
 - GTK: a GIF that scrolled away after several others no longer stays frozen, a GIF attachment stops playing when animations are off, and a GIF declaring an enormous size can no longer crash the app.
+- Mattermost and kChat: reading a channel no longer marks its threads as read.
 - Notes: saving after someone else changed them while you edited now always warns you and keeps your draft; a background refresh could let the save overwrite their change.
 - Teams (experimental): opening a chat Teams keeps hidden, from a search or a profile, now opens it; nothing happened before.
 - The mouse pointer turns into a hand over reactions (GTK, macOS), and on GTK also over the quick reactions and "more reactions" buttons, a thread's reply count, a failed message's retry, the edit buttons and the actions of file and integration cards.
@@ -59,6 +64,7 @@ section here.
 
 ### Changed
 
+- Server rail: another account's dot turns red when it holds a mention or an unread direct message; plain unread keeps the usual colour (GTK, macOS).
 - Updates and the install script now come from the project's new home, `MarcDownHQ/rocket-vibe` on GitHub (the old address still redirects).
 - The native call window (Linux, Windows, macOS) now looks like the Vibez voice page: a tile per person with the speaking ring, the same round microphone, sound and hang-up buttons, and on Linux the microphone menu with the input and output devices.
 

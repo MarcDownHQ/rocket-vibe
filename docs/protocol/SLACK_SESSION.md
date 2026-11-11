@@ -578,6 +578,17 @@ on logout or membership loss. Support HTTP ranges only where measured. Voice
 notes can initially be audio-file attachments; that does not establish Slack's
 specialized native voice-clip metadata or transcription parity. S09.
 
+### Threads view (probed 2026-11-07 on a real workspace)
+
+- `subscriptions.thread.getView {limit, priority_mode: "all", current_ts?}` answers `{threads: [{root_msg, latest_replies}], has_more, max_ts, new_threads_count, total_unread_replies}`: followed threads only, newest reply first. `root_msg` carries `user, ts, thread_ts, text, channel, reply_count, reply_users_count, reply_users, latest_reply, subscribed, last_read`; `latest_replies[]` carry `user, ts, text, thread_ts, channel, parent_user_id`.
+- **Paging: `current_ts` = the last returned thread's `root_msg.latest_reply`.** `max_ts` does NOT page: it returns the same page with `has_more: true`.
+- No unread filter is known server-side: unread is `latest_reply > last_read`, client-side.
+- `client.counts {thread_counts_by_channel: true}` answers `threads: {has_unreads, mention_count, mention_count_by_channel, unread_count_by_channel}`; the meaning of `unread_count_by_channel` is not probed.
+- `subscriptions.thread.mark {channel, thread_ts, ts}` answers `ok`; a move backwards answered `ok` without changing the view, so its effect on unread is **not proven**.
+- `subscriptions.thread.clearAll {}` answers `{ok, marked, undo_ts}`.
+- `subscriptions.thread.add` / `.remove {channel, thread_ts}` follow and unfollow (the thread leaves and returns to `getView`). `subscriptions.thread.get {channel, thread_ts}` answers `{subscriptions: ["<ts>"]}` when followed; the empty answer's value was not recorded.
+- No thread RTM event was verified. The web bundle also references `subscriptions.thread.getTimestamps {mode: "all_subscriptions", cursor, limit}`, not probed.
+
 ## 8. Provider parity target and explicit limits
 
 This table maps every existing P01-P23 family. `candidate` means a method/source

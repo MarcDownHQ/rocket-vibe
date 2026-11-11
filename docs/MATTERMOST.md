@@ -196,6 +196,7 @@ takes them.
   `oldest`.
 - One post: `GET /posts/<id>` (404 or 403: gone).
 - A thread: `GET /posts/<rootId>/thread`, root included.
+- The account's threads: `GET /users/me/teams/<team>/threads`, with reads and following beside it. `thread_updated`, `thread_read_changed` and `thread_follow_changed` announce their changes. A channel view sends `collapsed_threads_supported: true`, or it clears the channel's thread unreads.
 
 ### 4.4 Room catch-up (after a gap)
 
@@ -424,7 +425,7 @@ kChat replaced the WebSocket with the **Pusher protocol**:
 | `sidebar_category_created`, `sidebar_category_updated`, `sidebar_category_deleted`, `sidebar_category_order_updated` | categories (4.8) |
 | `badge_updated` (kChat) | read my memberships again (4.2) |
 | `ephemeral_message` | `data.post`, "visible only to you" (a slash command's answer, a reminder's confirmation, an integration's `ephemeral_text`): never stored; a private note above the composer with its markdown text and its cards, whose buttons press through `data.post.id` and each button's `cookie` (6.3) |
-| `hello`, `thread_*`, `config_changed`, `license_changed`, `plugin_statuses_changed` | ignored |
+| `hello`, `config_changed`, `license_changed`, `plugin_statuses_changed` | ignored |
 
 Presence snapshot at each connection: `POST /users/status/ids` with known user
 ids, `[{user_id, status}]`.

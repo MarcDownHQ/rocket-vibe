@@ -13,7 +13,7 @@ import { ActionButton, IconButton } from "./controls";
 import { nt } from "../native-i18n";
 import { forRoom } from "../scheduled";
 import { ComposerFormatBar, formatShortcut } from "./format";
-import { renderView } from "./portals";
+import { clearView, renderView } from "./portals";
 
 export interface ThreadOptions {
   draft: string;
@@ -126,7 +126,7 @@ function ThreadView({ app, options }: { app: App; options: ThreadOptions }) {
           name="back"
           label={t("close")}
           className="flat thread-back"
-          action={() => app.closeThread()}
+          action={() => app.leaveThread()}
         />
         <span className="room-title">{t("thread")}</span>
         {options.follow && options.root && (
@@ -135,7 +135,7 @@ function ThreadView({ app, options }: { app: App; options: ThreadOptions }) {
         <IconButton
           name="close"
           label={t("close")}
-          action={() => app.closeThread()}
+          action={() => app.leaveThread()}
         />
       </header>
       <div
@@ -257,5 +257,7 @@ function FollowButton({ app, root }: { app: App; root: string }) {
 }
 export function showThread(app: App, options: ThreadOptions): void {
   app.threadPane.hidden = false;
+  // The composer binds to its element once: another thread needs a new one.
+  clearView(app.threadPane);
   renderView(app.threadPane, <ThreadView app={app} options={options} />);
 }

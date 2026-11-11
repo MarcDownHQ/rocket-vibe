@@ -37,6 +37,8 @@ const SKIPPED_PREVIEW = new Set(['tombstone', 'message_deleted', 'message_change
 const PREVIEW_LOOKBACK = 10;
 const QUIET = new Set(['hello', 'pong', 'reconnect_url', 'pref_change', 'dnd_updated', 'dnd_updated_user', 'accounts_changed']);
 
+export const THREAD_TRAFFIC_MS = 5000;
+
 export class SlackLive {
   private readonly client: SlackClient;
   private readonly directory: SlackDirectory;
@@ -53,6 +55,8 @@ export class SlackLive {
   readonly marks = new Map<string, string>();
   /** The `ts` of the message each room previews, when known: an edit or a deletion of it moves the preview. */
   readonly previews = new Map<string, string>();
+  private readonly threadListeners = new Set<() => void>();
+  private threadTimer: ReturnType<typeof setTimeout> | null = null;
 
   constructor(options: { client: SlackClient; directory: SlackDirectory; history: SlackHistory; myId: string; roomNames?: Map<string, string> }) {
     this.client = options.client;
@@ -60,6 +64,29 @@ export class SlackLive {
     this.history = options.history;
     this.myId = options.myId;
     this.roomNames = options.roomNames ?? null;
+  }
+
+  onThreadsChanged(listener: () => void): () => void {
+    this.threadListeners.add(listener);
+    return () => {
+      this.threadListeners.delete(listener);
+      if (this.threadListeners.size > 0 || this.threadTimer === null) return;
+      clearTimeout(this.threadTimer);
+      this.threadTimer = null;
+    };
+  }
+
+  threadsChanged(): void {
+    for (const listener of [...this.threadListeners]) listener();
+  }
+
+  /** Each reply of a busy workspace would read the view again: at most one read per `THREAD_TRAFFIC_MS`. */
+  private threadTraffic(): void {
+    if (this.threadListeners.size === 0 || this.threadTimer !== null) return;
+    this.threadTimer = setTimeout(() => {
+      this.threadTimer = null;
+      this.threadsChanged();
+    }, THREAD_TRAFFIC_MS);
   }
 
   /** The catch-up hands over each conversation and its `client.counts` entry. */
@@ -160,6 +187,7 @@ export class SlackLive {
 
   /** A new message, an edit, or a deletion; each one keeps the channel preview and unread live. */
   private async message(frame: Doc): Promise<DdpEvent[]> {
+    if (isTimestamp(frame.thread_ts) || isTimestamp(record(frame.message)?.thread_ts)) this.threadTraffic();
     const channel = str(frame.channel);
     if (channel === null) return [];
     const subtype = str(frame.subtype);

@@ -27,6 +27,7 @@ pub fn gradient_index(key: &str) -> usize {
 pub enum TileSize {
     Room,
     Message,
+    Mini,
     Header,
     Profile,
 }
@@ -48,6 +49,7 @@ pub fn icon_tile(key: &str, icon: &str, size: TileSize, neutral: bool) -> gtk::W
     let px = match size {
         TileSize::Room => 20,
         TileSize::Message => 16,
+        TileSize::Mini => 10,
         TileSize::Header => 14,
         TileSize::Profile => 40,
     };
@@ -76,6 +78,7 @@ fn tile_with(key: &str, child: &impl IsA<gtk::Widget>, size: TileSize, neutral: 
     let (px, class) = match size {
         TileSize::Room => (44, "tile-room"),
         TileSize::Message => (34, "tile-message"),
+        TileSize::Mini => (22, "tile-mini"),
         TileSize::Header => (30, "tile-header"),
         TileSize::Profile => (96, "tile-profile"),
     };

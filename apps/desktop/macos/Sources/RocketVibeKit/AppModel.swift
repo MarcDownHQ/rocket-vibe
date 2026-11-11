@@ -108,6 +108,8 @@ public final class AppModel {
     /// Accounts with unread messages: the dots of the server rail on the
     /// accounts not open. Every account stays connected (`keepAccountsConnected`).
     public private(set) var unreadAccounts: Set<String> = []
+    /// Those with a mention or a direct message: their dots are red.
+    public private(set) var attentionAccounts: Set<String> = []
     /// What calls for me on each account, for the dock's count.
     @ObservationIgnored private var accountAttention: [String: Int64] = [:]
     @ObservationIgnored private var watchingAccounts = false
@@ -135,6 +137,8 @@ public final class AppModel {
     /// Edits left unsaved in a closed notes pane, per account and room.
     public var notesDrafts: [String: NotesDraft] = [:]
     public private(set) var thread: RoomModel?
+    /// The account's threads across its rooms; nil where it has no such list.
+    public private(set) var threadInbox: ThreadInboxModel?
     /// The open account's folded sections, by `RoomGroup.key`.
     public private(set) var collapsed: Set<String> = []
     /// The user hid the server rail (Settings > Accounts), shared with GTK.
@@ -197,6 +201,7 @@ public final class AppModel {
     @ObservationIgnored private var notificationRequest: String?
 
     public var onIncoming: ((Incoming) -> Void)?
+    public var appIsActive: () -> Bool = { true }
     /// A call started by the other member of a direct room, ringing (rv-core's `call_ring`).
     public private(set) var ringingCall: RingingCall?
     /// The ringing call changed: the window's ringtone, dock and notification follow.
@@ -390,6 +395,7 @@ public final class AppModel {
         do { try await client.signOutAccount(account: target.key) }
         catch { notice = L("rail.logout_failed"); return }
         unreadAccounts.remove(target.key)
+        attentionAccounts.remove(target.key)
         accountAttention[target.key] = nil
         accounts = await client.accounts()
         refreshMutes()
@@ -400,6 +406,7 @@ public final class AppModel {
         case let .unread(key, unread, attention):
             if unread { unreadAccounts.insert(key) } else { unreadAccounts.remove(key) }
             accountAttention[key] = attention
+            if attention > 0 { attentionAccounts.insert(key) } else { attentionAccounts.remove(key) }
             showAttention()
         case let .incoming(key, scope, incoming):
             guard key != account?.key, !isMuted(key) else { return }
@@ -415,6 +422,7 @@ public final class AppModel {
             onBackgroundCall?(backgroundCall)
         case let .expired(key):
             unreadAccounts.remove(key)
+            attentionAccounts.remove(key)
             accountAttention[key] = nil
             showAttention()
             if backgroundCall?.account == key { endBackgroundCall() }
@@ -524,6 +532,7 @@ public final class AppModel {
             voice.isDirect = { [weak self] rid in self?.rooms.first(where: { $0.rid == rid })?.kind == "d" }
             self.voice = voice
         }
+        offerThreadInbox()
         connection = .connecting
         let expected = sessionId
         provider.listen(Relay { [weak self] event in
@@ -565,6 +574,8 @@ public final class AppModel {
         pending = Pending()
         room = nil
         thread = nil
+        threadInbox?.stop()
+        threadInbox = nil
         provider = nil
         account = nil
         collapsed = []
@@ -630,6 +641,8 @@ public final class AppModel {
         case .resync:
             voice?.refresh()
             for key in native?.withdrawnNotifications() ?? [] { onWithdraw?(key) }
+            offerThreadInbox()
+            threadInbox?.scheduleRefresh()
             later(everything: true)
         case let .connection(state):
             let wasOnline = connection == .online
@@ -670,6 +683,13 @@ public final class AppModel {
         case .callRing:
             ringingCall = chat?.incomingCall()
             onCallRing?(ringingCall)
+        case let .threads(root):
+            if let root {
+                if root == thread?.threadId { readOpenThread() }
+            } else if let thread {
+                Task { await thread.refreshThreadFollowing() }
+            }
+            threadInbox?.scheduleRefresh()
         case let .privateNote(rid, text, body, cards, postId):
             let note = PrivateNoteItem(text: text, body: body, cards: cards, postId: postId)
             if thread?.rid == rid {
@@ -900,7 +920,7 @@ public final class AppModel {
         catch { if account == sessionId { notice = L("forward.failed") } }
     }
 
-    public func open(_ rid: String, remember: Bool = true, preserveNavigation: Bool = false) {
+    public func open(_ rid: String, remember: Bool = true, preserveNavigation: Bool = false, peek: Bool = false) {
         guard let provider, let found = rooms.first(where: { $0.rid == rid }) else { return }
         if !preserveNavigation { cancelNotificationNavigation(); pendingRoomLink = nil }
         // Another room: its chat, not the voice page shown before.
@@ -919,6 +939,10 @@ public final class AppModel {
         closeThread(preserveNavigation:true)
         let model = RoomModel(provider: provider, room: found)
         model.onNotice = { [weak self] in self?.notice = $0 }
+        if peek {
+            model.peeking = true
+            chat?.closeRoom()
+        }
         room = model
         Task { await model.load() }
     }
@@ -984,9 +1008,49 @@ public final class AppModel {
         model.onNotice = { [weak self] in self?.notice = $0 }
         thread?.deactivate()
         thread = model
+        readOpenThread()
         Task {
             await model.load()
             if let message { _ = await model.jump(to: message) }
+        }
+    }
+
+    /// A thread of the account's list: its room opens behind it, and stays
+    /// unread until the thread is left for it.
+    public func openInboxThread(_ entry: ThreadInboxEntry) {
+        open(entry.rid, peek: true)
+        guard room?.rid == entry.rid else {
+            notice = L("links.unavailable")
+            return
+        }
+        notesOpen = false
+        openThread(entry.root)
+    }
+
+    /// A Vibez account learns what its server offers after it opens.
+    func offerThreadInbox() {
+        guard threadInbox == nil else { return }
+        let source: (any ThreadInboxSource)? =
+            if let chat, chat.threadInboxAvailable() { chat }
+            else if let native, native.threadInboxAvailable() { native }
+            else { nil }
+        guard let source else { return }
+        let inbox = ThreadInboxModel(source: source)
+        inbox.onNotice = { [weak self] in self?.notice = $0 }
+        inbox.scheduleRefresh()
+        threadInbox = inbox
+    }
+
+    /// The open thread is on screen in the active app: its replies are read.
+    public func readOpenThread() {
+        if native != nil, appIsActive(), let root = thread?.threadId { threadInbox?.noteRead(root) }
+        guard let chat, chat.threadInboxAvailable(), appIsActive(), let thread, let root = thread.threadId else { return }
+        let rid = thread.rid
+        let inbox = threadInbox
+        inbox?.noteRead(root)
+        Task {
+            guard (try? await chat.markThreadRead(rid: rid, root: root)) != nil else { return }
+            inbox?.scheduleRefresh()
         }
     }
 
@@ -994,6 +1058,7 @@ public final class AppModel {
         if !preserveNavigation { cancelNotificationNavigation(); pendingRoomLink = nil }
         thread?.deactivate()
         thread = nil
+        room?.stopPeeking()
     }
 
     public var canGoBack: Bool { historyAt > 0 }

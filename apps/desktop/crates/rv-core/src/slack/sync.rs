@@ -42,6 +42,7 @@ pub struct SlackSync {
     unlisted: Mutex<HashSet<String>>,
     /// The `ts` of the message each room previews, when known.
     previews: Mutex<HashMap<String, String>>,
+    pub(super) thread_marks: super::threads::Marks,
 }
 
 impl SlackSync {
@@ -60,7 +61,12 @@ impl SlackSync {
             saved: Mutex::default(),
             unlisted: Mutex::default(),
             previews: Mutex::default(),
+            thread_marks: Default::default(),
         }
+    }
+
+    pub fn store(&self) -> &Store {
+        &self.store
     }
 
     pub fn translate(&self, channel: &str, raw: &Value) -> Option<Message> {

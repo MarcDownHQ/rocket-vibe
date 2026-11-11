@@ -72,7 +72,7 @@ async function canvasActions(engine: import('./canvasEngine.ts').CanvasEngine | 
   const history = new SlackHistory(client, directory);
   const live = new SlackLive({ client, directory, history, myId: 'U000' });
   const saved = new SlackSaved(client, history);
-  const actions = new SlackActions({ client, directory, history, live, translator: new SlackTranslator(directory, 'U000', new Map(), saved.ids), saved, canvas: engine });
+  const actions = new SlackActions({ client, directory, history, live, translator: new SlackTranslator(directory, 'U000', new Map(), saved.ids), saved, myId: 'U000', canvas: engine });
   return { actions, server, canvasCalls, TOKEN, COOKIE };
 }
 

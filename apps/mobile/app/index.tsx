@@ -12,8 +12,10 @@ import { textPreview } from '../lib/markdown.ts';
 import { stripQuotePrefix } from '../lib/quote.ts';
 import { filterRooms } from '../lib/roomFilter.ts';
 import { systemPreview } from '../lib/systemMessages.ts';
+import type { ProviderActions } from '../lib/provider.ts';
 import type { RestClient } from '../lib/rest.ts';
 import { useActivity } from '../ui/activity.ts';
+import { useThreadTotals } from '../ui/threadInbox.ts';
 import { useListTimeFormatter, useT } from '../ui/i18n.ts';
 import { roomTitle, useDisplayNames, useStatusEmojis } from '../ui/identities.tsx';
 import { RoomAvatar, UnreadBadge, SyncBar, Brand, AvatarTile } from '../ui/kit.tsx';
@@ -302,6 +304,7 @@ function Rooms({
       ListHeaderComponent={
         <View>
           <RoomFilter c={c} value={filter} onChange={setFilter} />
+          {!filtering && <ThreadInboxEntryRow c={c} />}
           {!filtering && <NewConversationRow c={c} />}
         </View>
       }
@@ -543,6 +546,32 @@ function RoomRow({
 }
 
 /** First rows, fixed at the top of the list: start a conversation, create a room. */
+function ThreadInboxEntryRow({ c }: { c: Colors }) {
+  const sync = useSync();
+  if (sync.phase !== 'ready' || sync.actions.threadInbox === undefined) return null;
+  return <ThreadInboxEntry c={c} actions={sync.actions} generation={sync.generation} />;
+}
+
+function ThreadInboxEntry({ c, actions, generation }: { c: Colors; actions: ProviderActions; generation: number }) {
+  const router = useRouter();
+  const t = useT();
+  const totals = useThreadTotals(actions, generation);
+  return (
+    <View style={styles.rowWrapper}>
+      <Tappable
+        onPress={() => router.push('/thread-inbox')}
+        android_ripple={{ color: c.ripple }}
+        unstable_pressDelay={LIST_PRESS_DELAY}
+        style={[styles.row, { borderBottomColor: c.softBorder, borderBottomWidth: 1 }]}
+      >
+        <AvatarTile c={c} neutral child={<Icon name="chat-message-new" size={21} color={c.text} />} />
+        <Text style={[styles.next, styles.threadInboxTitle, { color: c.text }]}>{t('threads.title')}</Text>
+        <UnreadBadge c={c} n={totals?.unreadThreads ?? 0} mentioned={(totals?.unreadMentions ?? 0) > 0} />
+      </Tappable>
+    </View>
+  );
+}
+
 function NewConversationRow({ c }: { c: Colors }) {
   const router = useRouter();
   const t = useT();
@@ -589,6 +618,7 @@ function NewConversationRow({ c }: { c: Colors }) {
 }
 
 const styles = StyleSheet.create({
+  threadInboxTitle: { flex: 1 },
   filter: {
     flexDirection: 'row',
     alignItems: 'center',

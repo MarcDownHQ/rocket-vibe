@@ -112,6 +112,7 @@ const paths: Record<string, string> = {
   bullets: "M2 4h.01M2 8h.01M2 12h.01M6 4h8M6 8h8M6 12h8",
   numbers: "M1 2h1v4M1 6h2M1 9q2-2 2 0l-2 3h2M6 4h8M6 8h8M6 12h8",
   plus: "M8 3v10M3 8h10",
+  check: "m3 8.5 3.5 3.5L13 4.5",
   search: "M10.8 10.8l3.7 3.7M12 7a5 5 0 1 1-10 0 5 5 0 0 1 10 0",
   send: "M8 14.5v-13M2.5 7l5.5-5.5L13.5 7",
   attach: "m6 10 5-5a2 2 0 0 1 3 3l-6 6a4 4 0 0 1-6-6l6-6",

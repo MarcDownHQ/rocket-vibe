@@ -610,6 +610,106 @@ async fn live_aggregation_rechecks_session_epoch_and_applies_a_separate_budget(p
     b.task.abort();
 }
 
+#[sqlx::test(migrations = "./migrations")]
+async fn the_thread_inbox_over_http_tells_the_accounts_other_sessions(pool: PgPool) {
+    let b = Bench::start(pool).await;
+    let (owner, _, owner_token) = b.user("inbox-owner", false).await;
+    let (reader, reader_id, token) = b.user("inbox-reader", false).await;
+    let mut other_session = NativeClient::new(&b.base).unwrap();
+    other_session
+        .login("inbox-reader", "read-test-password-2026")
+        .await
+        .unwrap();
+    assert!(owner.discover().await.unwrap().capabilities.thread_inbox);
+    let room = b.room(&owner, &owner_token, &reader_id).await;
+    let root = thread_send(&reader, &room, None, "inbox-root", "A root").await;
+    let reply = thread_send(
+        &owner,
+        &room,
+        Some(&root.id),
+        "inbox-reply",
+        "@inbox-reader",
+    )
+    .await;
+
+    let get = |path: &'static str| b.request(Method::GET, &token, path, Value::Null);
+    let page: rv_protocol::ThreadInbox = get("/api/v1/threads?filter=unread&limit=1")
+        .await
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(page.threads.len(), 1);
+    let entry = &page.threads[0];
+    assert_eq!(entry.root.id, root.id);
+    assert_eq!(entry.room_id, room);
+    assert_eq!(entry.last_reply_position, reply.position);
+    assert_eq!(entry.unread, "1");
+    assert_eq!(entry.mentions, "1");
+    assert_eq!(entry.participants[0].username, "inbox-owner");
+    for bad in [
+        "/api/v1/threads?filter=all",
+        "/api/v1/threads?limit=0",
+        "/api/v1/threads?limit=101",
+        "/api/v1/threads?before=x",
+    ] {
+        assert_eq!(get(bad).await.status(), StatusCode::BAD_REQUEST, "{bad}");
+    }
+    assert_eq!(
+        b.http
+            .get(format!("{}/api/v1/threads", b.base))
+            .send()
+            .await
+            .unwrap()
+            .status(),
+        StatusCode::UNAUTHORIZED
+    );
+    let totals: rv_protocol::ThreadInboxTotals =
+        get("/api/v1/threads/totals").await.json().await.unwrap();
+    assert_eq!(totals.unread_threads, "1");
+    assert_eq!(totals.unread_mentions, "1");
+
+    let cursor = other_session.snapshot().await.unwrap().cursor;
+    let before = other_session.room_read_state(&room).await.unwrap();
+    assert_eq!(before.unread_replies, "1");
+    let response = b
+        .request(
+            Method::POST,
+            &token,
+            "/api/v1/threads/read",
+            json!({"operation_id": "inbox-mark-all"}),
+        )
+        .await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let receipt: rv_protocol::ThreadsReadReceipt = response.json().await.unwrap();
+    assert_eq!(receipt.threads, "1");
+    let batch = other_session.changes(&cursor).await.unwrap();
+    let synced = batch
+        .changes
+        .iter()
+        .find_map(|change| match change {
+            Change::RoomUpsert(found) if found.id == room => found.read_state.as_ref(),
+            _ => None,
+        })
+        .expect("the other session is told");
+    assert_eq!(synced.unread_replies, "0");
+    assert_eq!(synced.mentions, "0");
+    assert_eq!(synced.revision, receipt.applied_revision);
+    let totals: rv_protocol::ThreadInboxTotals =
+        get("/api/v1/threads/totals").await.json().await.unwrap();
+    assert_eq!(totals.unread_threads, "0");
+    assert_eq!(
+        b.request(
+            Method::POST,
+            &token,
+            "/api/v1/threads/read",
+            json!({"operation_id": ""}),
+        )
+        .await
+        .status(),
+        StatusCode::BAD_REQUEST
+    );
+}
+
 async fn thread_send(
     client: &NativeClient,
     room: &str,

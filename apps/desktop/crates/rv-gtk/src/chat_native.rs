@@ -18,6 +18,7 @@ impl ChatPage {
         }
         self.reload_rooms();
         self.refresh_own_presence();
+        self.thread_inbox.on_sync(session.store.cursor().ok().flatten());
         if let Some(open) = self.current.borrow_mut().as_mut()
             && let Some(room) = self.rooms.borrow().iter().find(|room| room.rid == open.rid)
         {
@@ -72,8 +73,9 @@ impl ChatPage {
     /// Live traffic in rooms that are not on screen: their rows in the list,
     /// nothing else (`ChatEvent::Rooms`).
     pub fn on_native_rooms(self: &Rc<Self>) {
-        if self.native_session().is_some() {
+        if let Some(session) = self.native_session() {
             self.reload_rooms();
+            self.thread_inbox.on_sync(session.store.cursor().ok().flatten());
             self.finish_native_room_navigation();
         }
     }
@@ -105,6 +107,7 @@ impl ChatPage {
         self.set_session(None);
         self.native_edit.replace(None);
         self.native.replace(Some(session.clone()));
+        self.thread_inbox.set_source(Some(rv_core::provider::Chat::Native(session.clone())));
         self.collapsed.replace(folded_sections(&session.info));
         self.list.set_native_provider(session.clone());
         self.native_features(&session);
@@ -474,6 +477,7 @@ impl ChatPage {
                 this.schedule_native_read();
             }
         });
+        self.wire_native_thread_follow(&thread);
         self.room_nav.push(&thread.page);
         self.thread.replace(Some(thread.clone()));
         thread.reload();
@@ -489,6 +493,37 @@ impl ChatPage {
                 this.native_error(&error);
             }
             thread.reload();
+        });
+    }
+
+    /// The thread's bell, on a server that lets me follow.
+    fn wire_native_thread_follow(self: &Rc<Self>, thread: &Rc<ThreadPage>) {
+        let (weak, shown) = (Rc::downgrade(self), Rc::downgrade(thread));
+        let root = thread.root_id.clone();
+        thread.follow.connect_clicked(move |button| {
+            let (Some(this), Some(page)) = (weak.upgrade(), shown.upgrade()) else { return };
+            let Some(session) = this.native_session() else { return };
+            let on = !page.following.get();
+            button.set_sensitive(false);
+            let (button, weak, root) = (button.clone(), weak.clone(), root.clone());
+            glib::spawn_future_local(async move {
+                let result = on_tokio(async move { session.follow_thread(&root, on).await }).await;
+                button.set_sensitive(true);
+                let ok = result.is_ok();
+                if ok {
+                    page.reload();
+                }
+                if let Some(this) = weak.upgrade() {
+                    this.toast(
+                        t(match (ok, on) {
+                            (false, _) => "thread.follow_failed",
+                            (true, true) => "thread.followed",
+                            (true, false) => "thread.unfollowed",
+                        })
+                        .to_owned(),
+                    );
+                }
+            });
         });
     }
 

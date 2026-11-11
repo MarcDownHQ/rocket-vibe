@@ -1,3 +1,4 @@
+import AppKit
 import RocketVibeKit
 import SwiftUI
 
@@ -14,7 +15,7 @@ struct ThreadView: View {
             HStack {
                 Text(L("thread.title")).font(.vibeTitle(17, .bold))
                 Spacer()
-                if model.supportsThreads, let root = model.threadId {
+                if model.supportsThreadFollow, let root = model.threadId {
                     Button { Task { await follow(root) } } label: {
                         Image(systemName: model.followingThread ? "bell.fill" : "bell.slash")
                     }
@@ -52,6 +53,9 @@ struct ThreadView: View {
         }
         .background(Vibe.night)
         .task(id: model.threadId) { await model.refreshPostReadOnly() }
+        .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
+            app.readOpenThread()
+        }
     }
 
     /// Follows the thread or stops, by what the bell shows.

@@ -145,6 +145,10 @@ pub struct Capabilities {
     /// `GET /api/v1/rooms/{id}/threads`: a room's threads, latest reply first.
     #[serde(default)]
     pub thread_list: bool,
+    /// `GET /api/v1/threads`, `GET /api/v1/threads/totals` and
+    /// `POST /api/v1/threads/read`: the account's followed threads in every room.
+    #[serde(default)]
+    pub thread_inbox: bool,
     /// `PUT /api/v1/messages/{id}/follow` and `Message.personal_follow`.
     #[serde(default)]
     pub thread_follow: bool,
@@ -224,6 +228,7 @@ impl Default for Capabilities {
             instance_icon: false,
             scheduled_messages: false,
             thread_list: false,
+            thread_inbox: false,
             thread_follow: false,
             thread_also_in_room: false,
             social_cards: false,
@@ -300,6 +305,7 @@ impl Capabilities {
             instance_icon,
             scheduled_messages,
             thread_list,
+            thread_inbox,
             thread_follow,
             thread_also_in_room,
             social_cards,
@@ -618,6 +624,72 @@ pub struct ThreadList {
     pub next: Option<String>,
 }
 
+/// Someone who replied in a thread of `ThreadInbox`.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct ThreadParticipant {
+    pub id: String,
+    pub username: String,
+    pub display_name: String,
+    /// `/api/v1/avatars/{id}`; absent without a photo, and for a disabled or
+    /// deleted account.
+    pub avatar_file_id: Option<String>,
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub deleted: bool,
+}
+
+/// One followed thread in `ThreadInbox`.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct ThreadInboxEntry {
+    /// The root, with its `thread` summary and the reader's `personal_follow`.
+    pub root: Message,
+    pub room_id: String,
+    /// Highest non-deleted reply position: the list's order and its cursor.
+    pub last_reply_position: String,
+    pub last_reply_at: String,
+    /// Non-deleted replies.
+    pub replies: String,
+    /// Up to five distinct repliers, the most recent first.
+    pub participants: Vec<ThreadParticipant>,
+    pub following: bool,
+    /// Replies by others after the reader's thread read position.
+    pub unread: String,
+    /// Those of `unread` that mention the reader by name.
+    pub mentions: String,
+}
+
+/// `GET /api/v1/threads?filter=followed|unread&before=&limit=`.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct ThreadInbox {
+    /// Latest reply first.
+    pub threads: Vec<ThreadInboxEntry>,
+    /// The next page's `before`, absent on the last page.
+    pub next: Option<String>,
+}
+
+/// `GET /api/v1/threads/totals`.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+pub struct ThreadInboxTotals {
+    /// Followed threads with at least one unread reply.
+    pub unread_threads: String,
+    /// The sum of those threads' `mentions`.
+    pub unread_mentions: String,
+}
+
+/// `POST /api/v1/threads/read`.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct MarkThreadsRead {
+    pub operation_id: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+pub struct ThreadsReadReceipt {
+    pub operation_id: String,
+    /// Threads this operation advanced, the same on a replay.
+    pub threads: String,
+    /// The highest revision it published, `"0"` when nothing was unread.
+    pub applied_revision: String,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq)]
 #[serde(tag = "type", content = "data", rename_all = "snake_case")]
 // Keep value semantics for the existing provider caches; wire batches are bounded.
@@ -705,7 +777,11 @@ pub struct Contract {
     pub message_page: MessagePage,
     pub thread_page: ThreadPage,
     pub thread_list: ThreadList,
+    pub thread_inbox: ThreadInbox,
+    pub thread_inbox_totals: ThreadInboxTotals,
     pub mark_thread_read: MarkThreadRead,
+    pub mark_threads_read: MarkThreadsRead,
+    pub threads_read_receipt: ThreadsReadReceipt,
     pub snapshot: Snapshot,
     pub snapshot_page: SnapshotPage,
     pub sync_batch: SyncBatch,

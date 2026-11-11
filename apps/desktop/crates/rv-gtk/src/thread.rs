@@ -18,6 +18,7 @@ pub struct ThreadPage {
     pub composer: Rc<Composer>,
     /// Follows the thread or stops (Rocket.Chat): its bell shows whether I do.
     pub follow: gtk::Button,
+    pub following: Cell<bool>,
     /// "Also send to the room" (Rocket.Chat): for the next reply only.
     pub also: gtk::CheckButton,
     pub root_id: String,
@@ -67,6 +68,7 @@ impl ThreadPage {
             list,
             composer,
             follow,
+            following: Cell::new(false),
             also,
             root_id: root_id.to_owned(),
             rid: rid.to_owned(),
@@ -192,6 +194,10 @@ impl ThreadPage {
                 self.composer.root.set_visible(false);
                 return;
             }
+            self.follow.set_visible(native.thread_follow_available());
+            let following = native.thread_following(&self.root_id).unwrap_or(false);
+            self.following.set(following);
+            crate::threads::bell(&self.follow, following);
             self.composer.validate_native_reply(&native.store);
             self.composer.root.set_visible(
                 native.can_send_to_room(&self.rid)
@@ -203,9 +209,12 @@ impl ThreadPage {
         if let Some(session) = self.session.borrow().as_ref() {
             let rows = session.store.thread_messages(&self.root_id);
             let root = rows.iter().find(|r| r.id == self.root_id && r.thread_id.is_none());
-            self.follow.set_visible(root.is_some() && session.threads_available());
+            self.follow.set_visible(root.is_some() && session.thread_follow_available());
             if let Some(root) = root {
-                crate::threads::bell(&self.follow, root.followed_by(&session.info.user_id));
+                if session.threads_available() {
+                    self.following.set(root.followed_by(&session.info.user_id));
+                }
+                crate::threads::bell(&self.follow, self.following.get());
             }
             self.list.set_rows(rows);
         }

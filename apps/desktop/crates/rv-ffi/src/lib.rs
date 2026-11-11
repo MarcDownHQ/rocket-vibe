@@ -132,6 +132,9 @@ pub enum Event {
     Voice,
     /// The call ringing here changed: `Chat::incoming_call`.
     CallRing,
+    Threads {
+        root: Option<String>,
+    },
 }
 
 #[uniffi::export(with_foreign)]
@@ -447,6 +450,7 @@ fn event(e: SessionEvent, session: Option<&Session>) -> Event {
             }
         }
         SessionEvent::CallRing => Event::CallRing,
+        SessionEvent::Threads(root) => Event::Threads { root },
     }
 }
 
@@ -591,6 +595,13 @@ impl Chat {
     pub async fn open_room(&self, rid: String, kind: String) -> Result<bool, RvError> {
         let s = self.session.clone();
         let page = on_tokio(async move { s.open_room(&rid, &kind).await }).await?;
+        Ok(page.more.unwrap_or(page.count as i64 >= rv_core::sync::HISTORY_PAGE))
+    }
+
+    /// The newest page, the room neither marked read nor made the open one.
+    pub async fn peek_room(&self, rid: String, kind: String) -> Result<bool, RvError> {
+        let s = self.session.clone();
+        let page = on_tokio(async move { s.sync.load_history(&rid, &kind, None).await }).await?;
         Ok(page.more.unwrap_or(page.count as i64 >= rv_core::sync::HISTORY_PAGE))
     }
 

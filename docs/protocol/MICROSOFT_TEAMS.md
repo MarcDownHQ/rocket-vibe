@@ -217,6 +217,26 @@ Validate minimal/ignored fields, status, response/Location, author identity, lim
 
 No archive request proves reaction removal, channel-reply send, mention/quote serialization, pins/favorites, typing, own presence/profile writes, directory/message search, channel creation/roles or generic-file upload. Track those explicitly in the parity ledger; do not invent routes by analogy.
 
+### Thread metadata (read in the web bundle 2026-11-07, not probed)
+
+Read only on a work tenant; no write was sent. Per conversation C(threadId):
+
+- `GET C(threadId)/rcmetadata?startTime=&pageSize=&syncState=` lists the conversation's reply-chain metadata; `POST C(threadId)/getrcmetadata {"rootMessageIds": [...]}` reads chosen roots.
+- `PUT C(threadId)/rcmetadata/{rootId}` with `{"f": ..}` (follow), `{"ch": ..}` (read one thread) or `{"chb": ..}` (mark unread).
+- Inline: `includeRcMetadata=true` puts `rcMetadataList`, `rcMetadataHasMore` and `lastRcMetadataVersion` on conversations.
+- Fields seen: `ch, chb, chbv, f, s, sl2, r, rl2, lu`. No participant, mention or unread field.
+- No cross-conversation list and no thread "mark all" found: a client would walk conversations. Unknown: the encodings of `f` and `ch`, the GET's wrapper, and its auth. A test tenant is needed before any write.
+
+### Activity feed (probed read-only 2026-11-11)
+
+- The feed is the conversation **`48:notifications`**: `GET {chat}/v1/users/ME/conversations/48%3Anotifications/messages?pageSize=&startTime=&view=msnp24Equivalent` with the ic3 bearer (`{chat}` = `regionGtms.chatServiceAfd` from `authsvc/v1.0/authz`) answers `{messages, tenantId, _metadata: {lastCompleteSegmentStartTime, lastCompleteSegmentEndTime, syncState}}`. The web client's Activity pane showed exactly the stream's items (one on the probed tenant) and its local cache (`Teams:activity-manager` IndexedDB, store `feed-items`) mirrored them, so no other feed source is involved.
+- Each item is a `Text` message whose `properties.activity` carries `activityType`, `activitySubtype`, `activityTimestamp`, `activityId`, `sourceThreadId`, `sourceMessageId`, `sourceMessageVersion`, `sourceUserId`, `targetUserId`, `messagePreview`, `sourceThreadTopic`, `sourceThreadType` (`space` for a team), `sourceThreadRosterNonBotMemberCount`, `sourceThreadIsPrivateChannel`, `activityContext`; `properties.isread` is a string. The cache adds `sourceReplyChainId`, the root of a channel reply.
+- The web client filters it with slices `all`, `activities-mentions`, `-mentions-channel`, `-mentions-chat`, `-mentions-tag`, each with `unreadOnly`.
+- Other `48:` streams: `48:saved`, `48:notes`, `48:calllogs`, `48:starred`, `48:drafts`, `48:reminders`.
+- **A busy tenant** (probed read-only 2026-11-11 with the app's own token, `crates/rv-teams/examples/teams-feed.rs`, which prints shapes and counts only): `pageSize=200&startTime=1` answered 90 items in ONE page, about three weeks back (2026-10-14 to 2026-11-06), no `backwardLink`: the feed is short-lived. Every item's `targetUserId` is me. Types seen, `activityType/activitySubtype/sourceThreadType`: `reactionInChat/<emoji>/chat|meeting` (most), `mentionInChat/person/chat`, `mention/person/topic`, `reply//topic`, `replyToReply//topic`, `reaction/like/topic`, `call/missedCall`, `msGraph/privateMeeting{Created,Updated}`, `teamMembershipChange/promotedToTeamAdmin/space`.
+- **`sourceReplyChainId` is sent on the wire.** In a chat (`19:…@thread.v2`, `@unq.gbl.spaces`) it equals `sourceMessageId`: chats have no threads. In a channel (`19:…@thread.tacv2`, `sourceThreadType: topic`) a `reply`, `replyToReply` or `mention` item carries the ROOT as `sourceReplyChainId`, different from `sourceMessageId`: that is the thread. `reply` = a reply to my post, `replyToReply` = a reply in a thread I replied to, both with a `count` and `sourceUserImDisplayName`; `mention` adds `activitySubtype: person`.
+- `properties.isread` is mostly the string `"true"`, sometimes a boolean or absent. Marking an item read is not probed.
+
 ## 6. Translation and local projection
 
 Write typed Teams DTOs with runtime validation, independent of Rocket.Chat normalize.ts and Graph DTOs. Bound nested JSON/HTML and tolerate unknown optional fields. Missing essential identity/type fields create diagnosed unsupported records, not fake ordinary messages.

@@ -136,6 +136,30 @@ async fn rocket_chat_rooms_and_account() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_room_opened_behind_a_thread_stays_unread() {
+    for flavor in [Flavor::Mattermost, Flavor::Kchat] {
+        let b = bench(Some(flavor)).await;
+        let s = b.session.clone();
+        let viewed = |calls: &[(String, String)]| calls.iter().any(|(_, p)| p == "/api/v4/channels/members/me/view");
+        let calls = b
+            .during(async {
+                let _ = s.open_room_unread("r1", "c").await;
+                tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+            })
+            .await;
+        assert!(!viewed(&calls), "{calls:?}");
+        let calls = b
+            .during(async {
+                let _ = s.open_room("r1", "c").await;
+                tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+            })
+            .await;
+        assert!(viewed(&calls), "{calls:?}");
+        b.close();
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn mattermost_rooms_and_account() {
     for flavor in [Flavor::Mattermost, Flavor::Kchat] {
         let b = bench(Some(flavor)).await;

@@ -5,7 +5,7 @@
  */
 
 import type { LocalMessage } from '@rocket-vibe/provider-api/rows';
-import { NOTES_CONFLICT, type EditableSettings, type GroupDmPerson, type ProviderActions, type ReadObservation, type RoomInformation, type RoomNotes, type RoomSettingsChange } from '@rocket-vibe/provider-api/provider';
+import { NOTES_CONFLICT, type EditableSettings, type GroupDmPerson, type ProviderActions, type ReadObservation, type RoomInformation, type RoomNotes, type RoomSettingsChange, type ThreadInboxFilter, type ThreadInboxPage, type ThreadTotals } from '@rocket-vibe/provider-api/provider';
 import { canvasFile, canvasMarkdown } from './canvas.ts';
 import { canvasSession, loadRequest, type CanvasEngine } from './canvasEngine.ts';
 import type { SlackClient } from './client.ts';
@@ -15,6 +15,7 @@ import type { SlackHistory } from './history.ts';
 import type { SlackLive } from './live.ts';
 import type { SlackSaved } from './saved.ts';
 import { slackName } from './emojis.ts';
+import { SlackThreads } from './threads.ts';
 import { markdownToMrkdwn, parseMessageId, type SlackTranslator } from './translator.ts';
 
 type Doc = Record<string, unknown>;
@@ -32,8 +33,11 @@ export class SlackActions implements ProviderActions {
   private readonly translator: SlackTranslator;
   private readonly saved: SlackSaved;
   private readonly canvasEngine: CanvasEngine | null;
+  private readonly threads: SlackThreads;
+  /** No Threads event of the socket is verified: the open list reads again on this clock. */
+  readonly threadPollMs = 30_000;
 
-  constructor(options: { client: SlackClient; directory: SlackDirectory; history: SlackHistory; live: SlackLive; translator: SlackTranslator; saved: SlackSaved; canvas?: CanvasEngine | null }) {
+  constructor(options: { client: SlackClient; directory: SlackDirectory; history: SlackHistory; live: SlackLive; translator: SlackTranslator; saved: SlackSaved; myId: string; roomNames?: ReadonlyMap<string, string>; canvas?: CanvasEngine | null }) {
     this.client = options.client;
     this.directory = options.directory;
     this.history = options.history;
@@ -41,6 +45,37 @@ export class SlackActions implements ProviderActions {
     this.translator = options.translator;
     this.saved = options.saved;
     this.canvasEngine = options.canvas ?? null;
+    this.threads = new SlackThreads(options);
+  }
+
+  threadInbox(filter: ThreadInboxFilter, cursor: string | null): Promise<ThreadInboxPage> {
+    return this.threads.page(filter, cursor);
+  }
+
+  threadTotals(): Promise<ThreadTotals> {
+    return this.threads.totals();
+  }
+
+  async markThreadRead(rid: string, root: string): Promise<void> {
+    if (await this.threads.markRead(rid, root)) this.live.threadsChanged();
+  }
+
+  async markAllThreadsRead(): Promise<void> {
+    await this.threads.markAllRead();
+    this.live.threadsChanged();
+  }
+
+  async followThread(rid: string, root: string, put: boolean): Promise<void> {
+    await this.threads.follow(rid, root, put);
+    this.live.threadsChanged();
+  }
+
+  threadFollowing(rid: string, root: string): Promise<boolean> {
+    return this.threads.following(rid, root);
+  }
+
+  onThreadsChanged(listener: () => void): () => void {
+    return this.live.onThreadsChanged(listener);
   }
 
   /** A conversation's name, kind, topic, purpose and member count, read from `conversations.info`. */

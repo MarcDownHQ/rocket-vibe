@@ -37,6 +37,7 @@ import { useSync } from '../../ui/sync.tsx';
 import { UploadBands } from '../../ui/uploadBands.tsx';
 import { useColors, type Colors, FONTS } from '../../ui/theme.ts';
 import { FollowButton, useThreadFollow } from '../../ui/threadFollow.tsx';
+import { useThreadRead } from '../../ui/threadInbox.ts';
 
 /**
  * Thread screen (8.3). `id` = `_id` of the root message (`tmid` of its
@@ -181,6 +182,8 @@ function Thread({
     followers: root?.threadFollowers,
     myId,
   });
+  const newestReply = replyRows?.[replyRows.length - 1];
+  useThreadRead(actions, rid ?? null, threadId, newestReply?.id ?? threadId, Math.max(newestReply?.ts ?? 0, root?.threadLast ?? 0) || null);
 
   // The room's flags: same prohibitions as the room composer; promising a
   // reply in an encrypted or read-only room means promising an

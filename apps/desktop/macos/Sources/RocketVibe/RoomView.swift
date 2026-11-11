@@ -321,11 +321,11 @@ struct MessageList: View {
                     model.reveal = nil
                 }
             }
-            .task(id: model.messages.last?.id) {
+            .task(id: [model.messages.last?.id, app.thread?.threadId]) {
                 guard model.provider.legacy != nil else {return}
                 try? await Task.sleep(nanoseconds: 1_500_000_000)
                 if !Task.isCancelled && pinned && model.context == nil && NSApp.isActive && model.threadId == nil
-                    && (model.room.unread > 0 || model.room.alert) {
+                    && app.thread == nil && (model.room.unread > 0 || model.room.alert) {
                     await model.markLegacyRead()
                     Notifier.shared.withdraw(rid: model.rid)
                 }

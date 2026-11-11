@@ -178,7 +178,8 @@ pub async fn pinned(rest: &RestClient, rid: &str) -> Result<Vec<Value>, RestErro
 }
 
 pub async fn mark_read(rest: &RestClient, rid: &str) -> Result<(), RestError> {
-    rest.post("channels/members/me/view", CallOptions::body(json!({"channel_id": rid}))).await.map(|_| ())
+    let body = json!({"channel_id": rid, "collapsed_threads_supported": true});
+    rest.post("channels/members/me/view", CallOptions::body(body)).await.map(|_| ())
 }
 
 /// The DM channel with this user, created if needed.

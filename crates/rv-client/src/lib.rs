@@ -2553,6 +2553,48 @@ impl NativeClient {
         self.post(&format!("/api/v1/messages/{root}/thread/read"), input)
             .await
     }
+    /// `unread`: only the threads with replies I have not read, else all I follow.
+    pub async fn thread_inbox(
+        &self,
+        unread: bool,
+        before: Option<&str>,
+    ) -> Result<rv_protocol::ThreadInbox, Error> {
+        if before.is_some_and(|p| p.is_empty() || !p.bytes().all(|b| b.is_ascii_digit())) {
+            return Err(Error::InvalidUrl);
+        }
+        let filter = if unread { "unread" } else { "followed" };
+        self.get(&format!(
+            "/api/v1/threads?filter={filter}{}",
+            before.map(|p| format!("&before={p}")).unwrap_or_default()
+        ))
+        .await
+    }
+    pub async fn thread_totals(&self) -> Result<rv_protocol::ThreadInboxTotals, Error> {
+        self.get("/api/v1/threads/totals").await
+    }
+    pub async fn mark_all_threads_read(
+        &self,
+        input: &rv_protocol::MarkThreadsRead,
+    ) -> Result<rv_protocol::ThreadsReadReceipt, Error> {
+        self.post("/api/v1/threads/read", input).await
+    }
+    /// A reply's id acts on its root; answers the root as I read it.
+    pub async fn follow_thread(
+        &self,
+        id: &str,
+        input: &rv_protocol::parity::SetMark,
+    ) -> Result<Message, Error> {
+        if !path_segment(id) {
+            return Err(Error::InvalidUrl);
+        }
+        self.request(
+            Method::PUT,
+            &format!("/api/v1/messages/{id}/follow"),
+            Some(input),
+            false,
+        )
+        .await
+    }
     pub async fn snapshot(&self) -> Result<Snapshot, Error> {
         if self.saved_token().is_none() {
             return Err(Error::SessionMissing);

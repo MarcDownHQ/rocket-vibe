@@ -420,6 +420,7 @@ async fn a_slack_session_speaks_only_slack() {
     assert!(s.refresh_custom_emojis().await.is_err());
     assert!(s.call_available().await);
     assert!(!s.threads_available() && !s.unread_marks_available());
+    assert!(s.thread_inbox_available() && s.thread_follow_available() && s.thread_inbox_polled());
     s.mark_read("C001").await;
     s.send("C001", "hello").await;
     assert!(s.store.pending_outbox().is_empty(), "the send is delivered");
@@ -731,4 +732,234 @@ async fn a_canvas_reads_as_notes_and_is_saved_over_the_version_read() {
     assert_eq!(sections[0].string(1).as_deref(), Some("s-h"));
     let document = sections[0].message(38).unwrap();
     assert_eq!(rv_canvas::edit::document_text(document.bytes(5).unwrap()), Some((false, "Plan v2".to_owned())));
+}
+
+/// A followed thread as `subscriptions.thread.getView` answers it.
+fn followed(channel: &str, ts: &str, author: &str, latest: &str, last_read: &str, reply: Value) -> Value {
+    json!({
+        "root_msg": {
+            "user": author, "ts": ts, "thread_ts": ts, "text": format!("root {ts}"), "channel": channel,
+            "reply_count": 3, "reply_users_count": 2, "reply_users": ["U001", "U002"],
+            "latest_reply": latest, "subscribed": true, "last_read": last_read,
+        },
+        "latest_replies": [reply],
+    })
+}
+
+fn slack_reply(channel: &str, root: &str, ts: &str, user: &str, text: &str) -> Value {
+    json!({"user": user, "ts": ts, "text": text, "thread_ts": root, "channel": channel, "parent_user_id": "U001"})
+}
+
+fn view_answer(threads: Vec<Value>, has_more: bool) -> Response {
+    ok(
+        json!({"threads": threads, "has_more": has_more, "max_ts": "1700009999.000000", "new_threads_count": 0, "total_unread_replies": 1}),
+    )
+}
+
+fn thread_people(request: &Request) -> Option<Response> {
+    (method(request) == "users.info").then(|| {
+        let id = form(request)["user"].clone();
+        ok(json!({"user": user(&id, &id.to_lowercase())}))
+    })
+}
+
+#[tokio::test]
+async fn the_followed_threads_page_by_the_last_threads_latest_reply() {
+    let server = FakeHttp::start(|r| {
+        if let Some(answer) = thread_people(r) {
+            return answer;
+        }
+        assert_eq!(method(r), "subscriptions.thread.getView");
+        let f = form(r);
+        assert_eq!(f["priority_mode"], "all");
+        match f.get("current_ts").map(String::as_str) {
+            None => view_answer(
+                vec![
+                    followed(
+                        "C001",
+                        "1700000100.000100",
+                        "U001",
+                        "1700000900.000200",
+                        "1700000800.000000",
+                        slack_reply("C001", "1700000100.000100", "1700000900.000200", "U002", "see <@U000>"),
+                    ),
+                    followed(
+                        "D001",
+                        "1700000200.000100",
+                        "U001",
+                        "1700000700.000200",
+                        "1700000700.000200",
+                        slack_reply("D001", "1700000200.000100", "1700000700.000200", "U002", "nothing new"),
+                    ),
+                ],
+                true,
+            ),
+            Some("1700000700.000200") => view_answer(
+                vec![followed(
+                    "C404",
+                    "1700000300.000100",
+                    "U000",
+                    "1700000600.000200",
+                    "1700000600.000200",
+                    slack_reply("C404", "1700000300.000100", "1700000600.000200", "U002", "older"),
+                )],
+                false,
+            ),
+            Some(other) => panic!("paged by {other}"),
+        }
+    })
+    .await;
+    let (store, sync) = sync(&server);
+    store.write(|w| {
+        for (rid, kind) in [("C001", "c"), ("D001", "d")] {
+            w.upsert_room(&rv_core::normalize::Room {
+                rid: rid.to_owned(),
+                kind: kind.to_owned(),
+                name: Some(format!("room-{rid}")),
+                ..Default::default()
+            });
+        }
+    });
+    use rv_core::slack::threads;
+    use rv_core::thread_inbox::{Filter, Scope};
+
+    let page = threads::page(&sync, Filter::Followed, None).await.unwrap();
+    assert_eq!(page.next.as_deref(), Some("1700000700.000200"));
+    let [named, direct] = &page.entries[..] else { panic!("{:?}", page.entries) };
+    assert_eq!(named.root.id, "C001:1700000100.000100");
+    assert_eq!(named.root.rid, "C001");
+    assert_eq!(named.room, "room-C001");
+    assert_eq!(named.last_reply, 1_700_000_900_000);
+    assert_eq!(named.replies, 3);
+    assert_eq!(named.participants.iter().map(|p| p.username.as_str()).collect::<Vec<_>>(), ["u001", "u002"]);
+    assert_eq!((named.unread_replies, named.unread_mentions), (1, 1));
+    assert!(named.mentioned && !named.participated);
+    assert_eq!((direct.unread_replies, direct.unread_mentions), (0, 0));
+    assert!(direct.participated && !direct.mentioned, "a thread in a direct conversation counts as mine");
+    assert!(store.messages("C001", 10).is_empty(), "listing a thread does not touch its room's history");
+
+    let last = threads::page(&sync, Filter::Followed, page.next.as_deref()).await.unwrap();
+    assert_eq!(last.next, None);
+    let mine = &last.entries[0];
+    assert_eq!(mine.room, "", "a channel not listed keeps an empty name");
+    assert!(mine.participated && !mine.mentioned);
+    assert!(Scope::Participated.matches(mine) && !Scope::Others.matches(mine));
+    assert!(METHODS.contains(&"subscriptions.thread.getView"));
+    for request in server.requests() {
+        assert!(METHODS.contains(&method(&request)), "{}", request.target);
+    }
+}
+
+#[tokio::test]
+async fn the_unread_list_walks_the_pages_and_totals_read_one() {
+    let server = FakeHttp::start(|r| {
+        if let Some(answer) = thread_people(r) {
+            return answer;
+        }
+        let quiet = |ts: &str, latest: &str| {
+            followed("C001", ts, "U001", latest, latest, slack_reply("C001", ts, latest, "U002", "old"))
+        };
+        match method(r) {
+            "client.counts" => {
+                assert_eq!(form(r)["thread_counts_by_channel"], "true");
+                ok(json!({"threads": {"has_unreads": true, "mention_count": 2, "mention_count_by_channel": {"C001": 2}, "unread_count_by_channel": {"C001": 9}}}))
+            }
+            "subscriptions.thread.getView" => match form(r).get("current_ts").map(String::as_str) {
+                None => view_answer(vec![quiet("1700000100.000100", "1700000900.000000")], true),
+                Some("1700000900.000000") => view_answer(
+                    vec![
+                        quiet("1700000200.000100", "1700000800.000000"),
+                        followed(
+                            "C001",
+                            "1700000300.000100",
+                            "U001",
+                            "1700000700.000000",
+                            "1700000600.000000",
+                            slack_reply("C001", "1700000300.000100", "1700000700.000000", "U002", "new"),
+                        ),
+                    ],
+                    false,
+                ),
+                Some(other) => panic!("paged by {other}"),
+            },
+            other => panic!("unexpected {other}"),
+        }
+    })
+    .await;
+    let (_, sync) = sync(&server);
+    use rv_core::slack::threads;
+    use rv_core::thread_inbox::Filter;
+    let page = threads::page(&sync, Filter::Unread, None).await.unwrap();
+    assert_eq!(page.next, None);
+    let ids: Vec<&str> = page.entries.iter().map(|e| e.root.id.as_str()).collect();
+    assert_eq!(ids, ["C001:1700000300.000100"]);
+    assert_eq!(page.entries[0].unread_replies, 1);
+    let totals = threads::totals(&sync).await.unwrap();
+    assert_eq!((totals.unread_threads, totals.unread_mentions), (0, 2), "the badge reads one page, no more");
+}
+
+#[tokio::test]
+async fn marks_go_forward_only_and_follows_reach_slack() {
+    let following = Arc::new(std::sync::atomic::AtomicBool::new(true));
+    let state = following.clone();
+    let server = FakeHttp::start(move |r| {
+        use std::sync::atomic::Ordering;
+        if let Some(answer) = thread_people(r) {
+            return answer;
+        }
+        let f = form(r);
+        match method(r) {
+            "subscriptions.thread.getView" => view_answer(
+                vec![followed(
+                    "C001",
+                    "1700000100.000100",
+                    "U001",
+                    "1700000900.000200",
+                    "1700000800.000000",
+                    slack_reply("C001", "1700000100.000100", "1700000900.000200", "U002", "new"),
+                )],
+                false,
+            ),
+            "subscriptions.thread.mark" => {
+                assert_eq!(f["channel"], "C001");
+                assert_eq!(f["thread_ts"], "1700000100.000100");
+                assert_eq!(f["ts"], "1700000900.000200", "to the latest reply, exact");
+                ok(json!({}))
+            }
+            "subscriptions.thread.clearAll" => ok(json!({"marked": 1, "undo_ts": "1700001000.000000"})),
+            "subscriptions.thread.add" | "subscriptions.thread.remove" => {
+                assert_eq!((f["channel"].as_str(), f["thread_ts"].as_str()), ("C001", "1700000100.000100"));
+                state.store(method(r) == "subscriptions.thread.add", Ordering::SeqCst);
+                ok(json!({}))
+            }
+            "subscriptions.thread.get" => {
+                let list = if state.load(Ordering::SeqCst) { vec![f["thread_ts"].clone()] } else { Vec::new() };
+                ok(json!({"subscriptions": list}))
+            }
+            other => panic!("unexpected {other}"),
+        }
+    })
+    .await;
+    let (_, sync) = sync(&server);
+    use rv_core::slack::threads;
+    use rv_core::thread_inbox::Filter;
+    let root = "C001:1700000100.000100";
+    let count = |name: &str| server.requests().iter().filter(|r| method(r) == name).count();
+
+    threads::page(&sync, Filter::Followed, None).await.unwrap();
+    assert!(threads::mark_read(&sync, "C001", root).await.unwrap());
+    assert!(!threads::mark_read(&sync, "C001", root).await.unwrap(), "nothing newer: no second mark");
+    assert_eq!(count("subscriptions.thread.mark"), 1);
+
+    assert!(threads::following(&sync, root).await.unwrap());
+    threads::follow(&sync, root, false).await.unwrap();
+    assert!(!threads::following(&sync, root).await.unwrap());
+    assert!(!threads::mark_read(&sync, "C001", root).await.unwrap(), "a thread I do not follow is not marked");
+    assert_eq!(count("subscriptions.thread.mark"), 1);
+    threads::follow(&sync, root, true).await.unwrap();
+    assert!(threads::following(&sync, root).await.unwrap());
+
+    threads::mark_all_read(&sync).await.unwrap();
+    assert_eq!(count("subscriptions.thread.clearAll"), 1);
+    assert!(threads::follow(&sync, "not-a-slack-id", true).await.is_err());
 }

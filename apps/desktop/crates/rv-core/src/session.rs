@@ -28,6 +28,7 @@ use crate::rest::{CallOptions, Credentials, RestClient, RestError, TwoFactorCode
 use crate::store::Store;
 use crate::sync::Backend;
 use crate::sync::{HistoryPage, MY_MESSAGES, STREAM_NOTIFY_ROOM, STREAM_NOTIFY_USER, STREAM_ROOM_MESSAGES, SyncEngine};
+use crate::thread_inbox;
 use crate::uploads::{self, Uploads};
 
 const MAX_RECONNECT_DELAY_MS: u64 = 30_000;
@@ -99,6 +100,9 @@ pub enum SessionEvent {
     Incoming(Box<crate::notify::Incoming>),
     /// The call ringing here changed: `Session::incoming_call`.
     CallRing,
+    /// The account's threads changed; with the thread that just got a reply I
+    /// have not read.
+    Threads(Option<String>),
     /// What the server told me alone in a room: a slash command's answer, a
     /// Mattermost "visible only to you" post with its cards (`attachments`)
     /// and the id their buttons are pressed through.
@@ -726,6 +730,19 @@ impl Session {
                     });
                 }
             }
+            "thread_updated" => {
+                let thread = data.get("thread").and_then(|t| match t.as_str() {
+                    Some(json) => serde_json::from_str(json).ok(),
+                    None => Some(t.clone()),
+                });
+                let unread =
+                    thread.as_ref().filter(|t: &&Value| t.get("unread_replies").and_then(Value::as_i64) > Some(0));
+                let root = unread.and_then(|t| t.get("id")).and_then(Value::as_str).map(str::to_owned);
+                let _ = self.events.send(SessionEvent::Threads(root));
+            }
+            "thread_read_changed" | "thread_follow_changed" => {
+                let _ = self.events.send(SessionEvent::Threads(None));
+            }
             _ => {
                 if let Some(signal) = mm.call_signal(name, data) {
                     self.call_signal(signal);
@@ -793,10 +810,14 @@ impl Session {
             tokio::spawn(async move { slack.apply_event(&name, &frame).await });
             return;
         }
+        let thread = (name == "message").then(|| crate::slack::threads::frame_root(frame)).flatten();
         if let Some(m) = slack.apply_event(name, frame).await
             && let Some(incoming) = self.incoming_message(&m)
         {
             let _ = self.events.send(SessionEvent::Incoming(Box::new(incoming)));
+        }
+        if thread.is_some() {
+            let _ = self.events.send(SessionEvent::Threads(thread));
         }
     }
 
@@ -1781,6 +1802,16 @@ impl Session {
 
     /// Switches the open room and loads its latest page.
     pub async fn open_room(&self, rid: &str, kind: &str) -> Result<HistoryPage, RestError> {
+        self.enter_room(rid, kind, true).await
+    }
+
+    /// The room opened behind a thread: live and loaded, but nobody is reading
+    /// it yet, so it stays unread.
+    pub async fn open_room_unread(&self, rid: &str, kind: &str) -> Result<HistoryPage, RestError> {
+        self.enter_room(rid, kind, false).await
+    }
+
+    async fn enter_room(&self, rid: &str, kind: &str, read: bool) -> Result<HistoryPage, RestError> {
         let previous = self.current_room.lock().unwrap().replace((rid.to_owned(), kind.to_owned()));
         if let Some((old, _)) = previous {
             self.stop_hearing(&old);
@@ -1789,11 +1820,11 @@ impl Session {
         self.transport.subscribe(STREAM_NOTIFY_ROOM, &format!("{rid}/deleteMessage"));
         self.transport.subscribe(STREAM_NOTIFY_ROOM, &format!("{rid}/{}", live::USER_ACTIVITY));
         let rest = self.rest.clone();
-        let read = CallOptions::body(json!({"rid": rid}));
+        let body = CallOptions::body(json!({"rid": rid}));
         let mattermost = match self.backend() {
-            Backend::Mattermost(_) => Some(true),
-            Backend::RocketChat => Some(false),
-            Backend::Slack(_) | Backend::Teams(_) => None,
+            Backend::Mattermost(_) if read => Some(true),
+            Backend::RocketChat if read => Some(false),
+            _ => None,
         };
         let room = rid.to_owned();
         if let Some(mattermost) = mattermost {
@@ -1801,7 +1832,7 @@ impl Session {
                 if mattermost {
                     let _ = mattermost::actions::mark_read(&rest, &room).await;
                 } else {
-                    let _ = rest.post("subscriptions.read", read).await;
+                    let _ = rest.post("subscriptions.read", body).await;
                 }
             });
         }
@@ -2264,12 +2295,127 @@ impl Session {
     /// Follows a thread or stops following it. The root's followers change
     /// locally at once; the server's copy of the root follows on the stream.
     pub async fn follow_thread(&self, root: &str, on: bool) -> Result<(), RestError> {
-        if !self.threads_available() {
-            return Err(RestError::incomplete("follow: not on this server"));
+        match self.backend() {
+            Backend::Mattermost(mm) => {
+                let rows = self.store.messages_by_id(&[root.to_owned()]);
+                let rid = rows.first().map(|r| r.rid.clone()).unwrap_or_default();
+                mattermost::threads::follow(mm, &rid, root, on).await
+            }
+            Backend::Slack(slack) => {
+                crate::slack::threads::follow(slack, root, on).await?;
+                let _ = self.events.send(SessionEvent::Threads(None));
+                Ok(())
+            }
+            Backend::RocketChat => {
+                actions::follow_thread(&self.rest, root, on).await?;
+                self.store.write(|w| w.set_thread_follower(root, &self.info.user_id, on));
+                Ok(())
+            }
+            Backend::Teams(_) => Err(RestError::incomplete("follow: not on this server")),
         }
-        actions::follow_thread(&self.rest, root, on).await?;
-        self.store.write(|w| w.set_thread_follower(root, &self.info.user_id, on));
-        Ok(())
+    }
+
+    /// Whether the account lists its threads across its rooms.
+    pub fn thread_inbox_available(&self) -> bool {
+        match self.backend() {
+            Backend::Mattermost(_) | Backend::Slack(_) | Backend::Teams(_) => true,
+            Backend::RocketChat => false,
+        }
+    }
+
+    /// Whether the list is read again by itself, no event telling that it
+    /// changed: on returning to the app, and on a timer while it is on screen.
+    pub fn thread_inbox_polled(&self) -> bool {
+        match self.backend() {
+            Backend::Slack(_) | Backend::Teams(_) => true,
+            Backend::Mattermost(_) | Backend::RocketChat => false,
+        }
+    }
+
+    pub async fn thread_inbox(
+        &self,
+        filter: thread_inbox::Filter,
+        cursor: Option<&str>,
+    ) -> Result<thread_inbox::Page, RestError> {
+        let mut page = match self.backend() {
+            Backend::Mattermost(mm) => mattermost::threads::page(mm, filter, cursor).await?,
+            Backend::Slack(slack) => crate::slack::threads::page(slack, filter, cursor).await?,
+            Backend::Teams(teams) => crate::teams::threads::page(teams, filter, cursor).await?,
+            Backend::RocketChat => {
+                return Err(RestError::incomplete("thread inbox: not on this server"));
+            }
+        };
+        for person in page.entries.iter_mut().flat_map(|e| e.participants.iter_mut()) {
+            person.label = self.person_label(&person.id).unwrap_or_default();
+        }
+        Ok(page)
+    }
+
+    pub async fn thread_totals(&self) -> Result<thread_inbox::Totals, RestError> {
+        match self.backend() {
+            Backend::Mattermost(_) => mattermost::threads::totals(&self.rest).await,
+            Backend::Slack(slack) => crate::slack::threads::totals(slack).await,
+            Backend::Teams(teams) => crate::teams::threads::totals(teams).await,
+            Backend::RocketChat => Ok(thread_inbox::Totals::default()),
+        }
+    }
+
+    /// I read the thread up to now.
+    pub async fn mark_thread_read(&self, rid: &str, root: &str) -> Result<(), RestError> {
+        match self.backend() {
+            Backend::Mattermost(mm) => {
+                let at = self.store.messages_by_id(&[root.to_owned()]).first().and_then(|r| r.thread_last);
+                let at = at.unwrap_or_default().max(chrono::Utc::now().timestamp_millis());
+                mattermost::threads::mark_read(mm, rid, root, at).await
+            }
+            Backend::Slack(slack) => {
+                if crate::slack::threads::mark_read(slack, rid, root).await? {
+                    let _ = self.events.send(SessionEvent::Threads(None));
+                }
+                Ok(())
+            }
+            Backend::Teams(teams) => {
+                if crate::teams::threads::mark_read(teams, rid, root).await {
+                    let _ = self.events.send(SessionEvent::Threads(None));
+                }
+                Ok(())
+            }
+            Backend::RocketChat => Ok(()),
+        }
+    }
+
+    pub async fn mark_all_threads_read(&self) -> Result<(), RestError> {
+        match self.backend() {
+            Backend::Mattermost(_) => mattermost::threads::mark_all_read(&self.rest).await,
+            Backend::Slack(slack) => crate::slack::threads::mark_all_read(slack).await,
+            Backend::Teams(teams) => {
+                crate::teams::threads::mark_all_read(teams).await?;
+                let _ = self.events.send(SessionEvent::Threads(None));
+                Ok(())
+            }
+            Backend::RocketChat => Ok(()),
+        }
+    }
+
+    /// Whether I can follow a thread and see that I do, from the thread itself.
+    pub fn thread_follow_available(&self) -> bool {
+        match self.backend() {
+            Backend::RocketChat | Backend::Mattermost(_) | Backend::Slack(_) => true,
+            Backend::Teams(_) => false,
+        }
+    }
+
+    /// Whether I follow it, by the server's answer where the root does not say.
+    pub async fn thread_following(&self, rid: &str, root: &str) -> Result<bool, RestError> {
+        match self.backend() {
+            Backend::Mattermost(mm) => mattermost::threads::following(mm, rid, root).await,
+            Backend::Slack(slack) => crate::slack::threads::following(slack, root).await,
+            Backend::RocketChat | Backend::Teams(_) => Ok(self
+                .store
+                .messages_by_id(&[root.to_owned()])
+                .first()
+                .is_some_and(|r| r.followed_by(&self.info.user_id))),
+        }
     }
 
     /// Whether the room list can mark a room unread or read: Rocket.Chat only

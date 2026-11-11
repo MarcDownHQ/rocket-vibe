@@ -16,6 +16,11 @@ release, and its notes are that version's section here.
 - Notes: Slack canvases keep bold, italic, strikethrough, code and links, and checklist items can be ticked; the whole formatting bar is available there.
 - Notes: Teams task lists show assignees, due dates and buckets; single tasks can be added and removed, and a save can create a new table or task list.
 - Teams (experimental): a call started in a chat runs inside the app, audio only, with no Microsoft sign-in in a web page; Teams' page stays the fallback. It stays up past the first half minute and holds and resumes when the other side does.
+- Mattermost and kChat: a Threads view at the top of the room list gathers the threads you follow across your teams, with an unread badge, Followed and Unread tabs and "Mark all as read". Opening a thread marks it read and leaves its channel unread, and the thread screen's bell now works there too.
+- Threads view: filter chips (All, Participated, Mentioned, Others) in the Followed and Unread tabs; a thread in a direct conversation counts as participated
+- Slack (experimental): the Threads view reads Slack's own, with mark as read and following a thread; it refreshes on thread activity, on coming back to the app and every 30 seconds while on screen
+- Vibez: the Threads view and following a thread, on a server that announces them
+- Teams (experimental): the Threads view lists the channel threads from your Teams activity (replies to you, replies in threads you took part in, mentions), about three weeks back. Unread and "Mark all as read" are kept on the phone; Teams itself is not told.
 - Slack (experimental): a huddle runs inside the app, audio only (who is there, who speaks, mute, deafen, hang up); the browser stays the fallback when the join fails.
 - Notes: the editor has a formatting row (bold, italic, strikethrough, heading, link, code, quote, lists), and going back keeps an unsaved edit for when you reopen the notes. Slack canvases offer the block formats only, since they keep no inline formatting.
 - Server rail: a server can be disabled with a long press on its tile: it stays on the rail, greyed and after the others, keeps its session and is no longer read in the background, until enabled again without signing in.
@@ -28,6 +33,7 @@ release, and its notes are that version's section here.
 
 - Notes: a Slack canvas with formatting no longer shows raw HTML tags, and a Teams page just summarised by Teams no longer reads as an older version.
 - Slack (experimental): a Giphy or Tenor GIF posted by an app or pasted as a link now shows and plays; a pasted image's preview no longer leaves a card reading "370x208px image", and cards show their links, mentions and colours.
+- Mattermost and kChat: reading a channel no longer marks its threads as read.
 - Native Jitsi and kMeet calls: being left alone in a call no longer ends it. The server ends a lone participant's media session after about 20 seconds; the app took that for the end of the call and the window closed. It now stays in the room and the sound comes back as soon as someone returns.
 - Notes: saving after someone else changed them while you edited now always warns you and keeps your draft; a background refresh could let the save overwrite their change.
 - Teams (experimental): opening a chat Teams keeps hidden, from a search or a profile, lists it again.
@@ -49,6 +55,7 @@ release, and its notes are that version's section here.
 
 ### Changed
 
+- Server rail: another server's dot turns red when it holds a mention or an unread direct message; plain unread keeps the usual colour.
 - The app now looks for updates in the project's new home, `MarcDownHQ/rocket-vibe` on GitHub. Versions up to 0.26.1 no longer find in-app updates since the move: install this one by hand once.
 - The native call screen now looks like the Vibez voice screen: a tile per person whose border lights while they speak, and the same control buttons.
 

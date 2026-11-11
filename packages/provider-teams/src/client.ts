@@ -14,6 +14,8 @@ import { DECLINE_BODY } from './trouter.ts';
 type Doc = Record<string, unknown>;
 const CONVERSATION_PAGE = 100;
 const CONVERSATION_PAGES = 10;
+const FEED_PAGE = 200;
+const FEED_PAGES = 5;
 
 /** A path under a base, its opaque segments (conversation ids) percent-encoded. */
 /** A link of Teams' calling service: https on its own hosts only, since the Skype token goes with it. */
@@ -350,6 +352,22 @@ export class TeamsClient {
       url = await this.trusted((body._metadata as Doc | undefined)?.backwardLink);
     }
     return out;
+  }
+
+  /** The activity feed's pages, newest first, walked back on the chat
+   *  service's own host at most `FEED_PAGES` pages. */
+  async activityFeed(): Promise<Doc[]> {
+    const { routes } = await this.tokens.chat();
+    let url: string | null = `${serviceUrl(`${routes.chat}/v1`, ['users', 'ME', 'conversations'])}/48%3Anotifications/messages?pageSize=${FEED_PAGE}&startTime=1&view=msnp24Equivalent`;
+    const pages: Doc[] = [];
+    for (let n = 0; n < FEED_PAGES && url !== null; n++) {
+      const body = (await this.chat('GET', url)).body;
+      pages.push(body);
+      if (!Array.isArray(body.messages) || body.messages.length === 0) break;
+      const next: string | null = await this.trusted((body._metadata as Doc | undefined)?.backwardLink);
+      url = next === url ? null : next;
+    }
+    return pages;
   }
 
   /** The aggregator's list of chats and teams. */

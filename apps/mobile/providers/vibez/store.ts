@@ -439,6 +439,13 @@ export class NativeStore {
   rooms(): Promise<NativeRoomRow[]> {
     return this.queue(async () => await this.sameGeneration() ? this.db.getAllAsync<NativeRoomRow>('SELECT rid,COALESCE(display_name,name,rid) AS name,type,last_message FROM rooms ORDER BY COALESCE(last_message_ts,0) DESC,rid', []) : []);
   }
+  threadRoom(rid:string):Promise<{name:string;direct:boolean}|null> {
+    return this.queue(async()=>{
+      if(!await this.sameGeneration())return null;
+      const row=await this.db.getFirstAsync<{name:string;type:string}>('SELECT COALESCE(display_name,name,rid) AS name,type FROM rooms WHERE rid=?',[rid]);
+      return row?{name:row.name,direct:row.type==='d'}:null;
+    });
+  }
   roomEncrypted(rid:string):Promise<boolean> {
     return this.queue(async()=>!await this.sameGeneration() || (await this.db.getFirstAsync<{encrypted:number}>('SELECT encrypted FROM rooms WHERE rid=?',[rid]))?.encrypted===1);
   }

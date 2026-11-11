@@ -169,6 +169,10 @@
   "voice_ring":{"id":"ring-id","room_id":"room-id","caller":{"id":"alice-id","username":"alice","display_name":"Alice"},"callee":{"id":"bob-id","username":"bob","display_name":"Bob"},"state":"missed","expires_in_ms":0},
   "search_messages":{"q":"hello","limit":50},
   "search_page":{"membership_version":"current-grant","messages":[],"has_more":false},
+  "thread_inbox": { "threads": [], "next": null },
+  "thread_inbox_totals": { "unread_threads": "0", "unread_mentions": "0" },
+  "mark_threads_read": { "operation_id": "mark-threads-read-fixture" },
+  "threads_read_receipt": { "operation_id": "mark-threads-read-fixture", "threads": "0", "applied_revision": "0" },
   "mark_thread_read": {
     "position": "9007199254740995"
   },

@@ -123,3 +123,65 @@ The real mobile provider verifies a lost confirmation and a replay after
 root deletion. The GTK journeys and Swift models use their existing interface
 and keychain against PostgreSQL. Physical Android, installed Windows and
 the macOS application remain explicitly open external validations.
+
+## The account's threads
+
+Additive capability **`thread_inbox`**, `false` on an older server
+(`apps/server/src/threads.rs`, migration `0067_thread_inbox.sql`): the threads
+the account follows in every room it is a member of.
+
+`GET /api/v1/threads?filter=followed|unread&before=…&limit=…` returns
+`ThreadInbox`: `threads`, each a `ThreadInboxEntry`, and `next`, the following
+page's `before`, absent on the last page. `filter` defaults to `followed`;
+anything else answers `400`. The limit is 50 by default, between 1 and 100.
+
+- `root`: the root as the reader sees it, with `thread` and `personal_follow`;
+- `room_id`, `last_reply_position`, `last_reply_at`, `replies`: the room, the
+  latest non-deleted reply's position and time, and the non-deleted replies;
+- `participants`: up to five distinct repliers, the most recent first, each
+  `{id, username, display_name, avatar_file_id, deleted}`. `avatar_file_id` is
+  served by `/api/v1/avatars/{id}`, and absent for a disabled or deleted account;
+- `following`: always `true` here;
+- `unread`: the replies by others after the reader's thread read position, the
+  rule of `ThreadEntry.unread` and of the room counters;
+- `mentions`: those of `unread` that name the reader (`direct`, like
+  `ReadState.mentions`; `@all` and `@here` do not count).
+
+`followed` is a `present` row of `thread_follows`; `unread` narrows it to threads
+with `unread` above zero. A thread is a non-deleted root with at least one
+non-deleted reply, so an explicit follow of a root nobody answered does not list
+yet. The order is the latest reply's position, newest first, and the cursor is
+that position: a thread that moves during paging can appear on two pages, or
+none after a deletion, so a client deduplicates by root and reads the first page
+again on a change.
+
+**Plaintext threads only.** A room with an E2EE group never lists, not even its
+roots from before encryption, and `POST /threads/read` does not touch it: the
+server cannot summarize `e2ee_application_messages`, and clients open such a room
+through their sealed path. Leaving a room removes its rows from `thread_follows`,
+so it stops listing at once and a return starts unfollowed.
+
+`GET /api/v1/threads/totals` returns `ThreadInboxTotals`: `unread_threads`, the
+followed threads with unread replies, and `unread_mentions`, the sum of their
+`mentions`. A separate route, because a badge has no use for the rows. It reads
+every followed thread of the account: a client asks again when its sync cursor
+moved, at most about once a second.
+
+`POST /api/v1/threads/read` takes `MarkThreadsRead` (`operation_id`) and answers
+`ThreadsReadReceipt`: `operation_id`, `threads`, the threads advanced, and
+`applied_revision`, the highest revision published, `"0"` when nothing was
+unread. Every followed thread with unread replies moves to its latest non-deleted
+reply. It leaves room reads, unfollowed threads and encrypted rooms alone, and
+shares the `room_read_limit` budget (one attempt per call).
+
+It journals as a single-thread read does: one private `room_upsert` per room
+touched, for this account only, its revision set to that room's new
+`room_read_states.revision`. The account's other sessions therefore receive the
+room with its lowered `read_state` on their sync; no event names the threads, so
+a client holding a list or totals reads them again when its cursor moves. Nothing
+is published when nothing was unread.
+
+The receipt lives in `thread_read_all_commands`. Replaying an `operation_id`
+answers the first receipt without moving anything, so a retry never reads replies
+that arrived since; an `operation_id` already used by another command answers
+`409`.

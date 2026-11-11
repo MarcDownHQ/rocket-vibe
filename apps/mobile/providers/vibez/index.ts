@@ -1,6 +1,6 @@
 /** Native protocol adapter for the existing screens; NativeChat owns journal/outbox commits. */
 import type { Session } from '../../lib/auth.ts';
-import type { Capabilities, Provider, Listener, FileOutbox, RoomNotes } from '../../lib/provider.ts';
+import type { Capabilities, Provider, Listener, FileOutbox, RoomNotes, ThreadInboxFilter } from '../../lib/provider.ts';
 import type { RestClient } from '../../lib/rest.ts';
 import { NativeChat } from './chat.ts';
 import { NativeStore, localMessage } from './store.ts';
@@ -11,6 +11,7 @@ import type { Capabilities as NativeCapabilities } from './protocol.generated.ts
 import {NativeFileOutbox} from './uploads.ts';
 import {NativeAdmin,nativeReports} from './admin.ts';
 import {nativeScheduled} from './scheduled.ts';
+import {threadInboxPage,threadTotals} from './threadInbox.ts';
 
 export const VIBEZ_CAPABILITIES: Capabilities = {
   editing:true, deletion:true,
@@ -66,6 +67,16 @@ export function createVibezProvider(session: Session, client: RestClient, genera
     progress:new Map(), subscribe:noSubscription, validate:unsupported,
     send:unsupported, process:unsupported, retry:unsupported, discard:unsupported,
   };
+  const inbox=()=>chat.capabilities?.thread_inbox===true;
+  const follows=()=>chat.capabilities?.thread_follow===true;
+  const threads={
+    inbox:async(filter:ThreadInboxFilter,cursor:string|null)=>threadInboxPage(await chat.threadInbox(filter,cursor),{id:session.userId,username:session.username},rid=>store.threadRoom(rid)),
+    totals:async()=>threadTotals(await chat.threadInboxTotals()),
+    markAll:()=>chat.markAllThreadsRead(),
+    follow:(_rid:string,root:string,put:boolean)=>chat.followThread(root,put),
+    following:(_rid:string,root:string)=>chat.threadFollowing(root),
+    changes:(listener:()=>void)=>chat.onThreadsChanged(listener),
+  };
   return {
     identity:{kind:'vibez',origin:session.baseUrl,accountId:session.userId,instanceId:session.nativeInstanceId ?? null,generation:session.nativeDataEpoch ?? null},
     describeError:describeProviderError,
@@ -89,6 +100,14 @@ export function createVibezProvider(session: Session, client: RestClient, genera
       toRoom:() => null, toSubscription:() => null,
     },
     actions:{
+      // Absent until the server announces them. No `markThreadRead`: the thread
+      // screen reads the reply it displayed, `markObservedThreadRead`.
+      get threadInbox(){return inbox()?threads.inbox:undefined;},
+      get threadTotals(){return inbox()?threads.totals:undefined;},
+      get markAllThreadsRead(){return inbox()?threads.markAll:undefined;},
+      get followThread(){return follows()?threads.follow:undefined;},
+      get threadFollowing(){return follows()?threads.following:undefined;},
+      get onThreadsChanged(){return inbox()||follows()?threads.changes:undefined;},
       roomReadState:async rid=>{
         const state=await store.readState(rid);
         if(!state?.membership_version)return null;

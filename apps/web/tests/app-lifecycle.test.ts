@@ -295,8 +295,8 @@ test("thread responses from an earlier room opening or membership stay out of th
     const target = app(),
       receipt = deferred<unknown>();
     target.api.request = () => receipt.promise;
-    const thread = method("thread", { segment: encodeURIComponent });
-    const work = thread.call(target, message("root-A"));
+    const thread = method("openThread", { segment: encodeURIComponent });
+    const work = thread.call(target, "A", "root-A");
     if (change === "room") {
       target.room = "B";
       target.roomOpening++;
@@ -318,11 +318,11 @@ test("a delayed thread draft cannot reopen a closed thread", async () => {
     messages: [],
     has_more: false,
   });
-  const thread = method("thread", {
+  const thread = method("openThread", {
     segment: encodeURIComponent,
     read: () => draft.promise,
   });
-  const work = thread.call(target, message("root-A"));
+  const work = thread.call(target, "A", "root-A");
   await Promise.resolve();
   target.threadOpening++;
   draft.resolve("private thread draft");
@@ -612,6 +612,31 @@ test("stopping clears private scheduled state before asynchronous teardown", asy
   assert.deepEqual(target.reminders, []);
   assert.equal(target.reminderTimer, undefined);
   assert.deepEqual(timers, ["fixture-timer", "reminder-timer"]);
+});
+
+test("stopping forgets the account's thread totals and their pending read", async () => {
+  const target = Object.assign(app(), {
+    threadTotals: { unread_threads: "3", unread_mentions: "1" } as
+      | { unread_threads: string; unread_mentions: string }
+      | undefined,
+    threadTotalsSeen: "account A cursor",
+    threadTotalsTimer: "totals-timer" as string | undefined,
+    voice: {
+      leave: async () => {
+        throw new Error("fixture teardown failure");
+      },
+    },
+  });
+  const timers: unknown[] = [];
+  const stop = method("stop", {
+    clearInterval: () => {},
+    clearTimeout: (timer: unknown) => timers.push(timer),
+  });
+  await assert.rejects(stop.call(target), /fixture teardown failure/);
+  assert.equal(target.threadTotals, undefined);
+  assert.equal(target.threadTotalsSeen, "");
+  assert.equal(target.threadTotalsTimer, undefined);
+  assert.ok(timers.includes("totals-timer"));
 });
 
 test("scheduled lists reject older reads and a replacement session of the same account", async () => {

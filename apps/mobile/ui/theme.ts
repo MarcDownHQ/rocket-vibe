@@ -83,6 +83,8 @@ export interface Colors {
 
   /** Destructive action (delete). */
   danger: string;
+  /** A dot that calls for me: a mention or a direct message. */
+  alert: string;
 
   /**
    * Background of a full-screen media (viewer, video). A photo is viewed on
@@ -145,6 +147,7 @@ export const darkColors: Colors = {
   offline: '#5A5573',
 
   danger: '#FF7A8A',
+  alert: '#FF3B4E',
 
   fullScreenBackground: 'rgba(4,3,10,0.94)',
   mediaScrim: 'rgba(12,11,22,0.80)',
@@ -203,6 +206,7 @@ export const lightColors: Colors = {
   offline: '#C4B7DA',
 
   danger: '#D6335A',
+  alert: '#D92D3F',
 
   // Placed on a media (not on the theme background): same values as in dark.
   fullScreenBackground: 'rgba(4,3,10,0.94)',

@@ -35,3 +35,6 @@ export type Session = {
 
 /** Where a provider reports that the server refused the session's token. */
 export type TokenRejection = { onTokenRejected: ((token: string) => void) | null };
+
+/** An account's state on the server rail: `attention` for a mention or a direct message. */
+export type AccountUnread = 'none' | 'unread' | 'attention';
