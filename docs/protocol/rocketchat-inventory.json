@@ -734,10 +734,12 @@
     "crates/rv-slack/src/service.rs",
     "crates/rv-slack/src/translate.rs",
     "crates/rv-teams/examples/teams-authz.rs",
+    "crates/rv-teams/examples/teams-echo.rs",
     "crates/rv-teams/examples/teams-foci.rs",
     "crates/rv-teams/examples/teams-ic3.rs",
     "crates/rv-teams/examples/teams-shapes.rs",
     "crates/rv-teams/src/auth.rs",
+    "crates/rv-teams/src/calling.rs",
     "crates/rv-teams/src/client.rs",
     "crates/rv-teams/src/frames.rs",
     "crates/rv-teams/src/lib.rs",
@@ -3851,37 +3853,37 @@
     },
     {
       "file": "apps/mobile/lib/call.ts",
-      "line": 167,
+      "line": 175,
       "kind": "call:GET",
       "surface": "'video-conference.capabilities'"
     },
     {
       "file": "apps/mobile/lib/call.ts",
-      "line": 167,
+      "line": 175,
       "kind": "endpoint",
       "surface": "video-conference.capabilities"
     },
     {
       "file": "apps/mobile/lib/call.ts",
-      "line": 216,
+      "line": 224,
       "kind": "call:GET",
       "surface": "'video-conference.info'"
     },
     {
       "file": "apps/mobile/lib/call.ts",
-      "line": 216,
+      "line": 224,
       "kind": "endpoint",
       "surface": "video-conference.info"
     },
     {
       "file": "apps/mobile/lib/call.ts",
-      "line": 240,
+      "line": 248,
       "kind": "call:POST",
       "surface": "'video-conference.cancel'"
     },
     {
       "file": "apps/mobile/lib/call.ts",
-      "line": 240,
+      "line": 248,
       "kind": "endpoint",
       "surface": "video-conference.cancel"
     },
@@ -5003,37 +5005,37 @@
     },
     {
       "file": "apps/mobile/ui/messages.ts",
-      "line": 3038,
+      "line": 3042,
       "kind": "endpoint",
       "surface": "e2e.title"
     },
     {
       "file": "apps/mobile/ui/messages.ts",
-      "line": 3039,
+      "line": 3043,
       "kind": "endpoint",
       "surface": "e2e.explanation"
     },
     {
       "file": "apps/mobile/ui/messages.ts",
-      "line": 3041,
+      "line": 3045,
       "kind": "endpoint",
       "surface": "e2e.field"
     },
     {
       "file": "apps/mobile/ui/messages.ts",
-      "line": 3042,
+      "line": 3046,
       "kind": "endpoint",
       "surface": "e2e.unlock"
     },
     {
       "file": "apps/mobile/ui/messages.ts",
-      "line": 3043,
+      "line": 3047,
       "kind": "endpoint",
       "surface": "e2e.wrongPassword"
     },
     {
       "file": "apps/mobile/ui/messages.ts",
-      "line": 3044,
+      "line": 3048,
       "kind": "endpoint",
       "surface": "e2e.genericError"
     },
@@ -5243,27 +5245,33 @@
     },
     {
       "file": "crates/rv-teams/src/auth.rs",
-      "line": 1202,
+      "line": 1207,
       "kind": "url",
       "surface": "/api/v2/query"
     },
     {
       "file": "crates/rv-teams/src/auth.rs",
-      "line": 2319,
+      "line": 2324,
       "kind": "url",
       "surface": "/api/v1/suggestions"
     },
     {
       "file": "crates/rv-teams/src/auth.rs",
-      "line": 2327,
+      "line": 2332,
       "kind": "url",
       "surface": "/api/v1/suggestions"
     },
     {
       "file": "crates/rv-teams/src/auth.rs",
-      "line": 2485,
+      "line": 2490,
       "kind": "url",
       "surface": "/api/csa"
+    },
+    {
+      "file": "crates/rv-teams/src/calling.rs",
+      "line": 13,
+      "kind": "url",
+      "surface": "/api/v2/epconv"
     },
     {
       "file": "crates/rv-teams/src/service.rs",

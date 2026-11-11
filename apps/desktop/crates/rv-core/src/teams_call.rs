@@ -17,6 +17,8 @@ use rv_provider::rest::RestError;
 
 /// How long a placed call rings before this side gives up, should Teams never say.
 const RINGING: Duration = Duration::from_secs(90);
+/// How long after the answer a conversation's end push is believed.
+const SETTLED: Duration = Duration::from_secs(5);
 
 /// Who a call goes to.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -229,6 +231,7 @@ async fn drive(
     let mut changes = voice.changes();
     let mut roster: BTreeMap<String, String> = BTreeMap::new();
     let mut answered = false;
+    let mut answered_at: Option<tokio::time::Instant> = None;
     let mut session_mid: Option<String> = None;
     // Teams' conversation holds this client through this long poll's 30 s lease.
     let broker = links.get("subscribe").and_then(Value::as_str).map(|first| {
@@ -260,8 +263,10 @@ async fn drive(
                     Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
                     Err(tokio::sync::broadcast::error::RecvError::Closed) => break true,
                 };
-                if crate::teams::frames::conversation_over(&envelope)
-                    .is_some_and(|over| calling::same_conversation(&over, conversation))
+                // The push that follows an answer is not yet known to be 115 rather than 116.
+                if answered_at.is_some_and(|at| at.elapsed() > SETTLED)
+                    && crate::teams::frames::conversation_over(&envelope)
+                        .is_some_and(|over| calling::same_conversation(&over, conversation))
                 {
                     voice.remote_ended("remote_ended").await;
                     break false;
@@ -299,6 +304,7 @@ async fn drive(
                             break true;
                         };
                         answered = true;
+                        answered_at = Some(tokio::time::Instant::now());
                         session_mid = calling::audio_mid(&answer).map(str::to_owned);
                         voice.remote_answer(&answer).await;
                         if let Some(link) = acknowledge {
