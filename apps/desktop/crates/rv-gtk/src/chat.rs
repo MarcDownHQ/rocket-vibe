@@ -3860,6 +3860,9 @@ impl ChatPage {
     }
 
     pub(crate) fn open_call(self: &Rc<Self>, url: &str, room: &str) {
+        if url.starts_with(rv_core::mattermost::translate::PLUGIN_CALL) {
+            return self.open_plugin_call(url, room);
+        }
         if let Some(session) = self.session().filter(|s| s.info.teams.is_some()) {
             // Starting a call in a chat runs natively; joining one keeps Teams' page.
             let room_id = self.current_rid().filter(|rid| {
@@ -3952,6 +3955,49 @@ impl ChatPage {
             if let Some(this) = weak.upgrade() {
                 this.toast(text);
             }
+        });
+    }
+
+    /// A Mattermost Calls plugin call, carried natively; it has no page of its own
+    /// to fall back to, so a failure is told.
+    fn open_plugin_call(self: &Rc<Self>, call_id: &str, room: &str) {
+        let Some(session) = self.session() else { return };
+        if !rv_core::voice::available() {
+            return self.toast(t("call.failed").to_owned());
+        }
+        let (weak, call_id, room) = (Rc::downgrade(self), call_id.to_owned(), room.to_owned());
+        glib::spawn_future_local(async move {
+            let (target, joining) = (call_id.clone(), session.clone());
+            let call = on_tokio(async move { joining.join_mattermost_call(&target).await }).await;
+            let Some(this) = weak.upgrade() else { return };
+            let call = match call {
+                Ok(call) => call,
+                Err(e) => {
+                    eprintln!("Mattermost call not joined ({})", e.message);
+                    return this.toast(t("call.failed").to_owned());
+                }
+            };
+            let (lookup, fetch, asked) = (session.clone(), session.clone(), call_id.clone());
+            let names = crate::native_call::Names::new(
+                move |id| lookup.plugin_call_person_name(id),
+                move |_| {
+                    let (fetch, asked) = (fetch.clone(), asked.clone());
+                    glib::spawn_future_local(async move {
+                        on_tokio(async move { fetch.ensure_plugin_call_people(&asked).await }).await
+                    });
+                },
+            );
+            let back = Rc::downgrade(&this);
+            crate::native_call::open(
+                crate::native_call::Call::Sidecar(rv_core::voice::NativeCall::Mattermost(call)),
+                &room,
+                names,
+                move || {
+                    if let Some(this) = back.upgrade() {
+                        this.toast(t("call.failed").to_owned());
+                    }
+                },
+            );
         });
     }
 
