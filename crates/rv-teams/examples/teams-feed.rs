@@ -64,7 +64,11 @@ async fn main() {
         let query = back.split_once('?').map(|(_, q)| q.to_owned()).unwrap_or_default();
         let query_keys: Vec<&str> = query.split('&').filter_map(|p| p.split('=').next()).collect();
         println!("  backwardLink query keys {query_keys:?}");
-        url = url::Url::parse(back).expect("backwardLink");
+        let Some(next) = service.trusted(back).await else {
+            println!("  backwardLink off the chat service, not followed");
+            break;
+        };
+        url = next;
     }
 
     println!("total {}", all.len());
