@@ -10,7 +10,7 @@ import type { ThreadInboxEntry, ThreadInboxFilter, ThreadInboxPage, ThreadPartic
 import { compareTimestamp, isTimestamp, timestampMs, type SlackClient } from './client.ts';
 import type { SlackDirectory } from './directory.ts';
 import type { SlackLive } from './live.ts';
-import { parseMessageId, roomType, type SlackTranslator } from './translator.ts';
+import { messageId, parseMessageId, roomType, type SlackTranslator } from './translator.ts';
 
 const PAGE = 50;
 /** Followed pages one unread page may read when nothing on them is unread. */
@@ -49,6 +49,8 @@ export class SlackThreads {
   private readonly translator: SlackTranslator;
   private readonly myId: string;
   private readonly roomNames: ReadonlyMap<string, string>;
+  private readonly latest = new Map<string, string>();
+  private readonly marked = new Map<string, string>();
 
   constructor(options: { client: SlackClient; directory: SlackDirectory; live: SlackLive; translator: SlackTranslator; myId: string; roomNames?: ReadonlyMap<string, string> }) {
     this.client = options.client;
@@ -67,6 +69,10 @@ export class SlackThreads {
       ...(cursor === null ? {} : { current_ts: cursor }),
     });
     const threads = docs(answer.threads);
+    for (const root of threads.map(rootOf)) {
+      const ts = root?.thread_ts ?? root?.ts;
+      if (root && typeof root.channel === 'string' && isTimestamp(ts) && isTimestamp(root.latest_reply)) this.latest.set(messageId(root.channel, ts), root.latest_reply);
+    }
     const last = threads[threads.length - 1];
     const reached = last === undefined ? null : rootOf(last)?.latest_reply;
     const next = answer.has_more === true && isTimestamp(reached) && reached !== cursor ? reached : null;
@@ -154,21 +160,29 @@ export class SlackThreads {
     };
   }
 
-  /** The exact `latest_reply`: the screen's `lastReply` is in ms, too coarse for a Slack timestamp. */
-  async markRead(rid: string, root: string): Promise<void> {
+  /**
+   * The exact `latest_reply`: the screen's `lastReply` is in ms, too coarse for a Slack timestamp.
+   * Only a followed thread, and once per reply. Whether a mark was sent.
+   */
+  async markRead(rid: string, root: string): Promise<boolean> {
     const threadTs = this.threadTs(root);
+    if (!this.latest.has(root) && !(await this.following(rid, root))) return false;
     const answer = await this.client.call('conversations.replies', { channel: rid, ts: threadTs, limit: 1 });
     const latest = docs(answer.messages).find((message) => message.ts === threadTs)?.latest_reply;
-    if (!isTimestamp(latest)) return;
+    if (!isTimestamp(latest) || !newer(latest, this.marked.get(root))) return false;
     await this.client.call('subscriptions.thread.mark', { channel: rid, thread_ts: threadTs, ts: latest });
+    this.marked.set(root, latest);
+    return true;
   }
 
   async markAllRead(): Promise<void> {
     await this.client.call('subscriptions.thread.clearAll');
+    for (const [root, ts] of this.latest) if (newer(ts, this.marked.get(root))) this.marked.set(root, ts);
   }
 
   async follow(rid: string, root: string, put: boolean): Promise<void> {
     await this.client.call(put ? 'subscriptions.thread.add' : 'subscriptions.thread.remove', { channel: rid, thread_ts: this.threadTs(root) });
+    if (!put) this.latest.delete(root);
   }
 
   async following(rid: string, root: string): Promise<boolean> {

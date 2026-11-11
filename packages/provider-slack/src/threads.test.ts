@@ -192,6 +192,7 @@ test('totals: unread threads from the view, mentions from client.counts', async 
 test('reading a thread marks its exact latest reply and never the room', async () => {
   const changed: number[] = [];
   const { actions, calls } = account((call) => {
+    if (call.method === 'subscriptions.thread.get') return { body: { ok: true, subscriptions: ['10.000100'] } };
     if (call.method === 'conversations.replies') return { body: { ok: true, messages: [root('10.000100', { latest_reply: '20.000345' })], has_more: true } };
     if (call.method === 'subscriptions.thread.mark') return { body: { ok: true } };
     return undefined;
@@ -204,11 +205,43 @@ test('reading a thread marks its exact latest reply and never the room', async (
 });
 
 test('a root without replies has nothing to mark', async () => {
-  const { actions, calls } = account((call) =>
-    call.method === 'conversations.replies' ? { body: { ok: true, messages: [{ ts: '10.000100', channel: 'C1' }] } } : undefined,
-  );
+  const { actions, calls } = account((call) => {
+    if (call.method === 'subscriptions.thread.get') return { body: { ok: true, subscriptions: ['10.000100'] } };
+    return call.method === 'conversations.replies' ? { body: { ok: true, messages: [{ ts: '10.000100', channel: 'C1' }] } } : undefined;
+  });
   await actions.markThreadRead!('C1', 'C1:10.000100');
   assert.equal(calls.some((call) => call.method === 'subscriptions.thread.mark'), false);
+});
+
+test('a thread I do not follow is never marked', async () => {
+  const { actions, calls } = account((call) => {
+    if (call.method === 'subscriptions.thread.get') return { body: { ok: true, subscriptions: [] } };
+    if (call.method === 'conversations.replies') return { body: { ok: true, messages: [root('10.000100', { latest_reply: '20.000345' })] } };
+    return undefined;
+  });
+  let changed = 0;
+  actions.onThreadsChanged!(() => changed++);
+  await actions.markThreadRead!('C1', 'C1:10.000100');
+  assert.equal(calls.some((call) => call.method === 'subscriptions.thread.mark'), false);
+  assert.equal(changed, 0);
+});
+
+test('a followed thread is marked once per latest reply', async () => {
+  let latest = '20.000345';
+  const { actions, calls } = account((call) => {
+    if (call.method === 'subscriptions.thread.getView') return view([{ root_msg: root('10.000100', { latest_reply: latest }), latest_replies: [] }]);
+    if (call.method === 'client.counts') return { body: { ok: true, threads: { mention_count: 0 } } };
+    if (call.method === 'conversations.replies') return { body: { ok: true, messages: [root('10.000100', { latest_reply: latest })] } };
+    if (call.method === 'subscriptions.thread.mark') return { body: { ok: true } };
+    return undefined;
+  });
+  await actions.threadInbox!('followed', null);
+  await actions.markThreadRead!('C1', 'C1:10.000100');
+  await actions.markThreadRead!('C1', 'C1:10.000100');
+  latest = '21.000100';
+  await actions.markThreadRead!('C1', 'C1:10.000100');
+  assert.deepEqual(calls.filter((call) => call.method === 'subscriptions.thread.mark').map((call) => call.args.ts), ['20.000345', '21.000100']);
+  assert.equal(calls.some((call) => call.method === 'subscriptions.thread.get'), false);
 });
 
 test('mark all clears the account', async () => {

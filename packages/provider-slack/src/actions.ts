@@ -57,8 +57,7 @@ export class SlackActions implements ProviderActions {
   }
 
   async markThreadRead(rid: string, root: string): Promise<void> {
-    await this.threads.markRead(rid, root);
-    this.live.threadsChanged();
+    if (await this.threads.markRead(rid, root)) this.live.threadsChanged();
   }
 
   async markAllThreadsRead(): Promise<void> {
