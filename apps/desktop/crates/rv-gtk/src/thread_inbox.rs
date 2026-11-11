@@ -40,7 +40,7 @@ pub struct ThreadInbox {
     next: RefCell<Option<String>>,
     selected: RefCell<Option<String>>,
     sync_cursor: RefCell<Option<String>>,
-    pages: Cell<u32>,
+    read_further: Cell<bool>,
     extra_pages: Cell<u32>,
     account: Cell<u64>,
     polling: Cell<u64>,
@@ -193,7 +193,7 @@ impl ThreadInbox {
             next: RefCell::default(),
             selected: RefCell::default(),
             sync_cursor: RefCell::default(),
-            pages: Cell::new(0),
+            read_further: Cell::new(false),
             extra_pages: Cell::new(0),
             account: Cell::new(0),
             polling: Cell::new(0),
@@ -284,7 +284,7 @@ impl ThreadInbox {
         self.entries.borrow_mut().clear();
         self.next.replace(None);
         self.selected.replace(None);
-        self.pages.set(0);
+        self.read_further.set(false);
         self.chips[0].0.set_active(true);
         self.entry_badge.set_visible(false);
         self.toggle(false);
@@ -354,7 +354,7 @@ impl ThreadInbox {
         if self.reads_on(shown) {
             self.extra_pages.set(self.extra_pages.get() + 1);
             self.more.set_sensitive(false);
-            self.load(self.next.borrow().clone());
+            self.load(self.next.borrow().clone(), false);
         }
     }
 
@@ -384,16 +384,10 @@ impl ThreadInbox {
                 return;
             }
             this.refresh_totals();
-            if this.shown.get() && this.fits_one_page() {
+            if this.shown.get() && !this.read_further.get() {
                 this.reload_quietly();
             }
         });
-    }
-
-    /// A list read further than its first page stays as it is: reading it
-    /// again would throw the reader back to the top.
-    fn fits_one_page(&self) -> bool {
-        self.pages.get() <= 1
     }
 
     fn refresh_totals(self: &Rc<Self>) {
@@ -428,7 +422,7 @@ impl ThreadInbox {
 
     fn reload_quietly(self: &Rc<Self>) {
         self.extra_pages.set(0);
-        self.load(None);
+        self.load(None, false);
     }
 
     fn load_more(self: &Rc<Self>) {
@@ -436,11 +430,14 @@ impl ThreadInbox {
         if next.is_some() {
             self.extra_pages.set(0);
             self.more.set_sensitive(false);
-            self.load(next);
+            self.load(next, true);
         }
     }
 
-    fn load(self: &Rc<Self>, cursor: Option<String>) {
+    /// `asked`: the reader pressed load more. A list read further that way
+    /// stays as it is on a refresh: reading it again would throw the reader
+    /// back to the top.
+    fn load(self: &Rc<Self>, cursor: Option<String>, asked: bool) {
         let Some(source) = self.available_source() else { return };
         let generation = self.generation.get().wrapping_add(1);
         self.generation.set(generation);
@@ -470,9 +467,11 @@ impl ThreadInbox {
             };
             if !appending {
                 this.entries.borrow_mut().clear();
-                this.pages.set(0);
+                this.read_further.set(false);
             }
-            this.pages.set(this.pages.get() + 1);
+            if asked {
+                this.read_further.set(true);
+            }
             thread_inbox::append(&mut this.entries.borrow_mut(), page.entries);
             this.next.replace(page.next);
             this.show_page();
@@ -530,7 +529,10 @@ impl ThreadInbox {
             {
                 f(t("info.failed").to_owned());
             }
-            this.schedule_refresh();
+            this.refresh_totals();
+            if this.shown.get() {
+                this.reload_quietly();
+            }
         });
     }
 
