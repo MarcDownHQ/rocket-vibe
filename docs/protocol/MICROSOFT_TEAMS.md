@@ -227,6 +227,13 @@ Read only on a work tenant; no write was sent. Per conversation C(threadId):
 - Fields seen: `ch, chb, chbv, f, s, sl2, r, rl2, lu`. No participant, mention or unread field.
 - No cross-conversation list and no thread "mark all" found: a client would walk conversations. Unknown: the encodings of `f` and `ch`, the GET's wrapper, and its auth. A test tenant is needed before any write.
 
+### Activity feed (probed read-only 2026-11-11)
+
+- The feed is the conversation **`48:notifications`**: `GET {chat}/v1/users/ME/conversations/48%3Anotifications/messages?pageSize=&startTime=&view=msnp24Equivalent` with the ic3 bearer (`{chat}` = `regionGtms.chatServiceAfd` from `authsvc/v1.0/authz`) answers `{messages, tenantId, _metadata: {lastCompleteSegmentStartTime, lastCompleteSegmentEndTime, syncState}}`. The web client's Activity pane showed exactly the stream's items (one on the probed tenant) and its local cache (`Teams:activity-manager` IndexedDB, store `feed-items`) mirrored them, so no other feed source is involved.
+- Each item is a `Text` message whose `properties.activity` carries `activityType`, `activitySubtype`, `activityTimestamp`, `activityId`, `sourceThreadId`, `sourceMessageId`, `sourceMessageVersion`, `sourceUserId`, `targetUserId`, `messagePreview`, `sourceThreadTopic`, `sourceThreadType` (`space` for a team), `sourceThreadRosterNonBotMemberCount`, `sourceThreadIsPrivateChannel`, `activityContext`; `properties.isread` is a string. The cache adds `sourceReplyChainId`, the root of a channel reply.
+- The web client filters it with slices `all`, `activities-mentions`, `-mentions-channel`, `-mentions-chat`, `-mentions-tag`, each with `unreadOnly`.
+- Only `teamMembershipChange` / `addedToTeam` was seen: the reply, mention and reaction types, the presence of `sourceReplyChainId` on the wire, paging past one page, and marking an item read are **not probed**. Other `48:` streams: `48:saved`, `48:notes`, `48:calllogs`, `48:starred`, `48:drafts`, `48:reminders`.
+
 ## 6. Translation and local projection
 
 Write typed Teams DTOs with runtime validation, independent of Rocket.Chat normalize.ts and Graph DTOs. Bound nested JSON/HTML and tolerate unknown optional fields. Missing essential identity/type fields create diagnosed unsupported records, not fake ordinary messages.
