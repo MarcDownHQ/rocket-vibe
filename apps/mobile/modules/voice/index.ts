@@ -45,6 +45,8 @@ type Bridge={
    */
   connectExternal(callId:string,identity:string,title:string):Promise<boolean>;
   remoteAnswer(sdp:string):Promise<void>;
+  /** Answers an offer from the other side of such a call (a hold, a resume): the local answer, null when it cannot. */
+  remoteOffer(sdp:string):Promise<string|null>;
   remoteRoster(members:{id:string;name:string;muted:boolean}[]):Promise<void>;
   remoteEnded(reason:string):Promise<void>;
   /** A Slack canvas's `load-data` answer (base64) as JSON `{markdown, version, thread, document, title}`; null when unreadable. */

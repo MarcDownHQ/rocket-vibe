@@ -122,6 +122,29 @@ internal class JitsiSession(
     pc?.setRemoteDescription(Sdp(), SessionDescription(SessionDescription.Type.ANSWER, sdp))
   }
 
+  /** Answers an offer from the other side of an external call (a hold, a resume); null when it cannot. */
+  fun remoteOffer(sdp: String, done: (String?) -> Unit) {
+    val p = pc ?: return done(null)
+    val failed = object : Sdp() {
+      override fun onCreateFailure(error: String?) { super.onCreateFailure(error); main.post { done(null) } }
+      override fun onSetFailure(error: String?) { super.onSetFailure(error); main.post { done(null) } }
+    }
+    p.setRemoteDescription(object : Sdp() {
+      override fun onSetSuccess() {
+        p.createAnswer(object : Sdp() {
+          override fun onCreateSuccess(answer: SessionDescription) {
+            p.setLocalDescription(object : Sdp() {
+              override fun onSetSuccess() { main.post { done(p.localDescription?.description ?: answer.description) } }
+              override fun onSetFailure(error: String?) { failed.onSetFailure(error) }
+            }, answer)
+          }
+          override fun onCreateFailure(error: String?) { failed.onCreateFailure(error) }
+        }, MediaConstraints())
+      }
+      override fun onSetFailure(error: String?) { failed.onSetFailure(error) }
+    }, SessionDescription(SessionDescription.Type.OFFER, sdp))
+  }
+
   fun remoteRoster(members: List<Triple<String, String, Boolean>>) {
     roster.clear()
     members.forEach { (id, name, muted) -> roster[id] = name to muted }

@@ -517,6 +517,8 @@ object VoiceEngine {
 
   fun remoteAnswer(sdp: String) { jitsi?.remoteAnswer(sdp) }
 
+  fun remoteOffer(sdp: String, done: (String?) -> Unit) { jitsi?.remoteOffer(sdp, done) ?: done(null) }
+
   fun remoteRoster(members: List<Triple<String, String, Boolean>>) { jitsi?.remoteRoster(members) }
 
   /** The other side ended an external call. */

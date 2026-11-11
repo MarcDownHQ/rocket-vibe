@@ -208,6 +208,7 @@ function Call({
           },
           offer: () => offered,
           answer: (sdp) => voice.remoteAnswer(sdp),
+          answerOffer: (sdp) => voice.remoteOffer(sdp),
           roster: (members) => voice.remoteRoster(members),
           ended: (reason) => voice.remoteEnded(reason),
           left: () => new Promise((resolve) => {

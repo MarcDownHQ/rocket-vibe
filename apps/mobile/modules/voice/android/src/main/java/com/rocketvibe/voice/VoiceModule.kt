@@ -68,6 +68,7 @@ class VoiceModule : Module() {
       VoiceEngine.connectExternal(callId, identity, title)
     }.runOnQueue(Queues.MAIN)
     AsyncFunction("remoteAnswer") { sdp: String -> VoiceEngine.remoteAnswer(sdp) }.runOnQueue(Queues.MAIN)
+    AsyncFunction("remoteOffer") { sdp: String, promise: Promise -> VoiceEngine.remoteOffer(sdp) { answer -> promise.resolve(answer) } }.runOnQueue(Queues.MAIN)
     AsyncFunction("remoteRoster") { members: List<Map<String, Any?>> ->
       VoiceEngine.remoteRoster(members.map { m ->
         Triple(m["id"] as? String ?: "", m["name"] as? String ?: "", m["muted"] as? Boolean ?: false)
