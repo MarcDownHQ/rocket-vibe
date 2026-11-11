@@ -2452,6 +2452,7 @@ impl Session {
     /// and the same call answered elsewhere or over stops it.
     fn teams_call(self: &Arc<Self>, envelope: &Value) {
         use crate::teams::frames::CallPush;
+        crate::teams_call::debug_ring(envelope);
         match crate::teams::frames::call_push(envelope) {
             Some(CallPush::Ring(ring)) => {
                 let me = self.info.user_id.as_str();
@@ -2489,6 +2490,7 @@ impl Session {
                 tasks.push(expiry);
             }
             Some(CallPush::Moved { call_id }) => {
+                let _ = self.teams_call_pushes.send(envelope.clone());
                 let stopped =
                     self.rings.lock().unwrap().stop_if(|c| call_id.as_ref().is_none_or(|id| &c.message_id == id));
                 if stopped {
