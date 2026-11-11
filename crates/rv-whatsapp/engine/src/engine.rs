@@ -45,10 +45,17 @@ struct Saved {
     projection: Projection,
 }
 
-/// A call ringing here: how WhatsApp addressed it, to decline it.
+/// A call ringing here: how WhatsApp addressed it, to decline it, and its offer, to answer it.
 pub(crate) struct Ringing {
     pub from: Jid,
     pub creator: Jid,
+    pub incoming: whatsapp_rust::types::call::IncomingCall,
+}
+
+/// 32 random hex digits.
+pub(crate) fn random_token() -> String {
+    let bytes: [u8; 16] = rand::random();
+    bytes.iter().map(|b| format!("{b:02x}")).collect()
 }
 
 pub(crate) struct Engine {
@@ -68,6 +75,8 @@ pub(crate) struct Engine {
     outgoing: mpsc::Sender<Command>,
     events: mpsc::UnboundedSender<Arc<Event>>,
     pub(crate) calls: Mutex<HashMap<String, Ringing>>,
+    /// The call carried here, audio and all.
+    pub(crate) active: tokio::sync::Mutex<Option<crate::calls::Active>>,
     pub(crate) acks: Arc<Mutex<HashMap<String, oneshot::Sender<Option<i64>>>>>,
 }
 
@@ -135,6 +144,7 @@ impl Device {
             outgoing,
             events,
             calls: Mutex::new(HashMap::new()),
+            active: tokio::sync::Mutex::new(None),
             acks: Arc::new(Mutex::new(HashMap::new())),
         });
         let opened = Arc::clone(&engine);
@@ -466,6 +476,10 @@ impl Engine {
             "download" => self.detach(cmd, |e, c| async move { e.download(c).await }),
             "presence" => self.detach(cmd, |e, c| async move { e.presence(c).await }),
             "reject_call" => self.detach(cmd, |e, c| async move { e.reject_call(c).await }),
+            "accept_call" => self.detach(cmd, |e, c| async move { e.accept_call(c).await }),
+            "place_call" => self.detach(cmd, |e, c| async move { e.place_call(c).await }),
+            "hangup_call" => self.detach(cmd, |e, c| async move { e.hangup_call(c).await }),
+            "mute_call" => self.detach(cmd, |e, c| async move { e.mute_call(c).await }),
             "pair_phone" => self.detach(cmd, |e, c| async move { e.pair_phone(c).await }),
             "typing" => self.detach(cmd, |e, c| async move { e.typing(c).await }),
             "replay" => {

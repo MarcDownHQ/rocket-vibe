@@ -3,6 +3,7 @@
 
 mod actions;
 mod avatars;
+mod calls;
 pub mod content;
 pub mod diagnostics;
 mod engine;

@@ -440,6 +440,7 @@ impl Engine {
             let ringing = Ringing {
                 from: call.from.clone(),
                 creator: creator.clone(),
+                incoming: call.clone(),
             };
             self.calls
                 .lock()
@@ -448,6 +449,7 @@ impl Engine {
         } else {
             // Answered on another of my devices, declined or over: no longer ringing here.
             self.calls.lock().expect("calls").remove(id);
+            self.remote_ended(id).await;
         }
         let caller = if creator.user.is_empty() {
             &call.from
@@ -460,6 +462,8 @@ impl Engine {
             group: group.map(|g| g.to_string()).unwrap_or_default(),
             video,
             state: state.to_owned(),
+            audio: String::new(),
+            reason: String::new(),
         };
         self.emit(Frame::Call { call });
     }
