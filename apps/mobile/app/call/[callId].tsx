@@ -14,8 +14,8 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { WebView } from 'react-native-webview';
 
 import { callAllowed as teamsCallAllowed } from '@rocket-vibe/provider-teams/translate';
-import type { ExternalCallEngine } from '@rocket-vibe/provider-api/calls';
-import { answerNative, answerableNative, callContext, callPersonName, joinConference, nativeChime, nativeJitsi, nativeMattermost, placeNative } from '../../lib/call.ts';
+import type { ExternalCallEngine, PcmCallEngine } from '@rocket-vibe/provider-api/calls';
+import { answerNative, answerableNative, callContext, callPersonName, carriesPcm, carryNative, joinConference, nativeChime, nativeJitsi, nativeMattermost, placeNative } from '../../lib/call.ts';
 import { sameOrigin, originOf } from '../../lib/origin.ts';
 import { VoiceNative, type VoiceSnapshot } from '../../modules/voice/index.ts';
 import type { RestClient } from '../../lib/rest.ts';
@@ -165,6 +165,12 @@ function Call({
       try {
         // A Slack huddle runs natively, else in Slack's app or the browser;
         // Teams' calls stay here, on Teams' web app.
+        if (carriesPcm(client)) {
+          if (await carriedNatively()) {
+            if (alive) setNative(true);
+          } else if (alive) setError(t('call.joinFailed'));
+          return;
+        }
         if (callId.startsWith('mmcalls:')) {
           if (await joinedPlugin()) {
             if (alive) setNative(true);
@@ -229,6 +235,38 @@ function Call({
           }),
         };
         return await placeNative(client, rid, engine);
+      } catch {
+        await voice.disconnect().catch(() => {});
+        return false;
+      }
+    }
+    // A WhatsApp call: the account's engine carries it, the voice engine its audio; no page.
+    async function carriedNatively(): Promise<boolean> {
+      const voice = VoiceNative;
+      if (voice === null) return false;
+      try {
+        await requestMicrophone();
+        const engine: PcmCallEngine = {
+          connect: async (address) => {
+            if (!await voice.connectPcm(callId, address, title)) throw new Error('voice_unavailable');
+          },
+          roster: (members) => voice.remoteRoster(members),
+          ended: (reason) => voice.remoteEnded(reason),
+          left: () => new Promise((resolve) => {
+            const sub = voice.addListener('change', (next) => {
+              if (next.state === 'disconnected') { sub.remove(); resolve(); }
+            });
+          }),
+          microphone: (listener) => {
+            let last: boolean | null = null;
+            const sub = voice.addListener('change', (next) => {
+              const on = next.microphone !== false;
+              if (on !== last) { last = on; listener(on); }
+            });
+            return () => sub.remove();
+          },
+        };
+        return await carryNative(client, callId, engine);
       } catch {
         await voice.disconnect().catch(() => {});
         return false;

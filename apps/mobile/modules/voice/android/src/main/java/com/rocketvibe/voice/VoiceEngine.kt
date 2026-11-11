@@ -528,6 +528,10 @@ object VoiceEngine {
 
   var onLocalOffer: ((String) -> Unit)? = null
 
+  /** A call whose audio the app's WhatsApp engine carries (its socket at `address`), audio only. */
+  fun connectPcm(callId: String, address: String, title: String): Boolean =
+    connectNative(callId, title) { it.startPcm(address) }
+
   fun remoteAnswer(sdp: String) { jitsi?.remoteAnswer(sdp) }
 
   fun remoteOffer(sdp: String, done: (String?) -> Unit) { jitsi?.remoteOffer(sdp, done) ?: done(null) }

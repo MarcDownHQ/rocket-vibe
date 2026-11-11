@@ -109,6 +109,111 @@ internal class JitsiSession(
   var onLocalOffer: ((String) -> Unit)? = null
   private var relayOnly = false
 
+  /** A call carried as raw PCM by the app's WhatsApp engine: its socket, while it runs. */
+  @Volatile private var pcm: java.net.Socket? = null
+
+  /**
+   * A call whose audio another part of the app carries (a WhatsApp call, the
+   * engine's socket at `address`, `host:port#token`): 16 kHz mono in 60 ms
+   * frames of 960 little-endian samples both ways, recorded and played here
+   * with the phone's echo canceller. Who is in it comes with [remoteRoster];
+   * the socket closing ends it.
+   */
+  fun startPcm(address: String): Boolean {
+    val hostPort = address.substringBefore('#')
+    val token = address.substringAfter('#', "")
+    val host = hostPort.substringBeforeLast(':')
+    val port = hostPort.substringAfterLast(':').toIntOrNull() ?: return false
+    external = true
+    localId = "me"
+    Thread({ runPcm(host, port, token) }, "pcm-call").start()
+    return true
+  }
+
+  @android.annotation.SuppressLint("MissingPermission")
+  private fun runPcm(host: String, port: Int, token: String) {
+    val rate = 16_000
+    val samples = 960
+    val socket = runCatching {
+      java.net.Socket().apply { tcpNoDelay = true; connect(java.net.InetSocketAddress(host, port), 5_000) }
+    }.getOrNull() ?: return main.post { if (!closed) onEnd("connect_failed") }.let {}
+    pcm = socket
+    val output = socket.getOutputStream()
+    val input = java.io.DataInputStream(socket.getInputStream())
+    runCatching { output.write("$token\n".toByteArray()); output.flush() }
+    val inBuffer = maxOf(android.media.AudioRecord.getMinBufferSize(rate, android.media.AudioFormat.CHANNEL_IN_MONO, android.media.AudioFormat.ENCODING_PCM_16BIT), samples * 2 * 2)
+    val record = runCatching {
+      android.media.AudioRecord(android.media.MediaRecorder.AudioSource.VOICE_COMMUNICATION, rate,
+        android.media.AudioFormat.CHANNEL_IN_MONO, android.media.AudioFormat.ENCODING_PCM_16BIT, inBuffer)
+    }.getOrNull()
+    if (record == null || record.state != android.media.AudioRecord.STATE_INITIALIZED) {
+      runCatching { socket.close() }
+      return main.post { if (!closed) onEnd("connect_failed") }.let {}
+    }
+    val echo = if (android.media.audiofx.AcousticEchoCanceler.isAvailable()) android.media.audiofx.AcousticEchoCanceler.create(record.audioSessionId) else null
+    echo?.enabled = true
+    val noise = if (android.media.audiofx.NoiseSuppressor.isAvailable()) android.media.audiofx.NoiseSuppressor.create(record.audioSessionId) else null
+    noise?.enabled = true
+    val player = android.media.AudioTrack.Builder()
+      .setAudioAttributes(android.media.AudioAttributes.Builder()
+        .setUsage(android.media.AudioAttributes.USAGE_VOICE_COMMUNICATION)
+        .setContentType(android.media.AudioAttributes.CONTENT_TYPE_SPEECH).build())
+      .setAudioFormat(android.media.AudioFormat.Builder().setSampleRate(rate)
+        .setEncoding(android.media.AudioFormat.ENCODING_PCM_16BIT)
+        .setChannelMask(android.media.AudioFormat.CHANNEL_OUT_MONO).build())
+      .setBufferSizeInBytes(samples * 2 * 4)
+      .setTransferMode(android.media.AudioTrack.MODE_STREAM)
+      .build()
+    record.startRecording()
+    player.play()
+    main.post { if (!closed) { connected = true; everConnected = true; onChange() } }
+    val sender = Thread({
+      val frame = ShortArray(samples)
+      val bytes = ByteArray(samples * 2)
+      while (!closed) {
+        var read = 0
+        while (read < samples && !closed) {
+          val n = record.read(frame, read, samples - read)
+          if (n <= 0) break
+          read += n
+        }
+        if (read < samples) break
+        val silent = !VoiceEngine.microphone || VoiceEngine.deafened
+        var peak = 0
+        for (i in 0 until samples) {
+          val s = if (silent) 0 else frame[i].toInt()
+          if (kotlin.math.abs(s) > peak) peak = kotlin.math.abs(s)
+          bytes[2 * i] = (s and 0xff).toByte(); bytes[2 * i + 1] = ((s shr 8) and 0xff).toByte()
+        }
+        levels[localId] = peak / 32_768.0
+        if (runCatching { output.write(bytes) }.isFailure) break
+      }
+    }, "pcm-call-out")
+    sender.start()
+    val bytes = ByteArray(samples * 2)
+    val frame = ShortArray(samples)
+    while (!closed && runCatching { input.readFully(bytes) }.isSuccess) {
+      var peak = 0
+      for (i in 0 until samples) {
+        val s = ((bytes[2 * i + 1].toInt() shl 8) or (bytes[2 * i].toInt() and 0xff)).toShort()
+        frame[i] = if (deafened) 0 else s
+        if (kotlin.math.abs(s.toInt()) > peak) peak = kotlin.math.abs(s.toInt())
+      }
+      val level = peak / 32_768.0
+      roster.keys.firstOrNull()?.let { peer ->
+        levels[peer] = level
+        if (level > SPEAKING) heard[peer] = SystemClock.elapsedRealtime()
+      }
+      player.write(frame, 0, samples)
+    }
+    runCatching { socket.close() }
+    sender.join(1_000)
+    record.stop(); record.release(); echo?.release(); noise?.release()
+    player.stop(); player.release()
+    pcm = null
+    main.post { if (!closed) onEnd("remote_ended") }
+  }
+
   /** Joins on a thread of its own; false at once when the library is missing. */
   fun start(meeting: String, displayName: String, token: String?): Boolean {
     if (!JitsiCall.available) return false
@@ -439,6 +544,7 @@ internal class JitsiSession(
   fun close() {
     if (closed) return
     closed = true
+    runCatching { pcm?.close() }
     dropMedia()
   }
 
