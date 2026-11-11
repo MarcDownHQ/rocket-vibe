@@ -19,6 +19,7 @@ const PAGE = 50;
 const ROOT_BATCH = 6;
 const SEEN_STREAM = 'teams-thread-seen/';
 const KINDS = new Set(['reply', 'replyToReply', 'mention', 'reaction']);
+const FEED_FOR = 10_000;
 
 export type FeedKind = 'reply' | 'replyToReply' | 'mention' | 'reaction';
 
@@ -190,15 +191,18 @@ export class TeamsThreadInbox {
   private readonly marks: TeamsThreadMarks;
   private readonly roots = new Map<string, LocalMessage>();
   private readonly listeners = new Set<() => void>();
+  private readonly clock: () => number;
   private known = new Map<string, number>();
+  private feed: { at: number; pages: Promise<Doc[]> } | null = null;
 
-  constructor(options: { source: TeamsThreadSource; rooms: TeamsRooms; threads: TeamsThreads; directory: TeamsDirectory; me: string; marks: TeamsThreadMarks }) {
+  constructor(options: { source: TeamsThreadSource; rooms: TeamsRooms; threads: TeamsThreads; directory: TeamsDirectory; me: string; marks: TeamsThreadMarks; clock?: () => number }) {
     this.source = options.source;
     this.rooms = options.rooms;
     this.threads = options.threads;
     this.directory = options.directory;
     this.me = options.me;
     this.marks = options.marks;
+    this.clock = options.clock ?? Date.now;
   }
 
   onChanged(listener: () => void): () => void {
@@ -210,8 +214,18 @@ export class TeamsThreadInbox {
     for (const listener of [...this.listeners]) listener();
   }
 
+  private pages(): Promise<Doc[]> {
+    const now = this.clock();
+    if (this.feed && now - this.feed.at < FEED_FOR) return this.feed.pages;
+    const pages = this.source.feed();
+    const held = { at: now, pages };
+    this.feed = held;
+    pages.catch(() => { if (this.feed === held) this.feed = null; });
+    return pages;
+  }
+
   private async judged(): Promise<Judged[]> {
-    const groups = groupThreads((await this.source.feed()).flatMap((page) => feedItems(page)));
+    const groups = groupThreads((await this.pages()).flatMap((page) => feedItems(page)));
     this.known = new Map(groups.map((group) => [group.rootId, group.lastReply]));
     return Promise.all(groups.map(async (group) => ({ group, state: threadState(group, await this.marks.read(group.rid, group.root)) })));
   }

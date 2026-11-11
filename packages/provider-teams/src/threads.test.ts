@@ -115,7 +115,7 @@ function memoryStore(): Store & { cursors: Map<string, number> } {
   } as unknown as Store & { cursors: Map<string, number> };
 }
 
-function inbox(source: Partial<TeamsThreadSource> = {}, store: Store | null = memoryStore()) {
+function inbox(source: Partial<TeamsThreadSource> = {}, store: Store | null = memoryStore(), clock: () => number = () => 0) {
   const rooms = new TeamsRooms();
   rooms.entries.set(CHANNEL, { entry: { id: CHANNEL, displayName: 'General' }, team: { id: 'team', name: 'Design' } });
   const fetched: string[] = [];
@@ -135,6 +135,7 @@ function inbox(source: Partial<TeamsThreadSource> = {}, store: Store | null = me
     directory: new TeamsDirectory(),
     me: ME,
     marks: new TeamsThreadMarks(() => store),
+    clock,
   });
   return { value, fetched };
 }
@@ -180,13 +181,15 @@ test('reading a thread marks it here only, and the unread tab and totals follow'
 
 test('mark all reads every listed thread, a later reply unreads it again', async () => {
   let feed: Doc[] = [FEED];
-  const { value } = inbox({ feed: async () => feed });
+  let now = 0;
+  const { value } = inbox({ feed: async () => feed }, memoryStore(), () => now);
   await value.markAllRead();
   assert.deepEqual(await value.totals(), { unreadThreads: 0, unreadMentions: 0 });
   feed = [{ messages: [item({
     activityType: 'mention', activitySubtype: 'person', activityTimestamp: '2026-11-07T09:00:00.000Z', sourceThreadId: OTHER,
     sourceReplyChainId: '2000', sourceMessageId: '2200', sourceUserId: ADA,
   }), ...FEED.messages] }];
+  now += 10_000;
   assert.deepEqual(await value.totals(), { unreadThreads: 1, unreadMentions: 1 });
 });
 
@@ -228,3 +231,24 @@ test('only a mention of me as a person counts', () => {
   assert.deepEqual(threadState(group!, null), { unread: true, replies: 1, mentions: 1 });
 });
 
+test('the feed is read once for calls within ten seconds, and shared while in flight', async () => {
+  let reads = 0;
+  let now = 0;
+  const { value } = inbox({ feed: async () => { reads += 1; return [FEED]; } }, memoryStore(), () => now);
+  await Promise.all([value.totals(), value.page('followed', null)]);
+  assert.equal(reads, 1);
+  now += 9_999;
+  await value.totals();
+  assert.equal(reads, 1);
+  now += 1;
+  await value.totals();
+  assert.equal(reads, 2);
+});
+
+test('a failed feed read is not kept', async () => {
+  let reads = 0;
+  const { value } = inbox({ feed: async () => { reads += 1; if (reads === 1) throw new Error('offline'); return [FEED]; } });
+  await assert.rejects(value.totals());
+  assert.equal((await value.totals()).unreadThreads, 1);
+  assert.equal(reads, 2);
+});
