@@ -218,7 +218,7 @@ fn main() -> glib::ExitCode {
         if notifier::custom_smoke(app) {
             return;
         }
-        if smoke::gallery(app) {
+        if smoke::gallery(app) || smoke::native_call(app) {
             return;
         }
         window_of(app);
