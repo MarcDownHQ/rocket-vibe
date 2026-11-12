@@ -985,6 +985,15 @@ public final class AppModel {
         catch { if account == sessionId { notice = L("forward.failed") } }
     }
 
+    /// A room's chat beside a call: a model of its own, the open room untouched.
+    public func callChat(_ rid: String) -> RoomModel? {
+        guard let provider, let found = rooms.first(where: { $0.rid == rid }) else { return nil }
+        let model = RoomModel(provider: provider, room: found)
+        model.onNotice = { [weak self] in self?.notice = $0 }
+        Task { await model.load() }
+        return model
+    }
+
     public func open(_ rid: String, remember: Bool = true, preserveNavigation: Bool = false, peek: Bool = false) {
         guard let provider, let found = rooms.first(where: { $0.rid == rid }) else { return }
         if !preserveNavigation { cancelNotificationNavigation(); pendingRoomLink = nil }

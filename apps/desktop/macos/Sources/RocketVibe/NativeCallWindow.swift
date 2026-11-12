@@ -15,13 +15,14 @@ final class NativeCallWindow: NSObject, NSWindowDelegate {
     private let window: NSWindow
     private let call: JitsiCallSession
 
-    static func show(_ call: JitsiCallSession, title: String) {
-        let native = NativeCallWindow(call: call, title: title)
+    /// `chat`, the call's room, goes beside the call behind a button.
+    static func show(_ call: JitsiCallSession, title: String, chat: RoomModel? = nil, app: AppModel? = nil) {
+        let native = NativeCallWindow(call: call, title: title, chat: chat, app: app)
         windows.append(native)
         native.window.makeKeyAndOrderFront(nil)
     }
 
-    private init(call: JitsiCallSession, title: String) {
+    private init(call: JitsiCallSession, title: String, chat: RoomModel?, app: AppModel?) {
         self.call = call
         window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 720, height: 600),
                           styleMask: [.titled, .closable, .miniaturizable, .resizable], backing: .buffered, defer: false)
@@ -30,7 +31,13 @@ final class NativeCallWindow: NSObject, NSWindowDelegate {
         window.isReleasedWhenClosed = false
         window.center()
         window.delegate = self
-        window.contentView = NSHostingView(rootView: NativeCallView(call: call, title: title, close: { [weak self] in self?.window.close() }))
+        let view = NativeCallView(call: call, title: title, chat: app == nil ? nil : chat,
+                                  close: { [weak self] in self?.window.close() })
+        if let app {
+            window.contentView = NSHostingView(rootView: view.environment(app))
+        } else {
+            window.contentView = NSHostingView(rootView: view)
+        }
     }
 
     func windowWillClose(_ notification: Notification) {
@@ -43,16 +50,41 @@ final class NativeCallWindow: NSObject, NSWindowDelegate {
 private struct NativeCallView: View {
     let call: JitsiCallSession
     let title: String
+    /// The call's room, its chat shown beside the call on demand.
+    let chat: RoomModel?
     let close: () -> Void
     @State private var state: JitsiCallState?
     @State private var connectedAt: Date?
+    @State private var chatShown = false
+    @State private var staged: [URL] = []
     private let tick = Timer.publish(every: 0.3, on: .main, in: .common).autoconnect()
 
     var body: some View {
+        HStack(spacing: 0) {
+            callBody
+            if chatShown, let chat {
+                Divider()
+                VStack(spacing: 0) {
+                    MessageList(model: chat)
+                    if !chat.writingLocked { Composer(model: chat, staged: $staged) }
+                }
+                .frame(width: 340)
+                .background(Vibe.night)
+            }
+        }
+    }
+
+    private var callBody: some View {
         VStack(spacing: 14) {
             HStack(spacing: 8) {
                 Image(systemName: "phone.fill")
                 Text(title).font(.vibe(17, .heavy)).lineLimit(1)
+                if chat != nil {
+                    Spacer()
+                    Button { chatShown.toggle() } label: { Image(systemName: "bubble.left.and.bubble.right") }
+                        .buttonStyle(.borderless)
+                        .help(L("voice_session.open_chat"))
+                }
             }
             Text(status)
                 .font(.vibe(13, .bold))
