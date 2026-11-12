@@ -3984,6 +3984,11 @@ impl ChatPage {
     }
 
     pub(crate) fn open_call(self: &Rc<Self>, url: &str, room: &str) {
+        self.open_call_in(url, room, self.current_rid());
+    }
+
+    /// A call, its window beside the chat of `chat_rid` when known.
+    pub(crate) fn open_call_in(self: &Rc<Self>, url: &str, room: &str, chat_rid: Option<String>) {
         if url.starts_with(rv_core::mattermost::translate::PLUGIN_CALL) {
             return self.open_plugin_call(url, room);
         }
@@ -3997,13 +4002,17 @@ impl ChatPage {
             });
             if let Some(rid) = room_id {
                 let (weak, target, title) = (Rc::downgrade(self), url.to_owned(), room.to_owned());
-                let call = crate::native_call::Call::Account(session, rv_core::teams_call::Target::Room(rid));
-                crate::native_call::open(call, room, crate::native_call::Names::none(), move || {
+                let call =
+                    crate::native_call::Call::Account(session.clone(), rv_core::teams_call::Target::Room(rid.clone()));
+                let opened = crate::native_call::open(call, room, crate::native_call::Names::none(), move || {
                     if let Some(this) = weak.upgrade() {
                         this.toast(t("call.native_fallback").to_owned());
                         this.open_teams_page(&target, &title);
                     }
                 });
+                if let Some(opened) = opened {
+                    opened.chat(session, &rid);
+                }
                 return;
             }
             return self.open_teams_page(url, room);
@@ -4036,12 +4045,15 @@ impl ChatPage {
                 );
                 let (back, title) = (Rc::downgrade(&this), room.clone());
                 let call = crate::native_call::Call::Sidecar(rv_core::voice::NativeCall::Chime(call));
-                crate::native_call::open(call, &title, names, move || {
+                let opened = crate::native_call::open(call, &title, names, move || {
                     if let Some(this) = back.upgrade() {
                         this.toast(t("call.native_fallback").to_owned());
                         this.open_huddle_page(&url, &room);
                     }
                 });
+                if let (Some(opened), Some(rid)) = (opened, chat_rid) {
+                    opened.chat(session, &rid);
+                }
             });
             return;
         }
@@ -4060,12 +4072,15 @@ impl ChatPage {
                 let Some(call) = call else { return this.open_call_window(&url, &room) };
                 let (back, title) = (Rc::downgrade(&this), room.clone());
                 let call = crate::native_call::Call::Sidecar(rv_core::voice::NativeCall::Jitsi(call));
-                crate::native_call::open(call, &title, crate::native_call::Names::none(), move || {
+                let opened = crate::native_call::open(call, &title, crate::native_call::Names::none(), move || {
                     if let Some(this) = back.upgrade() {
                         this.toast(t("call.native_fallback").to_owned());
                         this.open_call_window(&url, &room);
                     }
                 });
+                if let (Some(opened), Some(rid)) = (opened, chat_rid) {
+                    opened.chat(session, &rid);
+                }
             });
             return;
         }
@@ -4113,7 +4128,8 @@ impl ChatPage {
                 },
             );
             let back = Rc::downgrade(&this);
-            crate::native_call::open(
+            let channel = call.channel_id.clone();
+            let opened = crate::native_call::open(
                 crate::native_call::Call::Sidecar(rv_core::voice::NativeCall::Mattermost(call)),
                 &room,
                 names,
@@ -4123,6 +4139,9 @@ impl ChatPage {
                     }
                 },
             );
+            if let Some(opened) = opened {
+                opened.chat(session, &channel);
+            }
         });
     }
 

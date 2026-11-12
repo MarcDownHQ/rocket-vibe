@@ -67,6 +67,32 @@ pub enum Call {
 pub struct Opened {
     pub window: adw::Window,
     pub voice: VoiceController,
+    header: adw::HeaderBar,
+    side: gtk::Box,
+}
+
+impl Opened {
+    /// The chat of the call's room beside the call, behind a header button.
+    pub fn chat(&self, session: std::sync::Arc<Session>, rid: &str) {
+        let toggle = gtk::ToggleButton::builder()
+            .icon_name("chat-message-new-symbolic")
+            .tooltip_text(t("voice_session.open_chat"))
+            .build();
+        self.header.pack_end(&toggle);
+        let (side, window, rid) = (self.side.clone(), self.window.downgrade(), rid.to_owned());
+        toggle.connect_toggled(move |toggle| {
+            let on = toggle.is_active();
+            if on && side.first_child().is_none() {
+                side.append(&gtk::Separator::new(gtk::Orientation::Vertical));
+                side.append(&crate::call_chat::pane(session.clone(), &rid));
+            }
+            side.set_visible(on);
+            if let Some(window) = window.upgrade() {
+                let width = window.width() + if on { 360 } else { -360 };
+                window.set_default_size(width.max(480), window.height());
+            }
+        });
+    }
 }
 
 /// Opens the call; `fallback` opens the meeting's page instead when the
@@ -123,9 +149,15 @@ pub fn open(call: Call, title: &str, names: Names, fallback: impl Fn() + 'static
     column.append(&cards);
     column.append(&bar.row);
     column.append(&close);
+    column.set_hexpand(true);
+    let side = gtk::Box::builder().visible(false).build();
+    let body = gtk::Box::new(gtk::Orientation::Horizontal, 0);
+    body.append(&column);
+    body.append(&side);
+    let header = adw::HeaderBar::new();
     let page = adw::ToolbarView::new();
-    page.add_top_bar(&adw::HeaderBar::new());
-    page.set_content(Some(&column));
+    page.add_top_bar(&header);
+    page.set_content(Some(&body));
     window.set_content(Some(&page));
 
     let state = Rc::new(State {
@@ -255,7 +287,7 @@ pub fn open(call: Call, title: &str, names: Names, fallback: impl Fn() + 'static
         }
     });
     window.present();
-    Some(Opened { window, voice })
+    Some(Opened { window, voice, header, side })
 }
 
 struct State {

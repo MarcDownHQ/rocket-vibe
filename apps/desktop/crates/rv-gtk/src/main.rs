@@ -8,6 +8,7 @@ mod attach;
 mod background;
 mod badge;
 mod bundle;
+mod call_chat;
 mod call_window;
 mod cards;
 mod chat;
