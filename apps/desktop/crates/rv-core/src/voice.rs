@@ -8,6 +8,7 @@
 //! [`VoiceController::frame`].
 use rv_protocol::voice::VoiceGrant;
 use rv_voice_protocol::frames;
+pub use rv_voice_protocol::frames::LOCAL_PREVIEW;
 pub use rv_voice_protocol::frames::Source as VideoSource;
 use rv_voice_protocol::{Command, Event, VERSION};
 pub use rv_voice_protocol::{ConnectionState, Device, Participant, ScreenKind, ScreenQuality, ScreenSource, thumbnail};
