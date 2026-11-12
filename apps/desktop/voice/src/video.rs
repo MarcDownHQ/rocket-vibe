@@ -15,6 +15,7 @@ use livekit::webrtc::video_frame::{I420Buffer, VideoBuffer, VideoFrame, VideoRot
 use livekit::webrtc::video_source::VideoResolution;
 use livekit::webrtc::video_source::native::NativeVideoSource;
 use livekit::webrtc::video_stream::native::NativeVideoStream;
+use livekit::webrtc::video_track::RtcVideoTrack;
 use rv_voice_protocol::frames::{self, Header, Source};
 use rv_voice_protocol::{Event, ScreenKind, ScreenQuality, ScreenSource, thumbnail};
 use std::collections::{HashMap, VecDeque};
@@ -187,8 +188,13 @@ fn to_i420(pixels: &[u8], stride: u32, width: u32, height: u32, bgra: bool, fit:
 
 /// A remote camera or screen, for as long as it is subscribed.
 pub async fn watch(track: RemoteVideoTrack, source: Source, identity: String, frames: Arc<Frames>) {
+    watch_rtc(track.rtc_track(), source, identity, frames).await
+}
+
+/// A remote camera or screen of a call carried natively, for as long as it is shown.
+pub async fn watch_rtc(track: RtcVideoTrack, source: Source, identity: String, frames: Arc<Frames>) {
     use futures_util::StreamExt;
-    let mut stream = NativeVideoStream::new(track.rtc_track());
+    let mut stream = NativeVideoStream::new(track);
     let mut last: Option<Instant> = None;
     while let Some(frame) = stream.next().await {
         if last.is_some_and(|at| at.elapsed() < FRAME_INTERVAL) {

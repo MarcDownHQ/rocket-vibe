@@ -228,6 +228,9 @@ pub struct Snapshot {
     /// and again when the sidecar reports it could not keep them.
     pub camera: bool,
     pub sharing: bool,
+    /// What a call carried natively lets this side send (camera, screen), once
+    /// joined; `None` for a Vibez room, which sends both.
+    pub call_video: Option<(bool, bool)>,
     pub ended: Option<Ended>,
     /// The last command failure the sidecar reported (`device_not_found`...).
     pub error: Option<String>,
@@ -246,6 +249,7 @@ impl Default for Snapshot {
             deafened: false,
             camera: false,
             sharing: false,
+            call_video: None,
             ended: None,
             error: None,
             muted_speech: 0,
@@ -983,6 +987,7 @@ impl Inner {
                         s.snapshot.muted_speech = s.snapshot.muted_speech.saturating_add(1);
                     }
                 }
+                Event::CallVideo { camera, screen } => s.snapshot.call_video = Some((camera, screen)),
                 Event::Disconnected { reason } => s.snapshot.end(Ended::from_reason(&reason)),
                 Event::Error { code } => {
                     // The sidecar gave up on a capture: the wish follows.

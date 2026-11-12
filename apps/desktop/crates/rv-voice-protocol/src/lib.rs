@@ -385,6 +385,12 @@ pub enum Event {
     },
     /// Local speech while muted; no microphone samples leave this device.
     MutedSpeech,
+    /// What a call carried natively lets this side send, once joined. A LiveKit
+    /// room never says: it sends both.
+    CallVideo {
+        camera: bool,
+        screen: bool,
+    },
     /// The session ended; `reason` is LiveKit's in snake case (`duplicate_identity`,
     /// `participant_removed`, `room_deleted`, `client_initiated`...), or `connect_failed`.
     Disconnected {
@@ -419,6 +425,11 @@ pub mod frames {
     pub const MAGIC: &[u8; 4] = b"RVV1";
     /// The largest message: a 1920 by 1080 frame and its header.
     pub const MAX_MESSAGE: u32 = 1920 * 1080 * 4 + 512;
+
+    /// The identity this side's previews go under in a call carried natively:
+    /// the window shows them on the local participant whatever the provider
+    /// calls it, and a rejoin under a new id keeps them.
+    pub const LOCAL_PREVIEW: &str = "local";
 
     #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
     pub enum Source {

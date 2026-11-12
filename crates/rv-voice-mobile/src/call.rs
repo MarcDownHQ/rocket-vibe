@@ -64,6 +64,16 @@ pub fn event_json(event: &Event) -> Value {
         Event::Ended(reason) => json!({"type": "ended", "reason": reason}),
         Event::Over(reason) => json!({"type": "over", "reason": reason}),
         Event::MediaEnded => json!({"type": "media_ended"}),
+        Event::Videos(videos) => {
+            let kind = |k: rv_call::VideoKind| match k {
+                rv_call::VideoKind::Camera => "camera",
+                rv_call::VideoKind::Screen => "screen",
+            };
+            let videos: Vec<Value> =
+                videos.iter().map(|v| json!({"track": v.track, "member": v.member, "kind": kind(v.kind)})).collect();
+            json!({"type": "videos", "videos": videos})
+        }
+        Event::DataMessage(text) => json!({"type": "data", "text": text}),
     }
 }
 

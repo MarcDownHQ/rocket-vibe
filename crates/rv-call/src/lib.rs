@@ -36,6 +36,31 @@ pub struct Member {
     pub muted: bool,
 }
 
+/// What a video track shows.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum VideoKind {
+    Camera,
+    Screen,
+}
+
+/// A remote video the provider announced: its track, by the track's id or its
+/// stream's id, and whose it is ([`Member::id`]).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RemoteVideo {
+    pub track: String,
+    pub member: String,
+    pub kind: VideoKind,
+}
+
+/// What this side sends: its camera, its screen. Each local video track
+/// carries [`CallSignaling::video_stream`] as its stream id, by which an adapter
+/// finds it in the local description.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct LocalVideo {
+    pub camera: bool,
+    pub screen: bool,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum Event {
     /// The servers to give the peer connection, before any offer.
@@ -63,6 +88,12 @@ pub enum Event {
     Levels(Vec<(String, f32)>),
     /// Everyone else, whenever anyone joins, leaves or changes.
     Roster(Vec<Member>),
+    /// Every remote video sent now, the whole list each time: a track missing
+    /// from it is no longer shown.
+    Videos(Vec<RemoteVideo>),
+    /// A text message for the data channel [`CallSignaling::data_channel`]
+    /// names, sent once it is open (Jitsi's bridge channel).
+    DataMessage(String),
     /// The media session is over but this client is still in the call: close
     /// the peer connection and wait for the next [`Event::Offer`] (Jitsi's focus
     /// ends the session of a participant left alone, and offers a new one when
@@ -117,6 +148,26 @@ pub trait CallSignaling {
     /// one's media until it is open).
     fn data_channel(&self) -> Option<&'static str> {
         None
+    }
+    /// That data channel's subprotocol.
+    fn data_protocol(&self) -> &'static str {
+        ""
+    }
+    /// Whether this provider takes this side's camera, or its screen: the
+    /// engine sends only what it may. Remote videos are shown whatever this says.
+    fn can_send(&self, _kind: VideoKind) -> bool {
+        false
+    }
+    /// The stream id a local video track carries; the microphone's by default.
+    fn video_stream(&self, _kind: VideoKind) -> String {
+        self.local_id().to_owned()
+    }
+    /// This side's camera or screen started or stopped: the engine already
+    /// attached or detached the track. The adapter renegotiates as its provider
+    /// does ([`Event::OfferWanted`] where the client offers, [`Event::Offer`]
+    /// where it answers) and tells the call who sends what.
+    fn set_video(&mut self, _video: LocalVideo) -> impl Future<Output = Result<(), Error>> + Send {
+        async { Ok(()) }
     }
 }
 

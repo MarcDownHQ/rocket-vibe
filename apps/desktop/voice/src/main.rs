@@ -143,7 +143,7 @@ async fn run() {
                         continue;
                     }
                     let config = rv_call::jitsi::Config { websocket, domain, muc, focus, room, display_name, token };
-                    return call::run(|| rv_call::jitsi::join(config.clone()), voice.fake, &mut commands).await;
+                    return call::run(|| rv_call::jitsi::join(config.clone()), voice.fake, voice.video_out(), &mut commands).await;
                 }
                 Some(Ok(Command::ConnectChime { signaling_url, audio_host, attendee_id, join_token, origin })) => {
                     if voice.room.is_some() {
@@ -151,7 +151,7 @@ async fn run() {
                         continue;
                     }
                     let config = rv_call::chime::Config { signaling_url, audio_host, attendee_id, join_token, origin };
-                    return call::run(|| rv_call::chime::client::join(config.clone()), voice.fake, &mut commands).await;
+                    return call::run(|| rv_call::chime::client::join(config.clone()), voice.fake, voice.video_out(), &mut commands).await;
                 }
                 Some(Ok(Command::ConnectPcm { address })) => {
                     if voice.room.is_some() {
@@ -169,7 +169,7 @@ async fn run() {
                         let identity = identity.clone();
                         async move { Ok::<_, rv_call::Error>(call::External::new(identity, answering)) }
                     };
-                    return call::run(join, voice.fake, &mut commands).await;
+                    return call::run(join, voice.fake, voice.video_out(), &mut commands).await;
                 }
                 Some(Ok(Command::ConnectMattermost { server, token, channel_id, user_id, ice_servers })) => {
                     if voice.room.is_some() {
@@ -181,7 +181,7 @@ async fn run() {
                         .into_iter()
                         .map(|s| rv_call::IceServer { urls: s.urls, username: s.username, credential: s.credential })
                         .collect();
-                    return call::run(|| rv_call::mattermost::join(config.clone(), ice.clone()), voice.fake, &mut commands)
+                    return call::run(|| rv_call::mattermost::join(config.clone(), ice.clone()), voice.fake, voice.video_out(), &mut commands)
                         .await;
                 }
                 Some(Ok(Command::Connect { url, token, e2ee_key })) => {
@@ -428,6 +428,10 @@ impl Voice {
             | Command::ConnectMattermost { .. }
             | Command::Disconnect => {}
         }
+    }
+
+    fn video_out(&self) -> call::VideoOut {
+        call::VideoOut { frames: self.frames.clone(), fake: self.fake_video }
     }
 
     fn may_publish(&self) -> bool {
