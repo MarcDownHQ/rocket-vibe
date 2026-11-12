@@ -32,6 +32,7 @@ pub mod room_members;
 mod slack;
 pub mod social;
 mod teams;
+mod whatsapp;
 pub mod writing;
 
 use std::path::PathBuf;
@@ -134,6 +135,17 @@ pub enum Event {
     CallRing,
     Threads {
         root: Option<String>,
+    },
+    /// Something to tell in passing (WhatsApp: a send whose outcome is unknown,
+    /// an action refused).
+    Notice {
+        text: String,
+    },
+    /// A WhatsApp send that never left: its text goes back to the composer.
+    Returned {
+        rid: String,
+        text: String,
+        notice: String,
     },
 }
 
@@ -331,7 +343,7 @@ impl Client {
     }
 }
 
-fn account(info: &SessionInfo) -> Account {
+pub(crate) fn account(info: &SessionInfo) -> Account {
     Account {
         genre: info.genre().into(),
         key: accounts::key(info),

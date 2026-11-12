@@ -15,6 +15,11 @@ use crate::{Client, Incoming, RvError, blocking, on_tokio, runtime};
 /// The supervisor of `dirs`' accounts, and its notices.
 pub(crate) fn supervise(dirs: Arc<Dirs>) -> (Supervisor, Mutex<Option<UnboundedReceiver<AccountNotice>>>) {
     let starter: supervisor::Starter = Arc::new(move |info: &SessionInfo| {
+        if rv_core::whatsapp::is_whatsapp(info) {
+            let session = crate::whatsapp::start(&dirs, info);
+            rings::watch(info, &session);
+            return Ok(session.into());
+        }
         let path = dirs.database(info);
         if info.native.is_some() {
             let credentials = Arc::new(crate::native::CredentialStore { dirs: dirs.clone() });
@@ -54,6 +59,8 @@ pub struct BackgroundCall {
     pub voice: bool,
     /// The account is in do not disturb: the prompt shows without the ringtone.
     pub quiet: bool,
+    /// A WhatsApp call this app cannot carry (video, group): answered on the phone.
+    pub phone_only: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, uniffi::Enum)]
@@ -106,9 +113,7 @@ fn event(accounts: &Supervisor, notice: AccountNotice) -> Option<AccountEvent> {
                     }
                     session.notification_key(&i.rid)
                 }
-                Account::Legacy(_) => supervisor::notification_key(&info, &i.rid),
-                // Never started here: the SwiftUI app lists no WhatsApp account.
-                Account::WhatsApp(_) => return None,
+                Account::Legacy(_) | Account::WhatsApp(_) => supervisor::notification_key(&info, &i.rid),
             };
             AccountEvent::Incoming { account, scope, incoming: incoming(supervisor::from_account(i, &info)) }
         }
@@ -126,6 +131,7 @@ fn event(accounts: &Supervisor, notice: AccountNotice) -> Option<AccountEvent> {
                     caller: c.caller_name.or(room).unwrap_or_default(),
                     voice: false,
                     quiet: false,
+                    phone_only: false,
                 }
             });
             AccountEvent::Call { account, call }
@@ -140,6 +146,7 @@ fn event(accounts: &Supervisor, notice: AccountNotice) -> Option<AccountEvent> {
                 caller: c.caller,
                 voice: true,
                 quiet,
+                phone_only: false,
             });
             AccountEvent::Call { account, call }
         }
@@ -160,13 +167,28 @@ impl Client {
     pub fn watch_accounts(&self, listener: Arc<dyn AccountListener>) {
         let Some(mut notices) = self.notices.lock().unwrap().take() else { return };
         let accounts = self.accounts.clone();
+        let mut rung = rings::heard().subscribe();
         runtime().spawn(async move {
-            while let Some(notice) = notices.recv().await {
-                let active = accounts.is_active(&notice.key());
-                if active && !matches!(notice.notice, Notice::Unread(_)) {
-                    continue;
-                }
-                if let Some(event) = event(&accounts, notice) {
+            loop {
+                let event = tokio::select! {
+                    notice = notices.recv() => {
+                        let Some(notice) = notice else { return };
+                        let active = accounts.is_active(&notice.key());
+                        if active && !matches!(notice.notice, Notice::Unread(_)) {
+                            continue;
+                        }
+                        event(&accounts, notice)
+                    }
+                    ring = rung.recv() => match ring {
+                        Ok(event) => match &event {
+                            AccountEvent::Call { account, .. } if accounts.is_active(account) => None,
+                            _ => Some(event),
+                        },
+                        Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => None,
+                        Err(tokio::sync::broadcast::error::RecvError::Closed) => return,
+                    },
+                };
+                if let Some(event) = event {
                     listener.on_account_event(event);
                 }
             }
@@ -196,13 +218,14 @@ impl Client {
     pub async fn background_reply(&self, scope: String, text: String) -> Result<(), RvError> {
         let (account, rid) =
             supervisor::notification_target(&scope).ok_or_else(|| RvError::local("unknown notification"))?;
-        let session = self
-            .accounts
-            .chat(&account)
-            .and_then(|c| c.legacy().cloned())
-            .ok_or_else(|| RvError::local("unknown account"))?;
-        on_tokio(async move { session.send(&rid, &text).await }).await;
-        Ok(())
+        match self.accounts.chat(&account) {
+            Some(Account::Legacy(session)) => {
+                on_tokio(async move { session.send(&rid, &text).await }).await;
+                Ok(())
+            }
+            Some(Account::WhatsApp(session)) => session.send(&rid, &text, None).map_err(RvError::local),
+            _ => Err(RvError::local("unknown account")),
+        }
     }
 
     /// Declines a background account's call or voice ring.
@@ -214,7 +237,8 @@ impl Client {
             Some(Account::Native(session)) => {
                 let _ = on_tokio(async move { session.decline_ring(&call.id).await }).await;
             }
-            Some(Account::WhatsApp(_)) | None => {}
+            Some(Account::WhatsApp(session)) => session.reject_call(&call.id),
+            None => {}
         }
     }
 
@@ -223,5 +247,47 @@ impl Client {
         if let Some(Account::Legacy(session)) = self.accounts.chat(&call.account) {
             session.dismiss_call();
         }
+    }
+}
+
+/// WhatsApp calls ring through the session's own notices, not the
+/// supervisor's: each account started here is listened to.
+mod rings {
+    use std::sync::{Arc, OnceLock};
+
+    use rv_core::session::SessionInfo;
+    use rv_core::whatsapp_session::{Notice, WaSession};
+    use tokio::sync::broadcast;
+
+    use super::{AccountEvent, BackgroundCall, supervisor};
+
+    pub(super) fn heard() -> &'static broadcast::Sender<AccountEvent> {
+        static HEARD: OnceLock<broadcast::Sender<AccountEvent>> = OnceLock::new();
+        HEARD.get_or_init(|| broadcast::channel(16).0)
+    }
+
+    pub(super) fn watch(info: &SessionInfo, session: &Arc<WaSession>) {
+        let (info, mut notices) = (info.clone(), session.notices());
+        let account = supervisor::key(&info);
+        tokio::spawn(async move {
+            loop {
+                let call = match notices.recv().await {
+                    Ok(Notice::Ring(call, caller)) => Some(BackgroundCall {
+                        account: account.clone(),
+                        server: supervisor::server_label(&info),
+                        rid: if call.group.is_empty() { call.from.clone() } else { call.group.clone() },
+                        phone_only: !rv_core::voice::available() || call.video || !call.group.is_empty(),
+                        id: call.id,
+                        caller,
+                        voice: false,
+                        quiet: false,
+                    }),
+                    Ok(Notice::RingEnded(_)) => None,
+                    Ok(_) | Err(broadcast::error::RecvError::Lagged(_)) => continue,
+                    Err(broadcast::error::RecvError::Closed) => return,
+                };
+                let _ = heard().send(AccountEvent::Call { account: account.clone(), call });
+            }
+        });
     }
 }

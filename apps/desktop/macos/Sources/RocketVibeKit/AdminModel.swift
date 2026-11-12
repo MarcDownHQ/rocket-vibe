@@ -566,18 +566,18 @@ public final class ReportDraft: Identifiable {
 extension AppModel {
     /// Asks the server whether this account administers it.
     public func refreshAdministrator() async {
-        guard let provider else { administrator = false; return }
+        guard let admin = provider?.admin() else { administrator = false; return }
         let expected = sessionId
-        let allowed = await provider.admin().isAdmin()
+        let allowed = await admin.isAdmin()
         if expected == sessionId { administrator = allowed }
     }
 
     /// The administration over the window, on its Dashboard; closes the settings.
     public func openAdmin() {
-        guard administrator, let provider else { return }
+        guard administrator, let source = provider?.admin() else { return }
         settingsShown = false
         admin?.close()
-        let model = AdminModel(source: provider.admin())
+        let model = AdminModel(source: source)
         admin = model
         model.show(.dashboard)
     }
@@ -606,9 +606,9 @@ extension AppModel {
 
     /// Sends the open report, then says how it went in the window's toast.
     public func sendReport() async {
-        guard let draft = reporting, let provider else { return }
+        guard let draft = reporting, let admin = provider?.admin() else { return }
         let expected = sessionId
-        let text = await draft.send(with: provider.admin())
+        let text = await draft.send(with: admin)
         guard expected == sessionId, reporting === draft else { return }
         reporting = nil
         notice = text

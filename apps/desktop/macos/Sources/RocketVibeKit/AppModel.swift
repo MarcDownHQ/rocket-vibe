@@ -35,6 +35,11 @@ public final class AppModel {
     public private(set) var provider: ChatProvider?
     public var chat: Chat? { provider?.legacy }
     public var native: NativeChat? { provider?.native }
+    public var whatsapp: WhatsAppChat? { provider?.whatsapp }
+    /// The WhatsApp linking sheet, while it is open.
+    public internal(set) var whatsAppLink: WhatsAppLinkModel?
+    /// A call carried natively from a ring (WhatsApp): the app shows its window.
+    public var onNativeCall: ((JitsiCallSession, String) -> Void)?
     public var signedIn: Bool { provider != nil }
     public private(set) var account: Account?
     public private(set) var accounts: [Account] = [] {
@@ -283,6 +288,8 @@ public final class AppModel {
             let provider: ChatProvider
             if account.genre == "vibez" {
                 provider = .vibez(try await client.nativeResume(key: account.key))
+            } else if account.genre == "whatsapp" {
+                provider = .whatsapp(try await client.whatsappResume(key: account.key))
             } else {
                 provider = .rocketChat(try await client.resume(key: account.key))
             }
@@ -303,6 +310,17 @@ public final class AppModel {
             accounts = fresh
             begin(chat)
         }
+    }
+
+    /// An account added outside the sign-in form (a linked WhatsApp device) opens.
+    func adopt(_ provider: ChatProvider) async {
+        let selected = UUID()
+        selectionId = selected
+        let fresh = await client.accounts()
+        guard selected == selectionId else { provider.shutdown(); return }
+        accounts = fresh
+        login.leave()
+        begin(provider)
     }
 
     /// Signs in with the bearer of a finished Infomaniak sign-in (kChat).
@@ -432,7 +450,7 @@ public final class AppModel {
     /// The dock's count: the open account's rooms and what the others hold.
     func showAttention() {
         let others = accountAttention.filter { $0.key != account?.key && !mutedAccounts.contains($0.key) }.values.reduce(0, +)
-        let own = account.map { mutedAccounts.contains($0.key) } == true ? 0 : (chat?.attention() ?? 0)
+        let own = account.map { mutedAccounts.contains($0.key) } == true ? 0 : (chat?.attention() ?? whatsapp?.attention() ?? 0)
         onAttention?(own + others)
     }
 
@@ -457,6 +475,14 @@ public final class AppModel {
         if call.voice {
             answer(VoiceCall(id: call.id, room: call.rid, callerId: "", callerName: call.caller,
                              calleeId: account?.userId ?? "", state: "ringing"))
+            return nil
+        }
+        if let whatsapp {
+            if whatsapp.callAnswerable(callId: call.id) {
+                let title = L("call.window_title", ["room": call.caller])
+                if let native = await whatsapp.answerCall(callId: call.id, title: title) { onNativeCall?(native, title) }
+                else { notice = L("call.failed") }
+            }
             return nil
         }
         guard let chat else { return nil }
@@ -524,6 +550,8 @@ public final class AppModel {
         collapsed = Set(client.collapsedSections(account: opened.key))
         if let chat { media = MediaStore(chat: chat) }
         else if let native { media = MediaStore(native:native) }
+        else if let whatsapp { media = MediaStore(whatsapp: whatsapp) }
+        whatsapp?.setAvailable(available: appIsActive())
         if let native, native.voiceSupported() {
             let voice = VoiceModel(native: native)
             voice.onNotice = { [weak self] in self?.notice = $0 }
@@ -546,7 +574,7 @@ public final class AppModel {
         Task { await refreshAdministrator() }
         if backgroundCall?.account == account?.key { endBackgroundCall() }
         // A call that started ringing while the account was in the background.
-        if let call = chat?.incomingCall() {
+        if let call = chat?.incomingCall() ?? whatsapp?.incomingCall() {
             ringingCall = call
             onCallRing?(call)
         }
@@ -607,6 +635,17 @@ public final class AppModel {
 
     /// Accept: the ring stops; the call's link to open, None when the server refused.
     public func answerCall(_ call: RingingCall) async -> String? {
+        if let whatsapp {
+            ringingCall = nil
+            onCallRing?(nil)
+            let title = L("call.window_title", ["room": callerName(call)])
+            if whatsapp.callAnswerable(callId: call.callId), let native = await whatsapp.answerCall(callId: call.callId, title: title) {
+                onNativeCall?(native, title)
+            } else if whatsapp.callAnswerable(callId: call.callId) {
+                notice = L("call.failed")
+            }
+            return nil
+        }
         guard let chat else { return nil }
         chat.dismissCall()
         return try? await chat.joinCall(callId: call.callId)
@@ -617,7 +656,13 @@ public final class AppModel {
         call.callerName ?? rooms.first { $0.rid == call.rid }?.name ?? ""
     }
 
+    /// A WhatsApp call this app cannot carry (video, group) is answered on the phone.
+    public func answeredOnPhone(_ call: RingingCall) -> Bool {
+        whatsapp.map { !$0.callAnswerable(callId: call.callId) } ?? false
+    }
+
     public func declineCall(_ call: RingingCall) {
+        if let whatsapp { whatsapp.declineCall(callId: call.callId); return }
         guard let chat else { return }
         Task { await chat.declineCall(callId: call.callId) }
     }
@@ -625,6 +670,15 @@ public final class AppModel {
     /// A click outside or Escape: the ring stops here, nothing is declined.
     public func ignoreCall() {
         chat?.dismissCall()
+        if whatsapp != nil, ringingCall != nil {
+            ringingCall = nil
+            onCallRing?(nil)
+        }
+    }
+
+    /// The window came to the front or left it: WhatsApp shows me online meanwhile.
+    public func appActivityChanged(_ active: Bool) {
+        whatsapp?.setAvailable(available: active)
     }
 
     func handle(_ event: Event) {
@@ -681,8 +735,13 @@ public final class AppModel {
         case let .incoming(incoming):
             if !openMuted { onIncoming?(incoming) }
         case .callRing:
-            ringingCall = chat?.incomingCall()
+            ringingCall = chat?.incomingCall() ?? whatsapp?.incomingCall()
             onCallRing?(ringingCall)
+        case let .notice(text):
+            notice = text
+        case let .returned(rid, text, said):
+            if room?.rid == rid, let room { room.giveBack(text) }
+            notice = said
         case let .threads(root):
             if let root {
                 if root == thread?.threadId { readOpenThread() }
@@ -718,6 +777,12 @@ public final class AppModel {
 
     func reloadRooms() {
         guard let provider, let fresh = try? provider.rooms() else { return }
+        if let whatsapp, let key = account?.key, serverIcons[key] == nil {
+            let photo = whatsapp.photoPath(jid: "me")
+            if !photo.isEmpty {
+                Task { if let media = try? await whatsapp.media(path: photo), account?.key == key { serverIcons[key] = Data(media.bytes) } }
+            }
+        }
         if fresh != groups { groups = fresh }
         roomsRevision &+= 1
         if let room {
@@ -1151,6 +1216,7 @@ public final class AppModel {
 
     public func markRead() async {
         if let chat, let room { await chat.markRead(rid: room.rid) }
+        if let whatsapp, let room { whatsapp.markRead(rid: room.rid) }
     }
 
     /// Nil when unlocked, else what went wrong.

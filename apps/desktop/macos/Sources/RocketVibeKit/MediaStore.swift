@@ -7,6 +7,7 @@ import RocketVibeCore
 public final class MediaStore {
     let chat: Chat?
     let native:NativeChat?
+    let whatsapp: WhatsAppChat?
     var generation=0
     var done: [String: MediaData] = [:]
     var coming: [String: Task<MediaData?, Never>] = [:]
@@ -16,8 +17,10 @@ public final class MediaStore {
     init(chat: Chat) {
         self.chat = chat
         self.native=nil
+        self.whatsapp = nil
     }
-    init(native:NativeChat){self.chat=nil;self.native=native}
+    init(native:NativeChat){self.chat=nil;self.native=native;self.whatsapp=nil}
+    init(whatsapp: WhatsAppChat) { chat = nil; native = nil; self.whatsapp = whatsapp }
 
     public func cached(_ path: String) -> MediaData? {
         if native != nil && (path.hasPrefix("rv-file:")||path.hasPrefix("rv-emoji:")||path.hasPrefix("rv-preview:")){return nil}
@@ -36,7 +39,7 @@ public final class MediaStore {
             let media=await task.value
             return version==generation && current(path) && authority==scope(path) ? media : nil
         }
-        let (chat,native,version) = (chat,self.native,generation)
+        let (chat,native,whatsapp,version) = (chat,self.native,self.whatsapp,generation)
         let task = Task<MediaData?, Never> {
             if let native {
                 if path.hasPrefix("rv-file:"){return try? await native.media(path:path)}
@@ -45,6 +48,7 @@ public final class MediaStore {
                 guard path.hasPrefix("rv-avatar:") else{return nil}
                 return try? await native.profileAvatar(id:String(path.dropFirst("rv-avatar:".count)))
             }
+            if let whatsapp { return try? await whatsapp.media(path: path) }
             return try? await chat?.media(path: path)
         }
         coming[path] = task
@@ -73,7 +77,7 @@ public final class MediaStore {
     }
 
     public func avatar(user: String) -> String {
-        chat?.userAvatar(username: user) ?? native?.userAvatar(username:user) ?? ""
+        chat?.userAvatar(username: user) ?? native?.userAvatar(username:user) ?? whatsapp?.photoPath(jid: "me") ?? ""
     }
 
     public func customEmoji(_ code: String) -> String? {
@@ -84,11 +88,13 @@ public final class MediaStore {
         guard !closed else { throw RvError.Local(message:"session_closed") }
         if let chat{try await chat.download(path: path, destination: destination)}
         else if let native{try await native.download(path:path,destination:destination)}
+        else if let whatsapp { try await whatsapp.download(path: path, destination: destination) }
         else{throw RvError.Local(message:"unsupported_feature")}
     }
     public func localCopy(_ path:String,name:String) async throws -> URL {
         guard !closed else { throw RvError.Local(message:"session_closed") }
         if let native{return URL(fileURLWithPath:try await native.localFile(path:path))}
+        if let whatsapp { return URL(fileURLWithPath: try await whatsapp.localFile(path: path)) }
         let version = generation
         if let cached = localFiles.cached(path) { return cached }
         guard let media = await load(path), !closed, generation == version else {

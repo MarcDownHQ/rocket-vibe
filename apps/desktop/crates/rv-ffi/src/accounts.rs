@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf};
 use rv_core::session::SessionInfo;
 use serde_json::{Value, json};
 
-const KEYCHAIN_SERVICE: &str = "me.barrut.RocketVibe";
+pub(crate) const KEYCHAIN_SERVICE: &str = "me.barrut.RocketVibe";
 
 pub struct Dirs {
     pub config: PathBuf,
@@ -72,9 +72,7 @@ fn parse(secret: &str) -> Option<SessionInfo> {
     if rv_core::session::is_pending_logout(&v) {
         return None;
     }
-    // WhatsApp accounts of the GTK app share this index on macOS; SwiftUI has no
-    // WhatsApp facade yet.
-    SessionInfo::from_secret(&v).filter(|info| !rv_core::whatsapp::is_whatsapp(info))
+    SessionInfo::from_secret(&v)
 }
 
 /// A sign-out the server did not hear (offline): kept in the Keychain, marked,

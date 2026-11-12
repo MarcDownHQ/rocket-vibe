@@ -1,5 +1,5 @@
 //! A call carried natively for the SwiftUI app (Rocket.Chat's Jitsi provider,
-//! kChat's kMeet, Slack's huddles), as GTK's `native_call.rs` does: a voice
+//! kChat's kMeet, Slack's huddles, WhatsApp's calls), as GTK's `native_call.rs` does: a voice
 //! controller of its own and its `rv-voice` sidecar, audio only. `start_jitsi_call`
 //! and `Chat::start_huddle_call` answer None when the call cannot be joined, and
 //! the app then opens its page.
@@ -193,4 +193,22 @@ impl JitsiCallSession {
         }
         name
     }
+}
+
+/// Carries a WhatsApp call natively: answers the one ringing, or calls a
+/// person; None when it cannot be carried.
+pub(crate) async fn carry_whatsapp(
+    session: Arc<rv_core::whatsapp_session::WaSession>,
+    target: rv_core::whatsapp_session::WaTarget,
+    title: String,
+) -> Option<Arc<JitsiCallSession>> {
+    if !rv_core::voice::available() {
+        return None;
+    }
+    on_tokio(async move {
+        let voice = VoiceController::new();
+        session.carry_call(&voice, target, &title).await.ok()?;
+        Some(Arc::new(JitsiCallSession { voice, naming: None, plugin_call: None, asked: Mutex::default() }))
+    })
+    .await
 }

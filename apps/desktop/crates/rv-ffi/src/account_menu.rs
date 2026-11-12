@@ -131,10 +131,15 @@ impl Client {
             let key = account.clone();
             let found = blocking(move || {
                 let info = accounts::load_all(&dirs).into_iter().find(|info| accounts::key(info) == key)?;
-                if info.native.is_none() {
-                    accounts::keep_logout(&dirs, &info);
+                if rv_core::whatsapp::is_whatsapp(&info) {
+                    // Not running, so not unlinked from the phone: it lists the device until removed there.
+                    crate::whatsapp::forget(&dirs.data, &info);
+                } else {
+                    if info.native.is_none() {
+                        accounts::keep_logout(&dirs, &info);
+                    }
+                    rv_core::store::Store::remove_files(&dirs.database(&info));
                 }
-                rv_core::store::Store::remove_files(&dirs.database(&info));
                 accounts::remove(&dirs, &info);
                 Some(())
             })
@@ -177,8 +182,19 @@ impl Client {
                 let (dirs, info) = (self.dirs.clone(), info.clone());
                 blocking(move || accounts::remove(&dirs, &info)).await;
             }
-            // SwiftUI holds no WhatsApp account.
-            Account::WhatsApp(_) => return Err(RvError::local("unknown account")),
+            // The phone forgets this device first; a failure keeps the account.
+            Account::WhatsApp(session) => {
+                let s = session.clone();
+                on_tokio(async move { s.unlink().await }).await.map_err(RvError::local)?;
+                self.accounts.remove(&account);
+                session.shutdown();
+                let (dirs, info) = (self.dirs.clone(), info.clone());
+                blocking(move || {
+                    accounts::remove(&dirs, &info);
+                    crate::whatsapp::forget(&dirs.data, &info);
+                })
+                .await;
+            }
         }
         account_mute::unmute(&self.dirs.config, &account);
         Ok(())
