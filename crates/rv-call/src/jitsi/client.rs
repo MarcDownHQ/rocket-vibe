@@ -270,6 +270,10 @@ impl CallSignaling for Session {
         video_stream(&self.endpoint, kind)
     }
 
+    fn offers_local_sections(&self) -> bool {
+        true
+    }
+
     async fn set_video(&mut self, video: LocalVideo) -> Result<(), Error> {
         self.commands.send(Command::Video(video)).map_err(|_| Error::new("session ended"))
     }

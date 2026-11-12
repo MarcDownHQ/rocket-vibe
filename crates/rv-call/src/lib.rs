@@ -158,6 +158,18 @@ pub trait CallSignaling {
     fn can_send(&self, _kind: VideoKind) -> bool {
         false
     }
+    /// Whose and what a remote video track is, from its own ids, for a provider
+    /// that names it there rather than in [`Event::Videos`].
+    fn video_of(&self, _track: &str, _stream: &str) -> Option<(String, VideoKind)> {
+        None
+    }
+    /// Whether the provider's offers carry this side's own sending sections
+    /// (Jitsi): a local track then goes on the first unused one. Otherwise it
+    /// gets a section of its own, never one the server opened for another's
+    /// track.
+    fn offers_local_sections(&self) -> bool {
+        false
+    }
     /// The stream id a local video track carries; the microphone's by default.
     fn video_stream(&self, _kind: VideoKind) -> String {
         self.local_id().to_owned()

@@ -16,7 +16,7 @@ const SILENCE: std::time::Duration = std::time::Duration::from_secs(30);
 
 /// `RV_CALL_DEBUG=1` prints the frames' types and why a session ended, to stderr.
 fn debug(what: &str) {
-    if std::env::var("RV_CALL_DEBUG").as_deref() == Ok("1") {
+    if matches!(std::env::var("RV_CALL_DEBUG").as_deref(), Ok("1" | "2")) {
         eprintln!("rv-call: chime: {what}");
     }
 }
