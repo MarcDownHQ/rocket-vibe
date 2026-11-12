@@ -18,6 +18,9 @@ if [ ! -f "$voice" ]; then
   echo "warning: no voice sidecar at $voice, the bundle will not offer voice" >&2
   voice=
 fi
+# The licences of the crates the WhatsApp engine links into the app
+# (desktop-whatsapp.yml), when given.
+notice=${RV_WHATSAPP_LICENSES:-../dist/whatsapp/rv-whatsapp-licenses-macos.txt}
 lib=$(scripts/generate.sh | tail -1)
 RV_FFI_LIB_DIR="$PWD/../$lib" swift build -c release --product RocketVibe
 bin=$(RV_FFI_LIB_DIR="$PWD/../$lib" swift build -c release --product RocketVibe --show-bin-path)
@@ -28,6 +31,7 @@ rm -rf dist && mkdir -p "$contents/MacOS" "$contents/Resources"
 sed "s/@VERSION@/$version/g" data/Info.plist > "$contents/Info.plist"
 cp "$bin/RocketVibe" "$contents/MacOS/"
 if [ -n "$voice" ]; then install -m 755 "$voice" "$contents/MacOS/rv-voice"; fi
+if [ -f "$notice" ]; then cp "$notice" "$contents/Resources/rv-whatsapp-licenses.txt"; fi
 
 # The voice cues and ringtones, AVAudioPlayer reading no Ogg: AAC from the WAV masters.
 masters=$(mktemp -d)

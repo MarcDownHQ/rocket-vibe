@@ -10,6 +10,10 @@ on:
       voice-artifact:
         type: boolean
         default: false
+      # desktop.yml's whatsapp job listed the engine's licences: its rv-whatsapp-licenses artifact.
+      whatsapp-licenses:
+        type: boolean
+        default: false
   push:
     branches: ['**']
     paths:
@@ -79,6 +83,11 @@ jobs:
           identity=$(security find-identity -v -p codesigning "$keychain" | awk -F'"' '/Developer ID Application/ {print $2; exit}')
           if [ -z "$identity" ]; then echo "::error::no Developer ID Application identity in the certificate"; exit 1; fi
           echo "MACOS_SIGN_IDENTITY=$identity" >> "$GITHUB_ENV"
+      - uses: actions/download-artifact@v4
+        if: inputs.whatsapp-licenses
+        with:
+          name: rv-whatsapp-licenses
+          path: apps/desktop/dist/whatsapp
       # The voice sidecar (apps/desktop/voice/README.md): the release's, or built here.
       - uses: actions/download-artifact@v4
         if: inputs.voice-artifact
