@@ -241,6 +241,14 @@ mod tests {
     use super::*;
 
     const ME: &str = "conn1";
+
+    #[test]
+    fn a_forwarded_video_track_names_its_kind_and_sender() {
+        assert_eq!(video_of("screen_rw7epmnp_b39oxcjd"), Some(("rw7epmnp".into(), crate::VideoKind::Screen)));
+        assert_eq!(video_of("video_rw7epmnp_b39oxcjd"), Some(("rw7epmnp".into(), crate::VideoKind::Camera)));
+        assert_eq!(video_of("voice_rw7epmnp_b39oxcjd"), None);
+        assert_eq!(video_of("camera"), None);
+    }
     const CH: &str = "chan";
 
     #[test]
