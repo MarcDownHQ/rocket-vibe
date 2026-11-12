@@ -100,14 +100,28 @@ struct VoiceOccupants: View {
 /// when a new frame came: the frames reach the app over the sidecar's loopback
 /// stream, rv-ffi hands the latest one.
 struct VoiceVideo: View {
-    let native: NativeChat
+    /// The latest frame newer than a serial (empty pixels when none is newer).
+    let fetch: (UInt64) -> VoiceFrame?
     let identity: String
-    var screen = false
     var fill = false
-    /// A share picker's thumbnail rather than someone's video.
-    var thumbnail = false
     @State var image: CGImage?
     @State var serial: UInt64 = 0
+
+    /// A camera or screen of the Vibez session, or a share picker's thumbnail.
+    init(native: NativeChat, identity: String, screen: Bool = false, fill: Bool = false, thumbnail: Bool = false) {
+        self.identity = identity
+        self.fill = fill
+        fetch = thumbnail
+            ? { native.voiceThumbnail(source: identity, since: $0) }
+            : { native.voiceFrame(identity: identity, screen: screen, since: $0) }
+    }
+
+    /// A camera or screen of a call carried natively.
+    init(call: JitsiCallSession, member: VoiceMember, screen: Bool = false, fill: Bool = false) {
+        identity = member.id + (screen ? "/screen" : "/camera")
+        self.fill = fill
+        fetch = { call.frame(member: member.id, local: member.local, screen: screen, since: $0) }
+    }
 
     var body: some View {
         ZStack {
@@ -131,10 +145,7 @@ struct VoiceVideo: View {
     }
 
     func poll() {
-        let frame = thumbnail
-            ? native.voiceThumbnail(source: identity, since: serial)
-            : native.voiceFrame(identity: identity, screen: screen, since: serial)
-        guard let frame else {
+        guard let frame = fetch(serial) else {
             if serial != 0 { serial = 0; image = nil }
             return
         }
