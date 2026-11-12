@@ -113,6 +113,10 @@ struct LoginView: View {
                         }
                     }
                     .pickerStyle(.segmented)
+                    // A linked device, not a server: its own sheet (`WhatsAppLinkSheet`).
+                    if experimental {
+                        Button(L("wa.link_title")) { app.openWhatsAppLink() }
+                    }
                     if login.kind == .slack {
                         Text(L("slack.browserHelp"))
                             .font(.caption)
