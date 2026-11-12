@@ -425,6 +425,9 @@ pub struct MattermostCall {
     pub channel_id: String,
     pub user_id: String,
     pub ice_servers: Vec<rv_voice_protocol::IceServerSpec>,
+    /// What the plugin lets a member send besides the microphone.
+    pub screen: bool,
+    pub camera: bool,
 }
 
 impl std::fmt::Debug for MattermostCall {
@@ -615,7 +618,7 @@ impl VoiceController {
         self.command(Command::RemoteEnded { reason: reason.to_owned() }).await;
     }
 
-    /// Joins a Mattermost channel's call natively (the Calls plugin). Audio only.
+    /// Joins a Mattermost channel's call natively (the Calls plugin).
     pub async fn connect_mattermost(&self, label: &str, call: &MattermostCall) -> Result<(), VoiceError> {
         let connect = Command::ConnectMattermost {
             server: call.server.clone(),
@@ -623,6 +626,8 @@ impl VoiceController {
             channel_id: call.channel_id.clone(),
             user_id: call.user_id.clone(),
             ice_servers: call.ice_servers.clone(),
+            screen: call.screen,
+            camera: call.camera,
         };
         self.start(label.to_owned(), true, None, None, connect).await
     }

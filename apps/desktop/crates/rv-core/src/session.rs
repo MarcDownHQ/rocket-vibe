@@ -2571,12 +2571,15 @@ impl Session {
             .strip_prefix(mattermost::translate::PLUGIN_CALL)
             .ok_or_else(|| RestError::incomplete("call: not a Mattermost call"))?;
         let credentials = self.rest.credentials().ok_or_else(|| RestError::incomplete("call: signed out"))?;
+        let media = mattermost::calls::media(&self.rest).await;
         Ok(crate::voice::MattermostCall {
             server: self.rest.base().as_str().trim_end_matches('/').to_owned(),
             token: credentials.auth_token.clone(),
             channel_id: channel.to_owned(),
             user_id: self.info.user_id.clone(),
-            ice_servers: mattermost::calls::ice_servers(&self.rest).await,
+            ice_servers: media.ice_servers,
+            screen: media.screen,
+            camera: media.camera,
         })
     }
 

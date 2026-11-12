@@ -106,7 +106,7 @@ pub enum Command {
         reason: String,
     },
     /// Join a Mattermost Calls plugin call natively, the channel's, starting it
-    /// when none runs: the sidecar speaks its signalling itself (rv-call). Audio only.
+    /// when none runs: the sidecar speaks its signalling itself (rv-call).
     ConnectMattermost {
         /// `https://host[/subpath]`.
         server: String,
@@ -117,6 +117,12 @@ pub enum Command {
         /// The plugin's STUN and TURN servers (`/config`, `/turn-credentials`).
         #[serde(default)]
         ice_servers: Vec<IceServerSpec>,
+        /// What the plugin lets a member send besides the microphone (`/config`
+        /// `AllowScreenSharing`, `EnableVideo`).
+        #[serde(default, skip_serializing_if = "is_false")]
+        screen: bool,
+        #[serde(default, skip_serializing_if = "is_false")]
+        camera: bool,
     },
     /// A call whose audio another process carries (a WhatsApp call, in the app's
     /// WhatsApp engine): its 16 kHz mono PCM, 60 ms frames of 960 little-endian

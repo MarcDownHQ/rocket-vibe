@@ -171,12 +171,12 @@ async fn run() {
                     };
                     return call::run(join, voice.fake, voice.video_out(), &mut commands).await;
                 }
-                Some(Ok(Command::ConnectMattermost { server, token, channel_id, user_id, ice_servers })) => {
+                Some(Ok(Command::ConnectMattermost { server, token, channel_id, user_id, ice_servers, screen, camera })) => {
                     if voice.room.is_some() {
                         error("already_connected");
                         continue;
                     }
-                    let config = rv_call::mattermost::Config { server, token, channel_id, user_id };
+                    let config = rv_call::mattermost::Config { server, token, channel_id, user_id, screen, camera };
                     let ice: Vec<rv_call::IceServer> = ice_servers
                         .into_iter()
                         .map(|s| rv_call::IceServer { urls: s.urls, username: s.username, credential: s.credential })

@@ -295,7 +295,7 @@ pub extern "system" fn Java_com_rocketvibe_voice_JitsiCall_startMattermost(
     ) else {
         return 0;
     };
-    let config = rv_call::mattermost::Config { server, token, channel_id, user_id };
+    let config = rv_call::mattermost::Config { server, token, channel_id, user_id, screen: false, camera: false };
     match Call::start_mattermost(config, &ice_servers) {
         Some(call) => {
             let handle = NEXT.fetch_add(1, Ordering::Relaxed);
