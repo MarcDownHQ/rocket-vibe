@@ -4,7 +4,7 @@ The goal: calls on Teams, Rocket.Chat (Jitsi), kChat (kMeet) and Slack (huddles)
 by the apps themselves, with no web page, no WebView and no browser: our own signalling
 client per provider, our own WebRTC media, the existing call UI. This page records what the
 research and the captures established, the architecture chosen, what is built ("Implementation
-status": Jitsi and kMeet, Slack huddles, Teams calls placed from a chat, Mattermost's Calls plugin, WhatsApp 1:1 calls), the order, and the captures still owed.
+status": Jitsi and kMeet, Slack huddles, Teams calls placed from a chat, Mattermost's Calls plugin, WhatsApp 1:1 calls, video), the order, and the captures still owed.
 The fallback (a call window on the provider's web page, Teams' one-time Microsoft sign-in) is in
 [../features/calls.md](../features/calls.md); the decision is in [../decisions.md](../decisions.md).
 
@@ -569,6 +569,62 @@ then run on the bench. kChat has no such plugin: its calls stay kMeet's.
   (`drm_sched_entity_flush`, the video encoders' probe): the test ran with `/dev/dri` hidden
   (`unshare -rm`). A machine in that state cannot start any native call.
 
+### Video in native calls (2026-11-12)
+
+- **rv-call** names video: `Event::Videos` (the whole list of remote cameras and screens, by track or
+  stream id, whose, which kind), `can_send(kind)`, `video_stream(kind)` (the msid stream id of this
+  side's camera or screen track), `set_video(LocalVideo)` (told after a track was attached or
+  detached; the adapter renegotiates as its provider does), `offers_local_sections` (Jitsi: a local
+  track goes on the first unused transceiver, which its offer's own section created; otherwise a
+  fresh `SendOnly` transceiver, never one the server opened for someone else's track, which libwebrtc
+  then refused to answer), `video_of(track, stream)` (a provider naming tracks in their ids),
+  `data_channel` with `data_protocol` and `Event::DataMessage`.
+- **Sidecar** (`call.rs` `Videos`, `sync_video`): the camera and screen captures of `video.rs` (the
+  LiveKit path's) become tracks of the call's peer connection, made anew for each media session's
+  factory; remote video tracks go to the app's frame stream (`video::watch_rtc`) under the member's id,
+  this side's previews under `frames::LOCAL_PREVIEW`; `Event::CallVideo` says what the provider takes
+  (`Snapshot::call_video`). A renegotiation offer goes out at once on a connected call; when the
+  server's offer crosses it, this side rolls its own back, answers, offers again, and an answer it
+  cannot set is answered by offering again (at most 3) rather than by rejoining.
+- **Jitsi and kMeet**: the client announces `rtp:video`, `receive-multiple-video-streams`,
+  `http://jitsi.org/tcc`, `urn:ietf:rfc:4588` (rtx) and `dtls-sctp`. Without transport-cc Jicofo offers
+  no bandwidth feedback, and **without a bridge channel the bridge forwards no video at all**:
+  meet.barrut.me offers neither SCTP nor a colibri WebSocket, and Jitsi's web client adds a `data`
+  content to its `session-accept` itself (captured 2026-11-12); the client does the same (an
+  `m=application` section in the synthetic offer, the data channel "JVB data channel", protocol
+  `http://jitsi.org/protocols/colibri`) and sends `ReceiverVideoConstraints` (720 lines a camera, 1080
+  a screen) over it, or over the bridge's WebSocket when one is offered. Each remote camera or screen is
+  a receive section (`sdp.rs` `Stream`: a source name's SSRCs and groups; a simulcast camera received as
+  its first layer and that layer's rtx, which the bridge forwards every layer under); this side's
+  camera and screen go on two sections of their own (`video`, `screen`, VP8 first) and reach the focus
+  as `source-add` / `source-remove` (`<endpoint>-v0` camera, `-v1` desktop, with `videoType`), read from
+  libwebrtc's answer by their msid stream; `SourceInfo` in the presence says which are muted, and a
+  muted remote camera is dropped from `Videos`.
+- **Mattermost Calls plugin**: `/config` `AllowScreenSharing` and `EnableVideo` say what a member may
+  send (`MattermostCall::screen`, `camera`); `screen_on {screenStreamID}` / `video_on {videoStreamID}` go
+  before the offer carrying the track, `screen_off` / `video_off` after; the SFU names a forwarded track
+  `<screen|video>_<sender session>_<random>` (`mattermost::video_of`). The plugin's web client learns the
+  kind from a `MediaMap` data-channel message instead, not read here.
+- **Checked live (2026-11-12)**: two sidecars (`RV_VOICE_FAKE_VIDEO=pattern`) on meet.barrut.me each
+  decoded the other's camera (640x480) and screen (1280x720); Jitsi's web client in headless Chromium
+  decoded the sidecar's camera and screen, and the sidecar its simulcast camera; on the Mattermost bench
+  (`EnableVideo` off) screens both ways, a camera only in fits (the server does not carry them with
+  video off). The GTK window against a real Jitsi call (`RV_SMOKE_NATIVE_CALL`, Fedora image under
+  Xvfb): the peer's screen on the stage, both cameras in tiles. On this machine the sidecar's libwebrtc
+  hangs creating its video codecs while `/dev/dri` is reachable (the stuck GPU driver above): tests ran
+  with it hidden.
+- **Windows**: GTK `native_call.rs` (camera and screen buttons where the provider takes them, a camera
+  in its tile, a shared screen, someone else's first, on a stage above the people); SwiftUI
+  `NativeCallWindow.swift` over rv-ffi `JitsiCallSession` (`frame`, `set_camera`, screen share; no camera
+  button, the sidecar capturing no camera on macOS), macOS CI build only.
+- **The room's chat beside the call**: GTK `call_chat.rs` (the room's latest messages from the store,
+  redrawn on its changes, and a composer posting through the outbox) behind a header button
+  (`native_call::Opened::chat`); SwiftUI the room's `MessageList` and `Composer` on a `RoomModel` of
+  its own (`AppModel::callChat`).
+- **Owed**: Android (video and the chat button); Chime (video subscription, the screen-share socket),
+  Teams (video m-lines, the `x-data` subscriptions, screen-share renegotiation captured but not built),
+  WhatsApp (its video codec); the plugin's `MediaMap`.
+
 ### WhatsApp 1:1 calls, audio (2026-11-11)
 
 Unlike every other provider, WhatsApp's call is not WebRTC the sidecar can join: whatsapp-rust
@@ -628,6 +684,9 @@ Teams meetings and video last.
 - apps/mobile/modules/voice, crates/rv-voice-mobile
 - crates/rv-voice-protocol
 - docs/MATTERMOST.md (kMeet conferences)
+- apps/desktop/voice/src/call.rs, apps/desktop/voice/src/video.rs, crates/rv-call/src/jitsi/sdp.rs,
+  apps/desktop/crates/rv-gtk/src/native_call.rs, apps/desktop/crates/rv-gtk/src/call_chat.rs,
+  apps/desktop/macos/Sources/RocketVibe/NativeCallWindow.swift
 - crates/rv-call/src/mattermost, apps/desktop/crates/rv-core/src/mattermost/calls.rs,
   apps/mobile/providers/mattermost/pluginCalls.ts
 - The Calls plugin 1.12.3 (`mattermost-plugin-calls-v1.12.3-linux-amd64.tar.gz`, its webapp
