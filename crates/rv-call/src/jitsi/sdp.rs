@@ -1,8 +1,9 @@
 //! Jingle (XEP-0166/0167/0176/0320/0339) to SDP and back, the way lib-jitsi-meet's
-//! `SDP.js` does it for Unified Plan, audio only: the bridge offers one `audio`
+//! `SDP.js` does it for Unified Plan: the bridge offers an `audio` and a `video`
 //! content carrying every remote source; libwebrtc wants one media section per
-//! remote stream, so each remote audio source gets a `recvonly` section of its
-//! own, after the `sendrecv` one this client sends its microphone on.
+//! remote stream, so each remote source (a microphone, a camera, a screen) gets
+//! a `recvonly` section of its own, after the ones this client sends on: its
+//! microphone's, then two for its camera and its screen.
 
 use crate::Candidate;
 use crate::xml::Element;
@@ -16,6 +17,7 @@ pub const RTCP_FB: &str = "urn:xmpp:jingle:apps:rtp:rtcp-fb:0";
 pub const HDREXT: &str = "urn:xmpp:jingle:apps:rtp:rtp-hdrext:0";
 pub const GROUPING: &str = "urn:xmpp:jingle:apps:grouping:0";
 pub const JITMEET: &str = "http://jitsi.org/jitmeet";
+pub const COLIBRI: &str = "http://jitsi.org/protocol/colibri";
 
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct Payload {
@@ -36,6 +38,69 @@ pub struct Source {
     pub params: Vec<(String, String)>,
     /// The occupant this source belongs to (`room@muc/endpoint`), or `jvb`.
     pub owner: String,
+    /// `camera` or `desktop` for a video source, when the sender says.
+    pub video_type: String,
+}
+
+/// An `<ssrc-group>`: `FID` (a stream and its retransmissions), `SIM` (simulcast layers).
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct Group {
+    pub semantics: String,
+    pub ssrcs: Vec<u32>,
+}
+
+/// One remote track: every SSRC of one source name (its retransmissions and
+/// simulcast layers), which libwebrtc receives in one media section.
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct Stream {
+    pub media: String,
+    pub sources: Vec<Source>,
+    pub groups: Vec<Group>,
+}
+
+impl Stream {
+    pub fn name(&self) -> String {
+        let first = &self.sources[0];
+        if first.name.is_empty() {
+            let kind = if self.media == "video" { 'v' } else { 'a' };
+            format!("{}-{kind}{}", first.endpoint(), first.ssrc)
+        } else {
+            first.name.clone()
+        }
+    }
+
+    pub fn endpoint(&self) -> String {
+        self.sources[0].endpoint()
+    }
+
+    pub fn video_type(&self) -> &str {
+        self.sources.iter().map(|s| s.video_type.as_str()).find(|t| !t.is_empty()).unwrap_or_default()
+    }
+
+    /// The SSRC the bridge sends on, and its retransmissions': the first
+    /// simulcast layer when there are layers (the bridge forwards every layer
+    /// under it), else the first SSRC that is no other's retransmission.
+    fn received(&self) -> (u32, Option<u32>) {
+        let rtx_of = |ssrc: u32| {
+            self.groups
+                .iter()
+                .find(|g| g.semantics == "FID" && g.ssrcs.first() == Some(&ssrc))
+                .and_then(|g| g.ssrcs.get(1).copied())
+        };
+        let primary = self
+            .groups
+            .iter()
+            .find(|g| g.semantics == "SIM")
+            .and_then(|g| g.ssrcs.first().copied())
+            .or_else(|| {
+                self.sources
+                    .iter()
+                    .map(|s| s.ssrc)
+                    .find(|ssrc| !self.groups.iter().any(|g| g.semantics == "FID" && g.ssrcs.get(1) == Some(ssrc)))
+            })
+            .unwrap_or(self.sources[0].ssrc);
+        (primary, rtx_of(primary))
+    }
 }
 
 impl Source {
@@ -70,7 +135,10 @@ pub struct Content {
     pub extmaps: Vec<(u16, String)>,
     pub rtcp_mux: bool,
     pub sources: Vec<Source>,
+    pub groups: Vec<Group>,
     pub transport: Transport,
+    /// The bridge channel's WebSocket (`<web-socket url>` in the transport).
+    pub bridge_socket: Option<String>,
 }
 
 /// A Jingle session as offered: what [`Offer::sdp`] renders.
@@ -78,11 +146,26 @@ pub struct Content {
 pub struct Offer {
     pub sid: String,
     pub audio: Content,
-    /// Remote audio sources in their media sections' order; `None` once removed
-    /// (a media section is never taken out, only made inactive).
-    pub slots: Vec<Option<Source>>,
+    /// The video content, when the focus offered one with codecs.
+    pub video: Option<Content>,
+    /// Remote streams in their media sections' order, each section's media
+    /// kept; `None` once removed (a media section is never taken out, only
+    /// made inactive).
+    pub slots: Vec<(String, Option<Stream>)>,
     /// The `o=` version, raised on each renegotiation.
     pub version: u32,
+}
+
+/// The media section this client sends its screen on; its camera goes on the
+/// video content's own.
+pub const SCREEN_MID: &str = "screen";
+/// The bridge channel's section, and its SCTP port as Jitsi's clients give it.
+pub const DATA_MID: &str = "data";
+pub const SCTP_PORT: u16 = 5000;
+
+/// Whether libwebrtc's answer took the bridge channel's section.
+pub fn answers_data(sdp: &str) -> bool {
+    sdp.lines().map(str::trim).any(|l| l.starts_with("m=application ") && !l.starts_with("m=application 0 "))
 }
 
 /// Parses an `<rtp:description>` + `<transport>` content.
@@ -120,9 +203,11 @@ pub fn parse_content(content: &Element) -> Option<Content> {
         }
     }
     out.sources = parse_sources(description);
+    out.groups = parse_groups(description);
     if let Some(t) = content.find("transport", ICE_UDP) {
         out.transport = parse_transport(t);
         out.rtcp_mux |= t.find("rtcp-mux", ICE_UDP).is_some();
+        out.bridge_socket = t.find("web-socket", COLIBRI).and_then(|w| w.get("url")).map(str::to_owned);
     }
     Some(out)
 }
@@ -141,7 +226,18 @@ pub fn parse_sources(description: &Element) -> Vec<Source> {
                     })
                     .collect(),
                 owner: s.find("ssrc-info", JITMEET).and_then(|i| i.get("owner")).unwrap_or_default().to_owned(),
+                video_type: s.get("videoType").unwrap_or_default().to_owned(),
             })
+        })
+        .collect()
+}
+
+pub fn parse_groups(description: &Element) -> Vec<Group> {
+    description
+        .find_all("ssrc-group", SSMA)
+        .map(|g| Group {
+            semantics: g.get("semantics").unwrap_or_default().to_owned(),
+            ssrcs: g.find_all("source", SSMA).filter_map(|s| s.get("ssrc")?.parse().ok()).collect(),
         })
         .collect()
 }
@@ -217,82 +313,158 @@ pub fn candidate_element(line: &str, id: &str) -> Option<Element> {
 }
 
 impl Offer {
-    /// The offer's audio content from a `session-initiate`.
+    /// The offer's audio and video contents from a `session-initiate`.
     pub fn from_initiate(jingle: &Element) -> Option<Offer> {
-        let audio = jingle.find_all("content", JINGLE).filter_map(parse_content).find(|c| c.media == "audio")?;
-        let mut offer = Offer { sid: jingle.get("sid").unwrap_or_default().to_owned(), audio, ..Default::default() };
-        let sources = std::mem::take(&mut offer.audio.sources);
-        offer.add(sources);
+        let contents: Vec<Content> = jingle.find_all("content", JINGLE).filter_map(parse_content).collect();
+        let audio = contents.iter().find(|c| c.media == "audio")?.clone();
+        let video = contents.iter().find(|c| c.media == "video" && !c.payloads.is_empty()).cloned();
+        let mut offer =
+            Offer { sid: jingle.get("sid").unwrap_or_default().to_owned(), audio, video, ..Default::default() };
+        let take = |c: &mut Content| (c.media.clone(), std::mem::take(&mut c.sources), std::mem::take(&mut c.groups));
+        let mut remote = vec![take(&mut offer.audio)];
+        remote.extend(offer.video.as_mut().map(take));
+        offer.add(remote);
         offer.version = 1;
         Some(offer)
     }
 
-    /// Adds remote sources (`source-add`); the bridge's own and duplicates skipped.
-    pub fn add(&mut self, sources: Vec<Source>) {
-        for source in sources {
-            if source.owner == "jvb" || self.slots.iter().flatten().any(|s| s.ssrc == source.ssrc) {
+    /// Adds remote sources (`source-add`), per media: the bridge's own and
+    /// duplicates skipped, the SSRCs of one source name in one stream.
+    pub fn add(&mut self, contents: Vec<(String, Vec<Source>, Vec<Group>)>) {
+        for (media, sources, groups) in contents {
+            if media == "video" && self.video.is_none() {
                 continue;
             }
-            self.slots.push(Some(source));
+            for source in sources {
+                if source.owner == "jvb" || self.streams().any(|s| s.sources.iter().any(|o| o.ssrc == source.ssrc)) {
+                    continue;
+                }
+                let same = |s: &Stream| {
+                    s.media == media
+                        && !source.name.is_empty()
+                        && s.sources[0].name == source.name
+                        && s.sources[0].owner == source.owner
+                };
+                match self.slots.iter_mut().filter_map(|(_, s)| s.as_mut()).find(|s| same(s)) {
+                    Some(stream) => stream.sources.push(source),
+                    None => self.slots.push((
+                        media.clone(),
+                        Some(Stream { media: media.clone(), sources: vec![source], groups: Vec::new() }),
+                    )),
+                }
+            }
+            for group in groups {
+                if let Some(stream) =
+                    self.slots.iter_mut().filter_map(|(_, s)| s.as_mut()).find(|s| {
+                        s.media == media && group.ssrcs.iter().all(|g| s.sources.iter().any(|o| o.ssrc == *g))
+                    })
+                    && !stream.groups.contains(&group)
+                {
+                    stream.groups.push(group);
+                }
+            }
         }
         self.version += 1;
     }
 
     /// Removes remote sources by ssrc (`source-remove`).
     pub fn remove(&mut self, ssrcs: &[u32]) {
-        for slot in &mut self.slots {
-            if slot.as_ref().is_some_and(|s| ssrcs.contains(&s.ssrc)) {
-                *slot = None;
+        for (_, slot) in &mut self.slots {
+            if let Some(stream) = slot {
+                stream.sources.retain(|s| !ssrcs.contains(&s.ssrc));
+                stream.groups.retain(|g| !g.ssrcs.iter().any(|s| ssrcs.contains(s)));
+                if stream.sources.is_empty() {
+                    *slot = None;
+                }
             }
         }
         self.version += 1;
     }
 
-    /// The remote description: this client's `sendrecv` section, then one
-    /// `recvonly` section per remote source, all bundled on one transport.
+    /// The remote streams, live ones only.
+    pub fn streams(&self) -> impl Iterator<Item = &Stream> {
+        self.slots.iter().filter_map(|(_, s)| s.as_ref())
+    }
+
+    /// The remote video streams, live ones only.
+    pub fn video_streams(&self) -> impl Iterator<Item = &Stream> {
+        self.streams().filter(|s| s.media == "video")
+    }
+
+    /// The remote description: this client's microphone section, its camera's
+    /// and its screen's when video is offered, then one section per remote
+    /// stream, all bundled on one transport.
     pub fn sdp(&self) -> String {
         let mut s = String::new();
         s.push_str("v=0\r\n");
         s.push_str(&format!("o=- {} {} IN IP4 0.0.0.0\r\n", sid_number(&self.sid), self.version));
         s.push_str("s=-\r\nt=0 0\r\n");
-        let mids: Vec<String> = std::iter::once(self.audio.name.clone())
-            .chain(self.slots.iter().enumerate().filter(|(_, s)| s.is_some()).map(|(i, _)| slot_mid(i)))
-            .collect();
+        let mut mids = vec![self.audio.name.clone()];
+        if let Some(video) = &self.video {
+            mids.push(video.name.clone());
+            mids.push(SCREEN_MID.to_owned());
+            mids.push(DATA_MID.to_owned());
+        }
+        mids.extend(self.slots.iter().enumerate().filter(|(_, (_, s))| s.is_some()).map(|(i, _)| slot_mid(i)));
         s.push_str(&format!("a=group:BUNDLE {}\r\n", mids.join(" ")));
         s.push_str("a=msid-semantic: WMS *\r\n");
-        self.section(&mut s, &self.audio.name, None, "sendrecv");
-        for (i, slot) in self.slots.iter().enumerate() {
+        self.section(&mut s, &self.audio, &self.audio.name, None, "sendrecv");
+        if let Some(video) = &self.video {
+            // The bridge only receives on these: libwebrtc answers `sendonly`
+            // while a track is on them, `inactive` otherwise.
+            self.section(&mut s, video, &video.name, None, "recvonly");
+            self.section(&mut s, video, SCREEN_MID, None, "recvonly");
+            self.data_section(&mut s);
+        }
+        for (i, (media, slot)) in self.slots.iter().enumerate() {
+            let content = match &self.video {
+                Some(video) if media == "video" => video,
+                _ => &self.audio,
+            };
             match slot {
-                Some(source) => self.section(&mut s, &slot_mid(i), Some(source), "sendonly"),
-                None => self.section(&mut s, &slot_mid(i), None, "inactive"),
+                Some(stream) => self.section(&mut s, content, &slot_mid(i), Some(stream), "sendonly"),
+                None => self.section(&mut s, content, &slot_mid(i), None, "inactive"),
             }
         }
         s
     }
 
-    /// One media section; the remote side's direction (`sendonly` for a source
-    /// only the remote sends, which libwebrtc answers `recvonly`).
-    fn section(&self, s: &mut String, mid: &str, source: Option<&Source>, direction: &str) {
-        let a = &self.audio;
-        let pts: Vec<String> = a.payloads.iter().map(|p| p.id.to_string()).collect();
-        let port = if direction == "inactive" && mid != a.name { 0 } else { 9 };
-        s.push_str(&format!("m=audio {port} UDP/TLS/RTP/SAVPF {}\r\n", pts.join(" ")));
-        s.push_str("c=IN IP4 0.0.0.0\r\na=rtcp:1 IN IP4 0.0.0.0\r\n");
-        let t = &a.transport;
+    /// The bridge channel's SCTP section: Jicofo offers none, the client adds
+    /// it to its answer (`data` content) and the bridge opens SCTP on it.
+    fn data_section(&self, s: &mut String) {
+        let t = &self.audio.transport;
+        s.push_str("m=application 9 UDP/DTLS/SCTP webrtc-datachannel\r\nc=IN IP4 0.0.0.0\r\n");
         s.push_str(&format!("a=ice-ufrag:{}\r\na=ice-pwd:{}\r\n", t.ufrag, t.pwd));
         if let Some((hash, value, setup)) = &t.fingerprint {
             s.push_str(&format!("a=fingerprint:{hash} {value}\r\na=setup:{setup}\r\n"));
         }
-        if mid == a.name {
+        s.push_str(&format!("a=mid:{DATA_MID}\r\na=sctp-port:{SCTP_PORT}\r\n"));
+    }
+
+    /// One media section; the remote side's direction (`sendonly` for a source
+    /// only the remote sends, which libwebrtc answers `recvonly`).
+    fn section(&self, s: &mut String, content: &Content, mid: &str, stream: Option<&Stream>, direction: &str) {
+        let payloads = preferred(content);
+        let pts: Vec<String> = payloads.iter().map(|p| p.id.to_string()).collect();
+        let first = mid == self.audio.name;
+        let port = if direction == "inactive" && !first { 0 } else { 9 };
+        s.push_str(&format!("m={} {port} UDP/TLS/RTP/SAVPF {}\r\n", content.media, pts.join(" ")));
+        s.push_str("c=IN IP4 0.0.0.0\r\na=rtcp:1 IN IP4 0.0.0.0\r\n");
+        let t = &self.audio.transport;
+        s.push_str(&format!("a=ice-ufrag:{}\r\na=ice-pwd:{}\r\n", t.ufrag, t.pwd));
+        if let Some((hash, value, setup)) = &t.fingerprint {
+            s.push_str(&format!("a=fingerprint:{hash} {value}\r\na=setup:{setup}\r\n"));
+        }
+        if first {
             for c in &t.candidates {
                 s.push_str(&format!("a={c}\r\n"));
             }
         }
         s.push_str(&format!("a=mid:{mid}\r\na={direction}\r\n"));
-        if a.rtcp_mux {
+        if self.audio.rtcp_mux || content.rtcp_mux {
             s.push_str("a=rtcp-mux\r\n");
         }
-        for p in &a.payloads {
+        for p in &payloads {
             let channels = if p.channels > 1 { format!("/{}", p.channels) } else { String::new() };
             s.push_str(&format!("a=rtpmap:{} {}/{}{channels}\r\n", p.id, p.name, p.clockrate));
             if !p.params.is_empty() {
@@ -304,19 +476,48 @@ impl Offer {
                 s.push_str(&format!("a=rtcp-fb:{} {fb}\r\n", p.id));
             }
         }
-        for (id, uri) in &a.extmaps {
+        for (id, uri) in &content.extmaps {
             s.push_str(&format!("a=extmap:{id} {uri}\r\n"));
         }
-        if let Some(source) = source {
-            let endpoint = source.endpoint();
-            let track =
-                if source.name.is_empty() { format!("{endpoint}-a{}", source.ssrc) } else { source.name.clone() };
+        if let Some(stream) = stream {
+            let endpoint = stream.endpoint();
+            let track = stream.name();
             s.push_str(&format!("a=msid:{endpoint} {track}\r\n"));
-            let cname = source.params.iter().find(|(k, _)| k == "cname").map(|(_, v)| v.clone()).unwrap_or(endpoint);
-            s.push_str(&format!("a=ssrc:{} cname:{cname}\r\n", source.ssrc));
-            s.push_str(&format!("a=ssrc:{} msid:{} {track}\r\n", source.ssrc, source.endpoint()));
+            let cname = stream.sources[0]
+                .params
+                .iter()
+                .find(|(k, _)| k == "cname")
+                .map(|(_, v)| v.clone())
+                .unwrap_or_else(|| endpoint.clone());
+            let (primary, rtx) =
+                if stream.media == "video" { stream.received() } else { (stream.sources[0].ssrc, None) };
+            if let Some(rtx) = rtx {
+                s.push_str(&format!("a=ssrc-group:FID {primary} {rtx}\r\n"));
+            }
+            for ssrc in std::iter::once(primary).chain(rtx) {
+                s.push_str(&format!("a=ssrc:{ssrc} cname:{cname}\r\n"));
+                s.push_str(&format!("a=ssrc:{ssrc} msid:{endpoint} {track}\r\n"));
+            }
         }
     }
+}
+
+/// The content's codecs, VP8 (and its retransmissions) first in a video one:
+/// libwebrtc sends the first one its answer keeps, and VP8 is the cheapest to
+/// encode that every Jitsi client decodes.
+fn preferred(content: &Content) -> Vec<Payload> {
+    let mut payloads = content.payloads.clone();
+    if content.media == "video" {
+        let vp8: Vec<String> =
+            payloads.iter().filter(|p| p.name.eq_ignore_ascii_case("VP8")).map(|p| p.id.to_string()).collect();
+        let rank = |p: &Payload| {
+            let rtx_of_vp8 =
+                p.name.eq_ignore_ascii_case("rtx") && p.params.iter().any(|(k, v)| k == "apt" && vp8.contains(v));
+            if p.name.eq_ignore_ascii_case("VP8") || rtx_of_vp8 { 0 } else { 1 }
+        };
+        payloads.sort_by_key(rank);
+    }
+    payloads
 }
 
 fn slot_mid(i: usize) -> String {
@@ -332,6 +533,7 @@ fn sid_number(sid: &str) -> String {
 /// This client's side, read from libwebrtc's answer (its first media section).
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct Answer {
+    pub media: String,
     pub payloads: Vec<Payload>,
     pub extmaps: Vec<(u16, String)>,
     pub rtcp_mux: bool,
@@ -376,6 +578,8 @@ impl Answer {
                 target.candidates.push(format!("candidate:{v}"));
             } else if !in_section {
                 continue;
+            } else if let Some(v) = line.strip_prefix("m=") {
+                out.media = v.split(' ').next().unwrap_or_default().to_owned();
             } else if line == "a=rtcp-mux" {
                 out.rtcp_mux = true;
             } else if let Some(v) = line.strip_prefix("a=rtpmap:") {
@@ -431,8 +635,9 @@ impl Answer {
     /// The `<content>` of a `session-accept` (initiator's content `name`); `endpoint`
     /// names this client's source as Jitsi expects (`<endpoint>-a0`).
     pub fn content(&self, name: &str, endpoint: &str) -> Element {
-        let mut description = Element::new("description", RTP).attr("media", "audio");
-        if let Some(ssrc) = self.ssrc {
+        let audio = self.media.is_empty() || self.media == "audio";
+        let mut description = Element::new("description", RTP).attr("media", if audio { "audio" } else { &self.media });
+        if let (Some(ssrc), true) = (self.ssrc, audio) {
             description.set_attr("ssrc", ssrc.to_string());
         }
         for p in &self.payloads {
@@ -458,7 +663,7 @@ impl Answer {
         for (id, uri) in &self.extmaps {
             description.push(Element::new("rtp-hdrext", HDREXT).attr("id", id.to_string()).attr("uri", uri));
         }
-        if let Some(ssrc) = self.ssrc {
+        if let (Some(ssrc), true) = (self.ssrc, audio) {
             let source_name = format!("{endpoint}-a0");
             description.push(
                 Element::new("source", SSMA).attr("ssrc", ssrc.to_string()).attr("name", &source_name).child(
@@ -499,6 +704,84 @@ impl Answer {
         }
         t
     }
+}
+
+/// One of this client's own video tracks as libwebrtc's answer sends it: every
+/// SSRC of the section carrying it (its retransmissions' too), its groups, the
+/// `msid` and `cname`.
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct LocalStream {
+    pub ssrcs: Vec<u32>,
+    pub groups: Vec<Group>,
+    pub msid: String,
+    pub cname: String,
+}
+
+/// The section of `sdp` sending a track of stream `stream` (`a=msid:<stream> ...`),
+/// if one sends.
+pub fn local_stream(sdp: &str, stream: &str) -> Option<LocalStream> {
+    let mut sections: Vec<Vec<&str>> = Vec::new();
+    for line in sdp.lines().map(str::trim) {
+        if line.starts_with("m=") {
+            sections.push(Vec::new());
+        }
+        if let Some(section) = sections.last_mut() {
+            section.push(line);
+        }
+    }
+    let wanted = format!("a=msid:{stream} ");
+    let section = sections.into_iter().find(|lines| {
+        lines.iter().any(|l| l.starts_with(&wanted))
+            && lines.iter().any(|l| *l == "a=sendonly" || *l == "a=sendrecv")
+            && !lines[0].split(' ').nth(1).is_some_and(|port| port == "0")
+    })?;
+    let mut out = LocalStream::default();
+    for line in section {
+        if let Some(v) = line.strip_prefix("a=msid:") {
+            out.msid = v.to_owned();
+        } else if let Some(v) = line.strip_prefix("a=ssrc-group:") {
+            let mut parts = v.split(' ');
+            let semantics = parts.next().unwrap_or_default().to_owned();
+            out.groups.push(Group { semantics, ssrcs: parts.filter_map(|p| p.parse().ok()).collect() });
+        } else if let Some(v) = line.strip_prefix("a=ssrc:") {
+            let Some((ssrc, attr)) = v.split_once(' ') else { continue };
+            let Ok(ssrc) = ssrc.parse() else { continue };
+            if !out.ssrcs.contains(&ssrc) {
+                out.ssrcs.push(ssrc);
+            }
+            if let Some(c) = attr.strip_prefix("cname:") {
+                out.cname = c.to_owned();
+            }
+        }
+    }
+    (!out.ssrcs.is_empty()).then_some(out)
+}
+
+/// A video `<description>` naming this client's sources for `source-add` and
+/// `source-remove`: each `(source name, videoType, stream)`.
+pub fn video_sources(sources: &[(String, &str, &LocalStream)]) -> Element {
+    let mut description = Element::new("description", RTP).attr("media", "video");
+    for (name, video_type, stream) in sources {
+        for ssrc in &stream.ssrcs {
+            let mut source = Element::new("source", SSMA).attr("ssrc", ssrc.to_string()).attr("name", name);
+            if !video_type.is_empty() {
+                source.set_attr("videoType", *video_type);
+            }
+            source.push(Element::new("parameter", SSMA).attr("name", "msid").attr("value", &stream.msid));
+            if !stream.cname.is_empty() {
+                source.push(Element::new("parameter", SSMA).attr("name", "cname").attr("value", &stream.cname));
+            }
+            description.push(source);
+        }
+        for group in &stream.groups {
+            let mut g = Element::new("ssrc-group", SSMA).attr("semantics", &group.semantics);
+            for ssrc in &group.ssrcs {
+                g.push(Element::new("source", SSMA).attr("ssrc", ssrc.to_string()));
+            }
+            description.push(g);
+        }
+    }
+    description
 }
 
 /// A remote candidate for the media engine: Jitsi's are for the audio content,
@@ -561,12 +844,11 @@ pub(crate) mod tests {
     fn sources_come_and_go_without_media_sections_being_removed() {
         let iq = Element::parse(INITIATE).unwrap();
         let mut offer = Offer::from_initiate(iq.find("jingle", JINGLE).unwrap()).unwrap();
-        offer.add(vec![Source {
-            ssrc: 3333,
-            name: "beef0001-a0".into(),
-            owner: "r@m/beef0001".into(),
-            ..Default::default()
-        }]);
+        offer.add(vec![(
+            "audio".into(),
+            vec![Source { ssrc: 3333, name: "beef0001-a0".into(), owner: "r@m/beef0001".into(), ..Default::default() }],
+            vec![],
+        )]);
         offer.remove(&[2222]);
         let sdp = offer.sdp();
         assert!(sdp.contains("a=group:BUNDLE audio r1\r\n"));

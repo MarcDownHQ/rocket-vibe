@@ -1,6 +1,6 @@
 //! The XMPP connection and the Jingle session of a joined conference.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 
 use futures_util::{SinkExt, StreamExt};
 use tokio::sync::{mpsc, oneshot};
@@ -8,9 +8,11 @@ use tokio_tungstenite::tungstenite::Message;
 use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 
 use super::Config;
-use super::sdp::{self, Answer, JINGLE, Offer};
+use super::sdp::{self, Answer, JINGLE, LocalStream, Offer};
 use crate::xml::Element;
-use crate::{CallSignaling, Candidate, Error, Event, IceServer, Member, random_hex};
+use crate::{
+    CallSignaling, Candidate, Error, Event, IceServer, LocalVideo, Member, RemoteVideo, VideoKind, random_hex,
+};
 
 const CLIENT: &str = "jabber:client";
 const FRAMING: &str = "urn:ietf:params:xml:ns:xmpp-framing";
@@ -24,6 +26,7 @@ const DISCO_INFO: &str = "http://jabber.org/protocol/disco#info";
 const PING: &str = "urn:xmpp:ping";
 const EXTDISCO: &str = "urn:xmpp:extdisco:2";
 const FOCUS: &str = "http://jitsi.org/protocol/focus";
+const SCTP: &str = "urn:xmpp:jingle:transports:dtls-sctp:1";
 
 /// How often the server is pinged, and how long without a frame from it means
 /// the socket is gone.
@@ -32,20 +35,36 @@ const SILENCE: std::time::Duration = std::time::Duration::from_secs(90);
 
 /// `RV_CALL_DEBUG=1` prints each Jingle action and why a session ended, to stderr.
 fn debug(what: &str) {
-    if std::env::var("RV_CALL_DEBUG").as_deref() == Ok("1") {
+    if matches!(std::env::var("RV_CALL_DEBUG").as_deref(), Ok("1" | "2")) {
         eprintln!("rv-call: {what}");
     }
 }
 
-/// What this client can do, as Jicofo reads it (disco#info): audio over ICE and
-/// DTLS-SRTP, bundled and multiplexed, with source names; no video, no SCTP.
-const FEATURES: [&str; 11] = [
+/// `RV_CALL_DEBUG=2` prints the Jingle stanzas themselves too.
+fn trace(what: &str) {
+    if std::env::var("RV_CALL_DEBUG").as_deref() == Ok("2") {
+        eprintln!("rv-call: {what}");
+    }
+}
+
+/// What this client can do, as Jicofo reads it (disco#info): audio and video
+/// over ICE and DTLS-SRTP, bundled and multiplexed, with source names and a
+/// camera and a screen per participant, transport-wide congestion control (the
+/// bridge forwards no video to an endpoint it cannot estimate) and
+/// retransmissions, and SCTP: the client adds the bridge channel's section
+/// itself (the bridge then forwards no video until asked over it).
+const FEATURES: [&str; 16] = [
     DISCO_INFO,
     "urn:xmpp:jingle:1",
     "urn:xmpp:jingle:apps:rtp:1",
     "urn:xmpp:jingle:transports:ice-udp:1",
     "urn:xmpp:jingle:apps:dtls:0",
     "urn:xmpp:jingle:apps:rtp:audio",
+    "urn:xmpp:jingle:apps:rtp:video",
+    "http://jitsi.org/receive-multiple-video-streams",
+    "http://jitsi.org/tcc",
+    "urn:ietf:rfc:4588",
+    "urn:xmpp:jingle:transports:dtls-sctp:1",
     "urn:xmpp:jingle:apps:rtp:rtp-hdrext:0",
     "urn:xmpp:jingle:apps:grouping:0",
     "urn:ietf:rfc:5761",
@@ -57,8 +76,13 @@ enum Command {
     Answer(String),
     Candidate(Candidate),
     Muted(bool),
+    Video(LocalVideo),
     Leave(oneshot::Sender<()>),
 }
+
+/// The height asked of the bridge for a camera, and for a screen.
+const CAMERA_HEIGHT: u32 = 720;
+const SCREEN_HEIGHT: u32 = 1080;
 
 /// A joined Jitsi conference.
 pub struct Session {
@@ -68,6 +92,57 @@ pub struct Session {
 }
 
 type Socket = tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>;
+
+/// The bridge's `ReceiverVideoConstraints`: every camera at most
+/// [`CAMERA_HEIGHT`], the screens named at [`SCREEN_HEIGHT`] (the bridge's
+/// default is a 180-line thumbnail).
+fn constraints(screens: &[String]) -> String {
+    let screens: serde_json::Map<String, serde_json::Value> =
+        screens.iter().map(|name| (name.clone(), serde_json::json!({ "maxHeight": SCREEN_HEIGHT }))).collect();
+    serde_json::json!({
+        "colibriClass": "ReceiverVideoConstraints",
+        "lastN": -1,
+        "defaultConstraints": { "maxHeight": CAMERA_HEIGHT },
+        "constraints": screens,
+    })
+    .to_string()
+}
+
+/// The bridge channel over its WebSocket, on a task of its own: what is sent
+/// goes out (the latest constraints first on opening), what the bridge says is
+/// read and dropped. It closes with the sender.
+fn bridge_channel(url: String) -> mpsc::UnboundedSender<String> {
+    let (tx, mut rx) = mpsc::unbounded_channel::<String>();
+    tokio::spawn(async move {
+        let Ok((mut socket, _)) = tokio_tungstenite::connect_async(url.as_str()).await else {
+            debug("bridge channel: not opened");
+            return;
+        };
+        debug("bridge channel open");
+        let _ = socket.send(Message::text(constraints(&[]))).await;
+        loop {
+            tokio::select! {
+                message = rx.recv() => match message {
+                    Some(text) => {
+                        if socket.send(Message::text(text)).await.is_err() {
+                            break;
+                        }
+                    }
+                    None => {
+                        let _ = socket.close(None).await;
+                        break;
+                    }
+                },
+                frame = socket.next() => match frame {
+                    Some(Ok(_)) => {}
+                    _ => break,
+                },
+            }
+        }
+        debug("bridge channel closed");
+    });
+    tx
+}
 
 /// Connects, logs in, asks the focus for the conference and joins its room.
 pub async fn join(config: Config) -> Result<Session, Error> {
@@ -139,6 +214,11 @@ pub async fn join(config: Config) -> Result<Session, Error> {
         pending: Vec::new(),
         candidates_sent: 0,
         members: BTreeMap::new(),
+        sources: HashMap::new(),
+        video: LocalVideo::default(),
+        announced: Vec::new(),
+        bridge: None,
+        videos: Vec::new(),
         events: event_tx,
     };
     send(&mut socket, &state.presence(None)).await?;
@@ -173,6 +253,59 @@ impl CallSignaling for Session {
     fn local_id(&self) -> &str {
         &self.endpoint
     }
+
+    fn can_send(&self, _kind: VideoKind) -> bool {
+        true
+    }
+
+    fn data_channel(&self) -> Option<&'static str> {
+        Some("JVB data channel")
+    }
+
+    fn data_protocol(&self) -> &'static str {
+        "http://jitsi.org/protocols/colibri"
+    }
+
+    fn video_stream(&self, kind: VideoKind) -> String {
+        video_stream(&self.endpoint, kind)
+    }
+
+    async fn set_video(&mut self, video: LocalVideo) -> Result<(), Error> {
+        self.commands.send(Command::Video(video)).map_err(|_| Error::new("session ended"))
+    }
+}
+
+/// The stream id of this client's camera or screen track (`msid`), by which
+/// its section is found in libwebrtc's answer.
+fn video_stream(endpoint: &str, kind: VideoKind) -> String {
+    match kind {
+        VideoKind::Camera => format!("{endpoint}-video-0"),
+        VideoKind::Screen => format!("{endpoint}-video-1"),
+    }
+}
+
+/// Jitsi's name for this client's camera or screen source, and its `videoType`.
+fn source_name(endpoint: &str, kind: VideoKind) -> (String, &'static str) {
+    match kind {
+        VideoKind::Camera => (format!("{endpoint}-v0"), "camera"),
+        VideoKind::Screen => (format!("{endpoint}-v1"), "desktop"),
+    }
+}
+
+/// What a participant's presence says of their sources (`SourceInfo`): each
+/// source name's muted state and video type.
+fn source_info(presence: &Element) -> HashMap<String, (bool, String)> {
+    let Some(info) = presence.find("SourceInfo", CLIENT) else { return HashMap::new() };
+    let Ok(serde_json::Value::Object(map)) = serde_json::from_str::<serde_json::Value>(info.content().trim()) else {
+        return HashMap::new();
+    };
+    map.into_iter()
+        .map(|(name, v)| {
+            let muted = v.get("muted").and_then(serde_json::Value::as_bool).unwrap_or(false);
+            let kind = v.get("videoType").and_then(serde_json::Value::as_str).unwrap_or_default().to_owned();
+            (name, (muted, kind))
+        })
+        .collect()
 }
 
 struct State {
@@ -188,6 +321,15 @@ struct State {
     pending: Vec<Candidate>,
     candidates_sent: usize,
     members: BTreeMap<String, Member>,
+    /// Each member's sources as their presence describes them.
+    sources: HashMap<String, HashMap<String, (bool, String)>>,
+    /// What this client sends, and the sources the focus was told of.
+    video: LocalVideo,
+    announced: Vec<(VideoKind, LocalStream)>,
+    /// The bridge channel's messages to send, while it is open.
+    bridge: Option<mpsc::UnboundedSender<String>>,
+    /// The remote videos last reported.
+    videos: Vec<RemoteVideo>,
     events: mpsc::UnboundedSender<Event>,
 }
 
@@ -266,13 +408,20 @@ impl State {
             return p;
         }
         let muted = if self.muted { "true" } else { "false" };
+        let mut info = format!("{{\"{}-a0\":{{\"muted\":{muted}}}", self.endpoint);
+        for (kind, on) in [(VideoKind::Camera, self.video.camera), (VideoKind::Screen, self.video.screen)] {
+            let (name, video_type) = source_name(&self.endpoint, kind);
+            if on || kind == VideoKind::Camera {
+                info.push_str(&format!(",\"{name}\":{{\"muted\":{},\"videoType\":\"{video_type}\"}}", !on));
+            }
+        }
+        info.push('}');
+        let video_muted = if self.video.camera { "false" } else { "true" };
         p.child(Element::new("x", MUC))
             .child(Element::new("stats-id", CLIENT).text(random_hex(4)))
-            .child(
-                Element::new("SourceInfo", CLIENT).text(format!("{{\"{}-a0\":{{\"muted\":{muted}}}}}", self.endpoint)),
-            )
+            .child(Element::new("SourceInfo", CLIENT).text(info))
             .child(Element::new("audiomuted", CLIENT).text(muted))
-            .child(Element::new("videomuted", CLIENT).text("true"))
+            .child(Element::new("videomuted", CLIENT).text(video_muted))
             .child(Element::new("nick", NICK).text(&self.config.display_name))
     }
 
@@ -309,7 +458,9 @@ impl State {
         }
         if p.get("type") == Some("unavailable") {
             self.members.remove(nick);
+            self.sources.remove(nick);
         } else {
+            self.sources.insert(nick.to_owned(), source_info(p));
             let name = p.find("nick", NICK).map(Element::content).unwrap_or_default();
             let muted = p.find("audiomuted", CLIENT).map(|m| m.content().trim() == "true").unwrap_or_else(|| {
                 p.find("SourceInfo", CLIENT).map(|s| s.content().contains("\"muted\":true")).unwrap_or(false)
@@ -317,6 +468,46 @@ impl State {
             self.members.insert(nick.to_owned(), Member { id: nick.to_owned(), name, muted });
         }
         let _ = self.events.send(Event::Roster(self.members.values().cloned().collect()));
+        self.report_videos();
+    }
+
+    /// The remote cameras and screens sent now: the offer's video streams
+    /// whose owner's presence does not say muted.
+    fn report_videos(&mut self) {
+        let Some(offer) = &self.offer else { return };
+        let mut videos = Vec::new();
+        let mut screens = Vec::new();
+        for stream in offer.video_streams() {
+            let (name, member) = (stream.name(), stream.endpoint());
+            let info = self.sources.get(&member).and_then(|s| s.get(&name));
+            if info.is_some_and(|(muted, _)| *muted) {
+                continue;
+            }
+            let video_type = Some(stream.video_type()).filter(|t| !t.is_empty()).or(info.map(|(_, t)| t.as_str()));
+            let kind = if video_type == Some("desktop") { VideoKind::Screen } else { VideoKind::Camera };
+            if kind == VideoKind::Screen {
+                screens.push(name.clone());
+            }
+            videos.push(RemoteVideo { track: name, member, kind });
+        }
+        if videos != self.videos {
+            self.videos = videos.clone();
+            let _ = self.events.send(Event::Videos(videos));
+            self.constrain(&screens);
+        }
+    }
+
+    /// The receiver constraints, on the bridge's WebSocket when it offered
+    /// one, else on the data channel.
+    fn constrain(&self, screens: &[String]) {
+        match &self.bridge {
+            Some(bridge) => {
+                let _ = bridge.send(constraints(screens));
+            }
+            None => {
+                let _ = self.events.send(Event::DataMessage(constraints(screens)));
+            }
+        }
     }
 
     fn iq_in(&mut self, iq_in: &Element) -> Vec<Element> {
@@ -332,6 +523,7 @@ impl State {
                 return vec![result];
             }
             if iq_in.find("query", DISCO_INFO).is_some() {
+                trace(&format!("disco#info asked: {}", iq_in.write()));
                 let mut query = Element::new("query", DISCO_INFO).child(
                     Element::new("identity", DISCO_INFO)
                         .attr("category", "client")
@@ -353,6 +545,7 @@ impl State {
             jingle.get("action").unwrap_or_default(),
             if from_focus { "focus" } else { "peer" }
         ));
+        trace(&iq_in.write());
         match jingle.get("action").unwrap_or_default() {
             "session-initiate" if !from_focus => {
                 // Another participant offering peer to peer: declined, the bridge carries the call.
@@ -363,9 +556,21 @@ impl State {
                     let initiator = jingle.get("initiator").unwrap_or(&from).to_owned();
                     self.initiator = Some((from, initiator));
                     self.answer = None;
+                    self.announced.clear();
                     self.candidates_sent = 0;
-                    let _ = self.events.send(Event::Offer { sdp: offer.sdp() });
+                    let socket = offer.audio.bridge_socket.clone();
+                    let sdp = offer.sdp();
+                    let video = offer.video.is_some();
                     self.offer = Some(offer);
+                    self.videos.clear();
+                    self.bridge = socket.filter(|_| video).map(bridge_channel);
+                    // Named before their tracks arrive: an unnamed track would show as a camera.
+                    let _ = self.events.send(Event::Videos(Vec::new()));
+                    if video {
+                        self.constrain(&[]);
+                    }
+                    self.report_videos();
+                    let _ = self.events.send(Event::Offer { sdp });
                 }
             }
             "source-add" | "addsource" => {
@@ -374,10 +579,15 @@ impl State {
                         jingle
                             .find_all("content", JINGLE)
                             .filter_map(|c| c.find("description", sdp::RTP))
-                            .flat_map(sdp::parse_sources)
+                            .map(|d| {
+                                let media = d.get("media").unwrap_or("audio").to_owned();
+                                (media, sdp::parse_sources(d), sdp::parse_groups(d))
+                            })
                             .collect(),
                     );
-                    let _ = self.events.send(Event::Offer { sdp: offer.sdp() });
+                    let sdp = offer.sdp();
+                    self.report_videos();
+                    let _ = self.events.send(Event::Offer { sdp });
                 }
             }
             "source-remove" | "removesource" => {
@@ -389,7 +599,9 @@ impl State {
                         .map(|s| s.ssrc)
                         .collect();
                     offer.remove(&ssrcs);
-                    let _ = self.events.send(Event::Offer { sdp: offer.sdp() });
+                    let sdp = offer.sdp();
+                    self.report_videos();
+                    let _ = self.events.send(Event::Offer { sdp });
                 }
             }
             "transport-info" => {
@@ -417,6 +629,9 @@ impl State {
                 self.offer = None;
                 self.initiator = None;
                 self.answer = None;
+                self.announced.clear();
+                self.bridge = None;
+                self.videos.clear();
                 let _ = self.events.send(Event::MediaEnded);
             }
             _ => {}
@@ -429,8 +644,9 @@ impl State {
             Command::Answer(sdp) => {
                 let (Some(offer), Some((to, initiator))) = (&self.offer, &self.initiator) else { return Vec::new() };
                 if self.answer.is_some() {
-                    // A renegotiation of sources stays local.
-                    return Vec::new();
+                    // A renegotiation stays local, but for this client's own video sources.
+                    let (to, initiator, sid) = (to.clone(), initiator.clone(), offer.sid.clone());
+                    return self.announce(&sdp, &to, &initiator, &sid);
                 }
                 let mut answer = Answer::parse(&sdp, &offer.audio.name);
                 for c in self.pending.drain(..) {
@@ -439,20 +655,49 @@ impl State {
                     }
                 }
                 self.candidates_sent = answer.transport.candidates.len();
-                let accept = Element::new("jingle", JINGLE)
+                // The video content is accepted without sources: they follow as `source-add`.
+                let video = offer.video.as_ref().map(|v| (v.name.clone(), Answer::parse(&sdp, &v.name)));
+                let video = video.filter(|(_, a)| !a.payloads.is_empty());
+                let mut group = Element::new("group", sdp::GROUPING)
+                    .attr("semantics", "BUNDLE")
+                    .child(Element::new("content", sdp::GROUPING).attr("name", &offer.audio.name));
+                if let Some((name, _)) = &video {
+                    group.push(Element::new("content", sdp::GROUPING).attr("name", name));
+                }
+                let data = video.is_some() && sdp::answers_data(&sdp);
+                if data {
+                    group.push(Element::new("content", sdp::GROUPING).attr("name", sdp::DATA_MID));
+                }
+                let mut accept = Element::new("jingle", JINGLE)
                     .attr("action", "session-accept")
                     .attr("initiator", initiator)
                     .attr("responder", &self.jid)
                     .attr("sid", &offer.sid)
-                    .child(
-                        Element::new("group", sdp::GROUPING)
-                            .attr("semantics", "BUNDLE")
-                            .child(Element::new("content", sdp::GROUPING).attr("name", &offer.audio.name)),
-                    )
+                    .child(group)
                     .child(answer.content(&offer.audio.name, &self.endpoint));
-                let frame = iq("set", to).child(accept);
+                if let Some((name, video)) = &video {
+                    accept.push(video.content(name, &self.endpoint));
+                }
+                if data {
+                    let mut transport = answer.transport_element(false);
+                    transport.push(
+                        Element::new("sctpmap", SCTP)
+                            .attr("number", sdp::SCTP_PORT.to_string())
+                            .attr("protocol", "webrtc-datachannel")
+                            .attr("streams", "0"),
+                    );
+                    accept.push(
+                        Element::new("content", JINGLE)
+                            .attr("creator", "responder")
+                            .attr("name", sdp::DATA_MID)
+                            .child(transport),
+                    );
+                }
+                let (to, initiator, sid) = (to.clone(), initiator.clone(), offer.sid.clone());
+                let mut frames = vec![iq("set", &to).child(accept)];
                 self.answer = Some(answer);
-                vec![frame]
+                frames.extend(self.announce(&sdp, &to, &initiator, &sid));
+                frames
             }
             Command::Candidate(candidate) => {
                 let (Some(offer), Some((to, initiator)), Some(answer)) = (&self.offer, &self.initiator, &self.answer)
@@ -483,8 +728,81 @@ impl State {
                 self.muted = muted;
                 vec![self.presence(None)]
             }
+            Command::Video(video) => {
+                self.video = video;
+                // The engine answers the same offer again with its tracks on or off,
+                // and that answer says which sources to add or remove.
+                if let (Some(offer), Some(_)) = (&mut self.offer, &self.answer) {
+                    offer.version += 1;
+                    let _ = self.events.send(Event::Offer { sdp: offer.sdp() });
+                }
+                vec![self.presence(None)]
+            }
             Command::Leave(_) => Vec::new(),
         }
+    }
+
+    /// `source-add` and `source-remove` for this client's camera and screen,
+    /// as libwebrtc's answer now sends them against what the focus knows.
+    fn announce(&mut self, sdp: &str, to: &str, initiator: &str, sid: &str) -> Vec<Element> {
+        let Some(name) = self.offer.as_ref().and_then(|o| o.video.as_ref()).map(|v| v.name.clone()) else {
+            return Vec::new();
+        };
+        let mut added = Vec::new();
+        let mut removed = Vec::new();
+        let mut now = Vec::new();
+        for kind in [VideoKind::Camera, VideoKind::Screen] {
+            let on = match kind {
+                VideoKind::Camera => self.video.camera,
+                VideoKind::Screen => self.video.screen,
+            };
+            let sent = sdp::local_stream(sdp, &video_stream(&self.endpoint, kind)).filter(|_| on);
+            let known = self.announced.iter().find(|(k, _)| *k == kind).map(|(_, s)| s.clone());
+            match (&known, &sent) {
+                (Some(old), Some(new)) if old.ssrcs == new.ssrcs => {}
+                (Some(old), _) => removed.push((kind, old.clone())),
+                (None, _) => {}
+            }
+            if let Some(new) = &sent
+                && known.as_ref().is_none_or(|old| old.ssrcs != new.ssrcs)
+            {
+                added.push((kind, new.clone()));
+            }
+            now.extend(sent.map(|s| (kind, s)));
+        }
+        self.announced = now;
+        let endpoint = self.endpoint.clone();
+        let jingle = |action: &str, list: &[(VideoKind, LocalStream)]| {
+            let named: Vec<(String, &str, &LocalStream)> = list
+                .iter()
+                .map(|(kind, stream)| {
+                    let (source, video_type) = source_name(&endpoint, *kind);
+                    (source, video_type, stream)
+                })
+                .collect();
+            let content = Element::new("content", JINGLE)
+                .attr("creator", "initiator")
+                .attr("name", &name)
+                .attr("senders", "both")
+                .child(sdp::video_sources(&named));
+            iq("set", to).child(
+                Element::new("jingle", JINGLE)
+                    .attr("action", action)
+                    .attr("initiator", initiator)
+                    .attr("sid", sid)
+                    .child(content),
+            )
+        };
+        let mut frames = Vec::new();
+        if !removed.is_empty() {
+            debug(&format!("source-remove {} of ours", removed.len()));
+            frames.push(jingle("source-remove", &removed));
+        }
+        if !added.is_empty() {
+            debug(&format!("source-add {} of ours", added.len()));
+            frames.push(jingle("source-add", &added));
+        }
+        frames
     }
 
     fn leave_frames(&mut self) -> Vec<Element> {
@@ -525,6 +843,9 @@ async fn open(socket: &mut Socket, domain: &str) -> Result<(), Error> {
 }
 
 async fn send(socket: &mut Socket, element: &Element) -> Result<(), Error> {
+    if element.find("jingle", JINGLE).is_some() {
+        trace(&format!("out: {}", element.write()));
+    }
     socket.send(Message::text(element.write())).await.map_err(|e| Error::new(format!("send: {e}")))
 }
 
@@ -627,12 +948,17 @@ mod tests {
             pending: Vec::new(),
             candidates_sent: 0,
             members: BTreeMap::new(),
+            sources: HashMap::new(),
+            video: LocalVideo::default(),
+            announced: Vec::new(),
+            bridge: None,
+            videos: Vec::new(),
             events,
         }
     }
 
     #[test]
-    fn disco_lists_audio_only_and_presence_names_the_source() {
+    fn disco_lists_audio_and_video_and_presence_names_the_sources() {
         let mut s = state();
         let disco = Element::new("iq", CLIENT)
             .attr("type", "get")
@@ -641,10 +967,31 @@ mod tests {
             .child(Element::new("query", DISCO_INFO));
         let reply = s.stanza(disco).remove(0).write();
         assert!(reply.contains("urn:xmpp:jingle:apps:rtp:audio"));
-        assert!(!reply.contains("rtp:video") && !reply.contains("dtls-sctp"));
+        assert!(reply.contains("urn:xmpp:jingle:apps:rtp:video") && reply.contains("dtls-sctp:1"));
         let presence = s.presence(None);
         assert_eq!(presence.get("to"), Some("r@muc.meet.jitsi/ep000001"));
-        assert_eq!(presence.find("SourceInfo", CLIENT).unwrap().content(), r#"{"ep000001-a0":{"muted":false}}"#);
+        assert_eq!(
+            presence.find("SourceInfo", CLIENT).unwrap().content(),
+            r#"{"ep000001-a0":{"muted":false},"ep000001-v0":{"muted":true,"videoType":"camera"}}"#
+        );
+        assert_eq!(presence.find("videomuted", CLIENT).unwrap().content(), "true");
+        s.video = LocalVideo { camera: true, screen: true };
+        let presence = s.presence(None);
+        assert_eq!(
+            presence.find("SourceInfo", CLIENT).unwrap().content(),
+            r#"{"ep000001-a0":{"muted":false},"ep000001-v0":{"muted":false,"videoType":"camera"},"ep000001-v1":{"muted":false,"videoType":"desktop"}}"#
+        );
+        assert_eq!(presence.find("videomuted", CLIENT).unwrap().content(), "false");
+    }
+
+    /// The next event that is not the list of remote videos.
+    fn next_offer(rx: &mut mpsc::UnboundedReceiver<Event>) -> Option<Event> {
+        loop {
+            match rx.try_recv().ok()? {
+                Event::Videos(_) => continue,
+                event => return Some(event),
+            }
+        }
     }
 
     #[test]
@@ -666,7 +1013,7 @@ mod tests {
         let mut s = State { events, ..state() };
         let initiate = || Element::parse(sdp::tests::INITIATE).unwrap();
         s.stanza(initiate());
-        assert!(matches!(rx.try_recv(), Ok(Event::Offer { .. })));
+        assert!(matches!(next_offer(&mut rx), Some(Event::Offer { .. })));
         let terminate = Element::new("iq", CLIENT)
             .attr("type", "set")
             .attr("from", "room@muc.meet.jitsi/focus")
@@ -676,7 +1023,7 @@ mod tests {
         assert!(matches!(rx.try_recv(), Ok(Event::MediaEnded)));
         assert!(rx.try_recv().is_err(), "the call is not ended");
         s.stanza(initiate());
-        assert!(matches!(rx.try_recv(), Ok(Event::Offer { .. })), "a new session is taken");
+        assert!(matches!(next_offer(&mut rx), Some(Event::Offer { .. })), "a new session is taken");
     }
 
     #[test]
