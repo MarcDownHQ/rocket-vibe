@@ -20,6 +20,7 @@ import { SessionProvider } from '../ui/session.tsx';
 import { SyncProvider } from '../ui/sync.tsx';
 import { darkColors, FONTS } from '../ui/theme.ts';
 import { ImageViewerProvider } from '../ui/imageViewer.tsx';
+import { KeyboardResync } from '../ui/keyboard.tsx';
 
 /**
  * Navigation root. expo-router's `Stack` sits on react-native-screens' native
@@ -59,6 +60,7 @@ export default function RootLayout() {
           {/* Feeds the keyboard SharedValue of `ui/keyboard.tsx` (frame-by-frame
               tracking via WindowInsetsAnimation, native edge-to-edge). */}
           <KeyboardProvider>
+            <KeyboardResync />
             <SessionProvider>
               <SyncProvider>
                 {/* The image viewer mounts ONE shared Modal above the

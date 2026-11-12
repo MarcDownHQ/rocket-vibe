@@ -32,6 +32,7 @@ release, and its notes are that version's section here.
 ### Fixed
 
 - WhatsApp (experimental): chats read on the phone no longer show up as unread again in the app, which happened when the phone's read arrived ahead of its messages, mostly on reconnecting.
+- Android: coming back to the app after leaving it with the keyboard open no longer leaves a keyboard-sized blank under the composer.
 - Notes: a Slack canvas with formatting no longer shows raw HTML tags, and a Teams page just summarised by Teams no longer reads as an older version.
 - Slack (experimental): a Giphy or Tenor GIF posted by an app or pasted as a link now shows and plays; a pasted image's preview no longer leaves a card reading "370x208px image", and cards show their links, mentions and colours.
 - Mattermost and kChat: reading a channel no longer marks its threads as read.

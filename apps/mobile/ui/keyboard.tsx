@@ -20,7 +20,8 @@
  * SafeAreaView.
  */
 
-import { type ReactNode } from 'react';
+import { type ReactNode, useEffect } from 'react';
+import { AppState, DeviceEventEmitter, Keyboard, Platform } from 'react-native';
 import { useReanimatedKeyboardAnimation } from 'react-native-keyboard-controller';
 import Animated, { useAnimatedStyle } from 'react-native-reanimated';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -41,4 +42,50 @@ export function KeyboardAvoidingContainer({ children }: { children: ReactNode })
       {children}
     </Animated.View>
   );
+}
+
+/** Longer than the system's keyboard animation, so a normal hide always lands first. */
+const RESYNC_DELAY_MS = 600;
+
+/**
+ * Android: keyboard-controller only learns of a hide from the IME's insets
+ * animation, which never reaches a window that lost focus (a sheet or picker
+ * pushed in the same tick as `Keyboard.dismiss()`, the app backgrounded), so
+ * its height stays at "open". React Native's own tracking reads the inset on
+ * layout and does see the hide: replay the library's `keyboardDidHide` and
+ * zero its values. Mounted once, inside `KeyboardProvider`.
+ */
+export function KeyboardResync() {
+  const { height, progress } = useReanimatedKeyboardAnimation();
+  useEffect(() => {
+    if (Platform.OS !== 'android') return;
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    const check = () => {
+      if (timer !== null) clearTimeout(timer);
+      timer = setTimeout(() => {
+        timer = null;
+        if (Keyboard.isVisible() || height.value === 0) return;
+        DeviceEventEmitter.emit('KeyboardController::keyboardDidHide', {
+          height: 0,
+          duration: 0,
+          timestamp: Date.now(),
+          target: -1,
+          type: 'default',
+          appearance: 'default',
+        });
+        height.value = 0;
+        progress.value = 0;
+      }, RESYNC_DELAY_MS);
+    };
+    const hide = Keyboard.addListener('keyboardDidHide', check);
+    const app = AppState.addEventListener('change', (state) => {
+      if (state === 'active') check();
+    });
+    return () => {
+      if (timer !== null) clearTimeout(timer);
+      hide.remove();
+      app.remove();
+    };
+  }, [height, progress]);
+  return null;
 }
