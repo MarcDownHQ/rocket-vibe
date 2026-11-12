@@ -31,6 +31,7 @@ section here.
 
 ### Fixed
 
+- WhatsApp (experimental): chats read on the phone no longer show up as unread again in the app, which happened when the phone's read arrived ahead of its messages, mostly on reconnecting.
 - Notes: a Slack canvas with formatting no longer shows raw HTML tags, and a Teams page just summarised by Teams no longer reads as an older version.
 - Slack (experimental): an uploaded GIF plays instead of showing a still picture, and a Giphy or Tenor GIF posted by an app or pasted as a link now shows and plays.
 - Slack (experimental): the cards bots and integrations attach to a message now show, as they do on Android, with their links, mentions and colours.
