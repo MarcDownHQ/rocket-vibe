@@ -995,6 +995,69 @@ mod tests {
     }
 
     #[test]
+    fn this_clients_camera_is_added_and_removed_as_its_answers_send_it() {
+        let mut s = state();
+        s.offer = Some(sdp::tests::with_video());
+        s.initiator = Some(("r@muc.meet.jitsi/focus".into(), "focus@auth/focus".into()));
+        s.answer = Some(Answer::default());
+        let answer = |direction: &str| {
+            format!(
+                "v=0\r\nm=video 9 X 100\r\na=mid:video\r\na={direction}\r\na=msid:ep000001-video-0 camera\r\n\
+                 a=ssrc:7 cname:c\r\na=ssrc:7 msid:ep000001-video-0 camera\r\n"
+            )
+        };
+        s.video = LocalVideo { camera: true, screen: false };
+        let out: Vec<String> = s.command(Command::Answer(answer("sendonly"))).iter().map(Element::write).collect();
+        assert_eq!(out.len(), 1);
+        assert!(
+            out[0].contains(r#"action="source-add""#) && out[0].contains(r#"ssrc="7" name="ep000001-v0""#),
+            "{}",
+            out[0]
+        );
+        assert!(s.command(Command::Answer(answer("sendonly"))).is_empty(), "told once");
+        s.video = LocalVideo::default();
+        let out: Vec<String> = s.command(Command::Answer(answer("inactive"))).iter().map(Element::write).collect();
+        assert_eq!(out.len(), 1);
+        assert!(out[0].contains(r#"action="source-remove""#) && out[0].contains(r#"ssrc="7""#));
+    }
+
+    #[test]
+    fn a_muted_remote_camera_is_not_listed() {
+        let (events, mut rx) = mpsc::unbounded_channel();
+        let mut s = State { events, ..state() };
+        s.offer = Some(sdp::tests::with_video());
+        let presence = |camera_muted: bool| {
+            Element::parse(&format!(
+                r#"<presence xmlns="jabber:client" from="r@muc.meet.jitsi/abcd1234"><nick xmlns="http://jabber.org/protocol/nick">Bo</nick><SourceInfo>{{"abcd1234-v0":{{"muted":{camera_muted},"videoType":"camera"}},"abcd1234-v1":{{"muted":false,"videoType":"desktop"}}}}</SourceInfo></presence>"#
+            ))
+            .unwrap()
+        };
+        s.stanza(presence(false));
+        let videos = std::iter::from_fn(|| rx.try_recv().ok()).filter_map(|e| match e {
+            Event::Videos(v) => Some(v),
+            _ => None,
+        });
+        let last = videos.last().unwrap();
+        assert_eq!(
+            last,
+            [
+                RemoteVideo { track: "abcd1234-v0".into(), member: "abcd1234".into(), kind: VideoKind::Camera },
+                RemoteVideo { track: "abcd1234-v1".into(), member: "abcd1234".into(), kind: VideoKind::Screen },
+            ]
+        );
+        s.stanza(presence(true));
+        let last = std::iter::from_fn(|| rx.try_recv().ok())
+            .filter_map(|e| match e {
+                Event::Videos(v) => Some(v),
+                _ => None,
+            })
+            .last()
+            .unwrap();
+        assert_eq!(last.len(), 1, "the muted camera goes");
+        assert_eq!(last[0].kind, VideoKind::Screen);
+    }
+
+    #[test]
     fn a_peer_offer_is_declined() {
         let mut s = state();
         let iq = Element::new("iq", CLIENT)

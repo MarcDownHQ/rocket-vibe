@@ -884,6 +884,87 @@ m=audio 9 UDP/TLS/RTP/SAVPF 111 126\r\nc=IN IP4 0.0.0.0\r\na=mid:r0\r\na=recvonl
         assert!(!xml.contains("9999"), "the receive-only sections stay out");
     }
 
+    /// A video content with a camera in simulcast (three layers, each with its
+    /// retransmissions) and a screen, the way Jitsi's web client sends them.
+    const VIDEO: &str = r#"<content xmlns="urn:xmpp:jingle:1" creator="initiator" name="video" senders="both">
+<description xmlns="urn:xmpp:jingle:apps:rtp:1" media="video">
+<payload-type id="41" name="AV1" clockrate="90000"/>
+<payload-type id="100" name="VP8" clockrate="90000"><rtcp-fb xmlns="urn:xmpp:jingle:apps:rtp:rtcp-fb:0" type="transport-cc"/></payload-type>
+<payload-type id="96" name="rtx" clockrate="90000"><parameter name="apt" value="100"/></payload-type>
+<payload-type id="97" name="rtx" clockrate="90000"><parameter name="apt" value="41"/></payload-type>
+<rtp-hdrext xmlns="urn:xmpp:jingle:apps:rtp:rtp-hdrext:0" id="5" uri="http://www.ietf.org/id/draft-holmer-rmcat-transport-wide-cc-extensions-01"/>
+<source xmlns="urn:xmpp:jingle:apps:rtp:ssma:0" ssrc="10" name="abcd1234-v0" videoType="camera"><ssrc-info xmlns="http://jitsi.org/jitmeet" owner="r@m/abcd1234"/></source>
+<source xmlns="urn:xmpp:jingle:apps:rtp:ssma:0" ssrc="11" name="abcd1234-v0"><ssrc-info xmlns="http://jitsi.org/jitmeet" owner="r@m/abcd1234"/></source>
+<source xmlns="urn:xmpp:jingle:apps:rtp:ssma:0" ssrc="20" name="abcd1234-v0"><ssrc-info xmlns="http://jitsi.org/jitmeet" owner="r@m/abcd1234"/></source>
+<source xmlns="urn:xmpp:jingle:apps:rtp:ssma:0" ssrc="21" name="abcd1234-v0"><ssrc-info xmlns="http://jitsi.org/jitmeet" owner="r@m/abcd1234"/></source>
+<source xmlns="urn:xmpp:jingle:apps:rtp:ssma:0" ssrc="50" name="abcd1234-v1" videoType="desktop"><ssrc-info xmlns="http://jitsi.org/jitmeet" owner="r@m/abcd1234"/></source>
+<ssrc-group xmlns="urn:xmpp:jingle:apps:rtp:ssma:0" semantics="SIM"><source ssrc="10"/><source ssrc="20"/></ssrc-group>
+<ssrc-group xmlns="urn:xmpp:jingle:apps:rtp:ssma:0" semantics="FID"><source ssrc="10"/><source ssrc="11"/></ssrc-group>
+<ssrc-group xmlns="urn:xmpp:jingle:apps:rtp:ssma:0" semantics="FID"><source ssrc="20"/><source ssrc="21"/></ssrc-group>
+</description></content>"#;
+
+    pub(crate) fn with_video() -> Offer {
+        let initiate = INITIATE.replace(
+            r#"<content creator="initiator" name="video" senders="both"><description xmlns="urn:xmpp:jingle:apps:rtp:1" media="video"/></content>"#,
+            VIDEO,
+        );
+        let iq = Element::parse(&initiate).unwrap();
+        Offer::from_initiate(iq.find("jingle", JINGLE).unwrap()).unwrap()
+    }
+
+    #[test]
+    fn a_video_offer_gets_this_clients_sections_then_one_per_remote_camera_and_screen() {
+        let offer = with_video();
+        let streams: Vec<_> =
+            offer.video_streams().map(|s| (s.name(), s.video_type().to_owned(), s.sources.len())).collect();
+        assert_eq!(streams, [("abcd1234-v0".into(), "camera".into(), 4), ("abcd1234-v1".into(), "desktop".into(), 1)]);
+        let sdp = offer.sdp();
+        assert!(sdp.contains("a=group:BUNDLE audio video screen data r0 r1 r2\r\n"), "{sdp}");
+        assert!(sdp.contains("a=mid:video\r\na=recvonly\r\n") && sdp.contains("a=mid:screen\r\na=recvonly\r\n"));
+        assert!(
+            sdp.contains("m=application 9 UDP/DTLS/SCTP webrtc-datachannel\r\n")
+                && sdp.contains("a=sctp-port:5000\r\n")
+        );
+        assert!(sdp.contains("m=video 9 UDP/TLS/RTP/SAVPF 100 96 41 97\r\n"), "VP8 and its retransmissions first");
+        // The camera is received as its first layer and that layer's retransmissions only.
+        assert!(
+            sdp.contains(
+                "a=ssrc-group:FID 10 11\r\na=ssrc:10 cname:abcd1234\r\na=ssrc:10 msid:abcd1234 abcd1234-v0\r\n"
+            )
+        );
+        assert!(!sdp.contains("a=ssrc:20 ") && !sdp.contains("a=ssrc:21 "));
+        assert!(sdp.contains("a=ssrc:50 msid:abcd1234 abcd1234-v1\r\n"));
+    }
+
+    #[test]
+    fn a_removed_video_source_keeps_its_section_as_video() {
+        let mut offer = with_video();
+        offer.remove(&[50]);
+        let sdp = offer.sdp();
+        assert!(sdp.contains("m=video 0 UDP/TLS/RTP/SAVPF 100 96 41 97\r\nc=IN IP4 0.0.0.0\r\n"));
+        assert!(sdp.contains("a=mid:r2\r\na=inactive\r\n"));
+        assert_eq!(offer.video_streams().count(), 1);
+    }
+
+    #[test]
+    fn this_clients_video_is_read_from_its_answer_by_stream() {
+        let answer = "v=0\r\nm=audio 9 X 111\r\na=mid:audio\r\na=sendrecv\r\na=msid:ep ep-a0\r\na=ssrc:1 cname:c\r\n\
+m=video 9 X 100 96\r\na=mid:video\r\na=sendonly\r\na=msid:ep-video-0 camera\r\na=ssrc-group:FID 7 8\r\n\
+a=ssrc:7 cname:c\r\na=ssrc:7 msid:ep-video-0 camera\r\na=ssrc:8 cname:c\r\n\
+m=video 9 X 100 96\r\na=mid:screen\r\na=inactive\r\na=msid:ep-video-1 screen\r\na=ssrc:9 cname:c\r\n\
+m=application 9 UDP/DTLS/SCTP webrtc-datachannel\r\na=mid:data\r\n";
+        let camera = local_stream(answer, "ep-video-0").unwrap();
+        assert_eq!(camera.ssrcs, [7, 8]);
+        assert_eq!(camera.groups, [Group { semantics: "FID".into(), ssrcs: vec![7, 8] }]);
+        assert_eq!((camera.msid.as_str(), camera.cname.as_str()), ("ep-video-0 camera", "c"));
+        assert!(local_stream(answer, "ep-video-1").is_none(), "an inactive section sends nothing");
+        assert!(answers_data(answer));
+        assert!(!answers_data("m=application 0 UDP/DTLS/SCTP webrtc-datachannel\r\n"));
+        let xml = video_sources(&[("ep-v0".into(), "camera", &camera)]).write();
+        assert!(xml.contains(r#"ssrc="7" name="ep-v0" videoType="camera""#), "{xml}");
+        assert!(xml.contains(r#"<ssrc-group xmlns="urn:xmpp:jingle:apps:rtp:ssma:0" semantics="FID">"#));
+    }
+
     #[test]
     fn candidates_round_trip() {
         let line = "candidate:1 1 tcp 1518280447 192.0.2.1 9 typ host tcptype active generation 0";
