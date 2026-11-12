@@ -107,6 +107,10 @@ pub struct Projection {
     unread: BTreeMap<String, i64>,
     #[serde(default)]
     contacts: BTreeMap<String, Contact>,
+    /// Per chat, the instant (Unix seconds) up to which another of my devices
+    /// read it: a message of then or before that lands later is already read.
+    #[serde(default)]
+    read_until: BTreeMap<String, i64>,
 }
 
 /// `<chat>:<WhatsApp id>` into its two parts.
@@ -323,8 +327,12 @@ impl Projection {
                 }
             }
             if let Some(unread) = self.unread.remove(&old) {
-                let kept = self.unread.entry(pn).or_insert(0);
+                let kept = self.unread.entry(pn.clone()).or_insert(0);
                 *kept = (*kept).max(unread);
+            }
+            if let Some(until) = self.read_until.remove(&old) {
+                let kept = self.read_until.entry(pn).or_insert(until);
+                *kept = (*kept).max(until);
             }
             moved = true;
         }
@@ -411,10 +419,25 @@ impl Projection {
         moved
     }
 
-    /// The phone marked a chat read, or unread (which shows one when none is).
-    pub fn marked_read(&mut self, chat: &str, read: bool) -> Option<Frame> {
+    /// Another of my devices read a chat at `at` (Unix seconds).
+    pub fn read_elsewhere(&mut self, chat: &str, at: i64) -> Frame {
+        let until = self.read_until.entry(chat.to_owned()).or_insert(at);
+        *until = (*until).max(at);
+        self.set_unread(chat, 0, true)
+    }
+
+    /// Whether a message sent at `at` was read on another device before it got here.
+    pub fn read_before(&self, chat: &str, at: i64) -> bool {
+        self.read_until.get(chat).is_some_and(|until| at <= *until)
+    }
+
+    /// The phone marked a chat read at `at`, or unread (which shows one when none is).
+    pub fn marked_read(&mut self, chat: &str, read: bool, at: Option<i64>) -> Option<Frame> {
         if read {
-            Some(self.set_unread(chat, 0, true))
+            Some(match at {
+                Some(at) => self.read_elsewhere(chat, at),
+                None => self.set_unread(chat, 0, true),
+            })
         } else if self.unread(chat) == 0 {
             Some(self.set_unread(chat, 1, true))
         } else {
@@ -807,16 +830,16 @@ mod tests {
             }
         );
         p.set_unread("a", 2, false);
-        assert!(p.marked_read("a", false).is_none(), "already unread");
+        assert!(p.marked_read("a", false, None).is_none(), "already unread");
         assert_eq!(
-            p.marked_read("a", true),
+            p.marked_read("a", true, None),
             Some(Frame::Chat {
                 jid: "a".into(),
                 unread: 0
             })
         );
         assert_eq!(
-            p.marked_read("a", false),
+            p.marked_read("a", false, None),
             Some(Frame::Chat {
                 jid: "a".into(),
                 unread: 1
@@ -831,6 +854,32 @@ mod tests {
             .map(|u| u.id)
             .collect();
         assert_eq!(ids, ["c@s.whatsapp.net:2", "c@s.whatsapp.net:1"]);
+    }
+
+    #[test]
+    fn a_read_on_the_phone_covers_messages_that_land_after_it() {
+        let mut p = Projection::default();
+        p.set_unread("a@lid", 2, true);
+        p.read_elsewhere("a@lid", 100);
+        assert!(p.read_before("a@lid", 100));
+        assert!(p.read_before("a@lid", 99));
+        assert!(!p.read_before("a@lid", 101));
+        p.read_elsewhere("a@lid", 50);
+        assert!(
+            p.read_before("a@lid", 100),
+            "an older read never moves it back"
+        );
+        assert!(!p.read_before("b@s.whatsapp.net", 0));
+        assert_eq!(
+            p.marked_read("b@s.whatsapp.net", true, Some(200)),
+            Some(Frame::Chat {
+                jid: "b@s.whatsapp.net".into(),
+                unread: 0
+            })
+        );
+        assert!(p.read_before("b@s.whatsapp.net", 200));
+        let back: Projection = serde_json::from_str(&serde_json::to_string(&p).unwrap()).unwrap();
+        assert!(back.read_before("a@lid", 100));
     }
 
     #[test]

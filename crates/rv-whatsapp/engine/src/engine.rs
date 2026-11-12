@@ -680,8 +680,12 @@ impl Engine {
                         )
                         .await
                     {
-                        let frame = self.with_state(|p| p.set_unread(&chat, 1, false));
-                        self.emit(frame);
+                        let at = inbound.info.timestamp.timestamp();
+                        if let Some(frame) = self.with_state(|p| {
+                            (!p.read_before(&chat, at)).then(|| p.set_unread(&chat, 1, false))
+                        }) {
+                            self.emit(frame);
+                        }
                     }
                 }
             }
@@ -691,7 +695,8 @@ impl Engine {
             Event::MarkChatAsReadUpdate(update) => {
                 let chat = self.canonical(&update.jid).await.to_string();
                 let read = update.action.read.unwrap_or(false);
-                if let Some(frame) = self.with_state(|p| p.marked_read(&chat, read)) {
+                let at = update.action_timestamp.map(|t| t.timestamp());
+                if let Some(frame) = self.with_state(|p| p.marked_read(&chat, read, at)) {
                     self.emit(frame);
                 }
             }

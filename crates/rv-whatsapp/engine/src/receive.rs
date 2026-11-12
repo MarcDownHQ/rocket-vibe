@@ -347,7 +347,8 @@ impl Engine {
         let chat = self.canonical(&receipt.source.chat).await.to_string();
         if receipt.source.is_from_me {
             if matches!(receipt.r#type, ReceiptType::Read | ReceiptType::ReadSelf) {
-                let frame = self.with_state(|p| p.set_unread(&chat, 0, true));
+                let at = receipt.timestamp.timestamp();
+                let frame = self.with_state(|p| p.read_elsewhere(&chat, at));
                 self.emit(frame);
             }
             return;
