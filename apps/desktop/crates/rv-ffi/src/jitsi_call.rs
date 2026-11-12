@@ -1,12 +1,13 @@
 //! A call carried natively for the SwiftUI app (Rocket.Chat's Jitsi provider,
 //! kChat's kMeet, Slack's huddles, WhatsApp's calls), as GTK's `native_call.rs` does: a voice
-//! controller of its own and its `rv-voice` sidecar, audio only. `start_jitsi_call`
+//! controller of its own and its `rv-voice` sidecar, with cameras and a shared
+//! screen where the provider carries them. `start_jitsi_call`
 //! and `Chat::start_huddle_call` answer None when the call cannot be joined, and
 //! the app then opens its page.
-use crate::native_voice::VoiceMember;
+use crate::native_voice::{VoiceFrame, VoiceMember};
 use crate::on_tokio;
 use rv_core::session::Session;
-use rv_core::voice::{ConnectionState, Ended, VoiceController};
+use rv_core::voice::{ConnectionState, Ended, LOCAL_PREVIEW, VideoSource, VoiceController};
 use std::collections::HashSet;
 use std::sync::{Arc, Mutex};
 
@@ -100,6 +101,12 @@ pub struct JitsiCallState {
     pub ended_reason: Option<String>,
     pub microphone: bool,
     pub deafened: bool,
+    /// This side's camera and screen, as asked.
+    pub camera: bool,
+    pub sharing: bool,
+    /// What the provider lets this side send, once joined.
+    pub can_camera: bool,
+    pub can_screen: bool,
     /// Everyone in the call, as the Vibez voice page shows them (no photos).
     pub members: Vec<VoiceMember>,
 }
@@ -136,6 +143,10 @@ impl JitsiCallSession {
             ended_reason,
             microphone: snapshot.microphone,
             deafened: snapshot.deafened,
+            camera: snapshot.camera,
+            sharing: snapshot.sharing,
+            can_camera: snapshot.call_video.is_some_and(|(camera, _)| camera),
+            can_screen: snapshot.call_video.is_some_and(|(_, screen)| screen),
             members: snapshot
                 .participants
                 .iter()
@@ -150,8 +161,8 @@ impl JitsiCallSession {
                     muted: p.muted,
                     deafened: p.deafened,
                     speaking: p.speaking,
-                    camera: false,
-                    screen: false,
+                    camera: p.camera,
+                    screen: p.screen,
                     muted_here: false,
                     avatar: None,
                 })
@@ -167,6 +178,35 @@ impl JitsiCallSession {
     pub async fn set_deafened(&self, deafened: bool) {
         let voice = self.voice.clone();
         on_tokio(async move { voice.set_deafened(deafened).await }).await
+    }
+
+    /// The default camera on or off.
+    pub async fn set_camera(&self, enabled: bool) {
+        let voice = self.voice.clone();
+        on_tokio(async move { voice.set_camera(enabled).await }).await
+    }
+
+    /// Shares the first screen, or what the system's picker gives.
+    pub async fn start_screen_share(&self) {
+        let voice = self.voice.clone();
+        on_tokio(async move { voice.start_screen_share(None, None).await }).await
+    }
+
+    pub async fn stop_screen_share(&self) {
+        let voice = self.voice.clone();
+        on_tokio(async move { voice.stop_screen_share().await }).await
+    }
+
+    /// A member's camera or screen, newer than `since`: its pixels are empty
+    /// when no newer frame came. This side's own is its preview.
+    pub fn frame(&self, member: String, local: bool, screen: bool, since: u64) -> Option<VoiceFrame> {
+        let identity = if local { LOCAL_PREVIEW.to_owned() } else { member };
+        crate::native_voice::frame(
+            &self.voice,
+            &identity,
+            if screen { VideoSource::Screen } else { VideoSource::Camera },
+            since,
+        )
     }
 
     pub async fn leave(&self) {
