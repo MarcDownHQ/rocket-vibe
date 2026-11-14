@@ -183,6 +183,15 @@ export async function callPersonName(client: RestClient, identity: string): Prom
   return name === undefined ? null : name(identity);
 }
 
+/**
+ * What a native call takes from this side besides the microphone, as the voice
+ * engine says: a provider that does not take a camera or a screen (a Slack huddle,
+ * a Mattermost plugin without video) shows no button for it.
+ */
+export function callSends(snapshot: { canCamera?: boolean; canScreen?: boolean } | null): { camera: boolean; screen: boolean } {
+  return { camera: snapshot?.canCamera === true, screen: snapshot?.canScreen === true };
+}
+
 /** `url` cut before its query or fragment. */
 export function withoutToken(url: string): string {
   return url.split(/[?#]/u)[0] ?? url;

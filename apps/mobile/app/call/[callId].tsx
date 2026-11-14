@@ -15,14 +15,15 @@ import { WebView } from 'react-native-webview';
 
 import { callAllowed as teamsCallAllowed } from '@rocket-vibe/provider-teams/translate';
 import type { ExternalCallEngine, PcmCallEngine } from '@rocket-vibe/provider-api/calls';
-import { answerNative, answerableNative, callContext, callPersonName, carriesPcm, carryNative, joinConference, joinsInRoomNative, nativeChime, nativeJitsi, nativeMattermost, placeNative } from '../../lib/call.ts';
+import { answerNative, answerableNative, callContext, callPersonName, callSends, carriesPcm, carryNative, joinConference, joinsInRoomNative, nativeChime, nativeJitsi, nativeMattermost, placeNative } from '../../lib/call.ts';
 import { sameOrigin, originOf } from '../../lib/origin.ts';
-import { VoiceNative, type VoiceSnapshot } from '../../modules/voice/index.ts';
+import { VoiceNative, VoiceVideoView, type VoiceSnapshot } from '../../modules/voice/index.ts';
 import type { RestClient } from '../../lib/rest.ts';
 import { TILE_GAP, arrangeTiles } from '../../lib/voiceGrid.ts';
 import { useT } from '../../ui/i18n.ts';
 import type { TranslateFn as T } from '../../ui/messages.ts';
-import { ControlButton, VoiceTile, type VoiceCard } from '../../ui/voice.tsx';
+import { ControlButton, ScreenStage, VoiceTile, type VoiceCard } from '../../ui/voice.tsx';
+import { notify } from '../../ui/toast.tsx';
 import { useSession } from '../../ui/session.tsx';
 import {useSync} from '../../ui/sync.tsx';
 import { type Colors, FONTS, useColors } from '../../ui/theme.ts';
@@ -482,11 +483,22 @@ function endReason(t: T, reason: string | null | undefined): string {
   }
 }
 
+/** The own camera on or off; it asks for the camera first. */
+async function toggleCamera(on: boolean, t: T): Promise<void> {
+  if (on) return VoiceNative?.setCamera(false);
+  if (Platform.OS === 'android' && await PermissionsAndroid.request(PermissionsAndroid.PERMISSIONS.CAMERA) !== PermissionsAndroid.RESULTS.GRANTED) {
+    notify(t('voice.cameraDenied'));
+    return;
+  }
+  await VoiceNative?.setCamera(true);
+}
+
 /**
- * A native Jitsi call, drawn as the Vibez voice screen: a tile per person
- * whose border lights while they speak, and the same control buttons. A lost
- * call shows "Reconnecting…" while the engine joins again; one that ends stays
- * on screen with the reason.
+ * A native call, drawn as the Vibez voice screen: a tile per person whose
+ * border lights while they speak, their camera filling it, a shared screen on a
+ * stage with the people in a strip, and the same control buttons, camera and
+ * screen only where the provider takes them. A lost call shows "Reconnecting…"
+ * while the engine joins again; one that ends stays on screen with the reason.
  */
 function NativeCall({ c, client, snapshot, onClose }: { c: Colors; client: RestClient; snapshot: VoiceSnapshot | null; onClose: () => void }) {
   // A provider that gives only ids (a Slack huddle): each name read once.
@@ -527,8 +539,10 @@ function NativeCall({ c, client, snapshot, onClose }: { c: Colors; client: RestC
   const muted = snapshot.microphone === false || snapshot.deafened === true;
   const cards: VoiceCard[] = snapshot.participants.map((p) => ({
     uid: p.identity, name: p.local ? t('voice.you') : (p.name || names[p.identity] || p.identity), speaking: p.speaking, muted: p.muted,
-    deafened: p.deafened === true, local: false, camera: false, screen: false, mutedHere: false,
+    deafened: p.deafened === true, local: false, camera: p.camera === true, screen: p.screen === true, mutedHere: false,
   }));
+  const sends = callSends(snapshot);
+  const sharer = cards.find((card) => card.screen);
   const layout = arrangeTiles(cards.length, area.width, area.height);
   const rows: VoiceCard[][] = [];
   for (let i = 0; i < cards.length; i += layout.columns) rows.push(cards.slice(i, i + layout.columns));
@@ -537,21 +551,33 @@ function NativeCall({ c, client, snapshot, onClose }: { c: Colors; client: RestC
       <Text style={[styles.status, { color: snapshot.state === 'connected' ? c.online : c.dimmed }]}>
         {snapshot.state === 'reconnecting' ? t('voice.reconnecting') : t('voice.connected')}
       </Text>
-      <View style={styles.grid} onLayout={e => setArea({ width: e.nativeEvent.layout.width, height: e.nativeEvent.layout.height })}>
-        {area.width > 0 && rows.map(row => (
-          <View key={row[0]!.uid} style={styles.gridRow}>
-            {row.map(card => (
-              <VoiceTile key={card.uid} c={c} client={null} card={card} width={layout.width} height={layout.height} you={t('voice.you')} />
-            ))}
-          </View>
-        ))}
-      </View>
+      {sharer !== undefined && VoiceVideoView !== null ? (
+        <ScreenStage c={c} client={null} sharer={sharer} cards={cards} />
+      ) : (
+        <View style={styles.grid} onLayout={e => setArea({ width: e.nativeEvent.layout.width, height: e.nativeEvent.layout.height })}>
+          {area.width > 0 && rows.map(row => (
+            <View key={row[0]!.uid} style={styles.gridRow}>
+              {row.map(card => (
+                <VoiceTile key={card.uid} c={c} client={null} card={card} width={layout.width} height={layout.height} you={t('voice.you')} />
+              ))}
+            </View>
+          ))}
+        </View>
+      )}
       <View style={styles.controls}>
         <ControlButton c={c} label={muted ? t('voice.unmute') : t('voice.mute')} icon={muted ? 'microphone-disabled' : 'audio-input-microphone'}
           active={muted} onPress={() => void VoiceNative?.setMicrophone(muted)} />
         <ControlButton c={c} label={snapshot.deafened ? t('voice.undeafen') : t('voice.deafen')}
           icon={snapshot.deafened ? 'audio-volume-muted' : 'audio-headphones'} active={snapshot.deafened === true}
           onPress={() => void VoiceNative?.setDeafened(!snapshot.deafened)} />
+        {sends.camera && (
+          <ControlButton c={c} label={snapshot.camera ? t('voice.cameraOff') : t('voice.camera')} icon="camera-web" active={snapshot.camera === true}
+            onPress={() => void toggleCamera(snapshot.camera === true, t)} />
+        )}
+        {sends.screen && (
+          <ControlButton c={c} label={snapshot.sharing ? t('voice.stopScreen') : t('voice.shareScreen')} icon="video-display" active={snapshot.sharing === true}
+            onPress={() => void (snapshot.sharing ? VoiceNative?.stopScreenShare() : VoiceNative?.startScreenShare())} />
+        )}
         <ControlButton c={c} label={t('voice.leave')} icon="call-stop" danger onPress={onClose} />
       </View>
     </View>
