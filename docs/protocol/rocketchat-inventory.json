@@ -204,6 +204,7 @@
     "apps/desktop/crates/rv-ffi/src/slack.rs",
     "apps/desktop/crates/rv-ffi/src/social.rs",
     "apps/desktop/crates/rv-ffi/src/teams.rs",
+    "apps/desktop/crates/rv-ffi/src/whatsapp.rs",
     "apps/desktop/crates/rv-ffi/src/writing.rs",
     "apps/desktop/crates/rv-gtk/build.rs",
     "apps/desktop/crates/rv-gtk/src/actions_menu.rs",
@@ -380,6 +381,7 @@
     "apps/desktop/macos/Sources/RocketVibe/ThreadView.swift",
     "apps/desktop/macos/Sources/RocketVibe/TotpQrCode.swift",
     "apps/desktop/macos/Sources/RocketVibe/Voice.swift",
+    "apps/desktop/macos/Sources/RocketVibe/WhatsAppLink.swift",
     "apps/desktop/macos/Sources/RocketVibe/WorkflowsSection.swift",
     "apps/desktop/macos/Sources/RocketVibeKit/AdminModel.swift",
     "apps/desktop/macos/Sources/RocketVibeKit/AppModel.swift",
@@ -410,6 +412,7 @@
     "apps/desktop/macos/Sources/RocketVibeKit/Strings.swift",
     "apps/desktop/macos/Sources/RocketVibeKit/ThreadInboxModel.swift",
     "apps/desktop/macos/Sources/RocketVibeKit/VoiceModel.swift",
+    "apps/desktop/macos/Sources/RocketVibeKit/WhatsAppLinkModel.swift",
     "apps/desktop/macos/Sources/RocketVibeKit/WorkflowsModel.swift",
     "apps/desktop/macos/Sources/rv-rooms/main.swift",
     "apps/mobile/app/+native-intent.tsx",
@@ -3675,37 +3678,37 @@
     },
     {
       "file": "apps/desktop/macos/Sources/RocketVibe/RoomView.swift",
-      "line": 162,
+      "line": 170,
       "kind": "endpoint",
       "surface": "e2e.read_only"
     },
     {
       "file": "apps/desktop/macos/Sources/RocketVibe/RoomView.swift",
-      "line": 165,
+      "line": 173,
       "kind": "endpoint",
       "surface": "e2e.unlock"
     },
     {
       "file": "apps/desktop/macos/Sources/RocketVibe/RoomView.swift",
-      "line": 183,
+      "line": 191,
       "kind": "endpoint",
       "surface": "e2e.title"
     },
     {
       "file": "apps/desktop/macos/Sources/RocketVibe/RoomView.swift",
-      "line": 184,
+      "line": 192,
       "kind": "endpoint",
       "surface": "e2e.body"
     },
     {
       "file": "apps/desktop/macos/Sources/RocketVibe/RoomView.swift",
-      "line": 185,
+      "line": 193,
       "kind": "endpoint",
       "surface": "e2e.password"
     },
     {
       "file": "apps/desktop/macos/Sources/RocketVibe/RoomView.swift",
-      "line": 193,
+      "line": 201,
       "kind": "endpoint",
       "surface": "e2e.unlock"
     },
@@ -3747,37 +3750,37 @@
     },
     {
       "file": "apps/desktop/macos/Sources/RocketVibeKit/AppModel.swift",
-      "line": 1137,
+      "line": 1202,
       "kind": "endpoint",
       "surface": "rooms.nothing_unread"
     },
     {
       "file": "apps/desktop/macos/Sources/RocketVibeKit/AppModel.swift",
-      "line": 1139,
+      "line": 1204,
       "kind": "endpoint",
       "surface": "rooms.mark_failed"
     },
     {
       "file": "apps/desktop/macos/Sources/RocketVibeKit/AppModel.swift",
-      "line": 1165,
+      "line": 1231,
       "kind": "endpoint",
       "surface": "e2e.wrong"
     },
     {
       "file": "apps/desktop/macos/Sources/RocketVibeKit/AppModel.swift",
-      "line": 1166,
+      "line": 1232,
       "kind": "endpoint",
       "surface": "e2e.no_keys"
     },
     {
       "file": "apps/desktop/macos/Sources/RocketVibeKit/AppModel.swift",
-      "line": 1167,
+      "line": 1233,
       "kind": "endpoint",
       "surface": "e2e.failed"
     },
     {
       "file": "apps/desktop/macos/Sources/RocketVibeKit/AppModel.swift",
-      "line": 1170,
+      "line": 1236,
       "kind": "endpoint",
       "surface": "e2e.failed"
     },

@@ -2,7 +2,7 @@
 
 Command: `node scripts/inventory-rocketchat.mjs`. Check: add `--check`.
 
-765 production files scanned; 781 occurrences.
+768 production files scanned; 781 occurrences.
 Calls with a dynamic first argument remain visible: their resolution is
 recorded in [the parity contract](PARITY.md). The lines are source
 markers at the time of generation. The JSON keeps the scope and all the files.
@@ -491,24 +491,24 @@ markers at the time of generation. The JSON keeps the scope and all the files.
 | [apps/desktop/macos/Sources/RocketVibe/NativeRoomControls.swift:110](../../apps/desktop/macos/Sources/RocketVibe/NativeRoomControls.swift#L110) | endpoint | rooms.pending |
 | [apps/desktop/macos/Sources/RocketVibe/NativeRoomControls.swift:120](../../apps/desktop/macos/Sources/RocketVibe/NativeRoomControls.swift#L120) | endpoint | rooms.failed |
 | [apps/desktop/macos/Sources/RocketVibe/Notifier.swift:48](../../apps/desktop/macos/Sources/RocketVibe/Notifier.swift#L48) | endpoint | rooms.encrypted |
-| [apps/desktop/macos/Sources/RocketVibe/RoomView.swift:162](../../apps/desktop/macos/Sources/RocketVibe/RoomView.swift#L162) | endpoint | e2e.read_only |
-| [apps/desktop/macos/Sources/RocketVibe/RoomView.swift:165](../../apps/desktop/macos/Sources/RocketVibe/RoomView.swift#L165) | endpoint | e2e.unlock |
-| [apps/desktop/macos/Sources/RocketVibe/RoomView.swift:183](../../apps/desktop/macos/Sources/RocketVibe/RoomView.swift#L183) | endpoint | e2e.title |
-| [apps/desktop/macos/Sources/RocketVibe/RoomView.swift:184](../../apps/desktop/macos/Sources/RocketVibe/RoomView.swift#L184) | endpoint | e2e.body |
-| [apps/desktop/macos/Sources/RocketVibe/RoomView.swift:185](../../apps/desktop/macos/Sources/RocketVibe/RoomView.swift#L185) | endpoint | e2e.password |
-| [apps/desktop/macos/Sources/RocketVibe/RoomView.swift:193](../../apps/desktop/macos/Sources/RocketVibe/RoomView.swift#L193) | endpoint | e2e.unlock |
+| [apps/desktop/macos/Sources/RocketVibe/RoomView.swift:170](../../apps/desktop/macos/Sources/RocketVibe/RoomView.swift#L170) | endpoint | e2e.read_only |
+| [apps/desktop/macos/Sources/RocketVibe/RoomView.swift:173](../../apps/desktop/macos/Sources/RocketVibe/RoomView.swift#L173) | endpoint | e2e.unlock |
+| [apps/desktop/macos/Sources/RocketVibe/RoomView.swift:191](../../apps/desktop/macos/Sources/RocketVibe/RoomView.swift#L191) | endpoint | e2e.title |
+| [apps/desktop/macos/Sources/RocketVibe/RoomView.swift:192](../../apps/desktop/macos/Sources/RocketVibe/RoomView.swift#L192) | endpoint | e2e.body |
+| [apps/desktop/macos/Sources/RocketVibe/RoomView.swift:193](../../apps/desktop/macos/Sources/RocketVibe/RoomView.swift#L193) | endpoint | e2e.password |
+| [apps/desktop/macos/Sources/RocketVibe/RoomView.swift:201](../../apps/desktop/macos/Sources/RocketVibe/RoomView.swift#L201) | endpoint | e2e.unlock |
 | [apps/desktop/macos/Sources/RocketVibe/SettingsView.swift:153](../../apps/desktop/macos/Sources/RocketVibe/SettingsView.swift#L153) | endpoint | rooms.sign_out |
 | [apps/desktop/macos/Sources/RocketVibe/SettingsView.swift:246](../../apps/desktop/macos/Sources/RocketVibe/SettingsView.swift#L246) | endpoint | e2e.status |
 | [apps/desktop/macos/Sources/RocketVibe/SettingsView.swift:248](../../apps/desktop/macos/Sources/RocketVibe/SettingsView.swift#L248) | endpoint | e2e.locked |
 | [apps/desktop/macos/Sources/RocketVibe/SettingsView.swift:248](../../apps/desktop/macos/Sources/RocketVibe/SettingsView.swift#L248) | endpoint | e2e.unlocked |
 | [apps/desktop/macos/Sources/RocketVibe/SettingsView.swift:251](../../apps/desktop/macos/Sources/RocketVibe/SettingsView.swift#L251) | endpoint | e2e.lock |
 | [apps/desktop/macos/Sources/RocketVibe/SettingsView.swift:253](../../apps/desktop/macos/Sources/RocketVibe/SettingsView.swift#L253) | endpoint | e2e.unlock |
-| [apps/desktop/macos/Sources/RocketVibeKit/AppModel.swift:1137](../../apps/desktop/macos/Sources/RocketVibeKit/AppModel.swift#L1137) | endpoint | rooms.nothing_unread |
-| [apps/desktop/macos/Sources/RocketVibeKit/AppModel.swift:1139](../../apps/desktop/macos/Sources/RocketVibeKit/AppModel.swift#L1139) | endpoint | rooms.mark_failed |
-| [apps/desktop/macos/Sources/RocketVibeKit/AppModel.swift:1165](../../apps/desktop/macos/Sources/RocketVibeKit/AppModel.swift#L1165) | endpoint | e2e.wrong |
-| [apps/desktop/macos/Sources/RocketVibeKit/AppModel.swift:1166](../../apps/desktop/macos/Sources/RocketVibeKit/AppModel.swift#L1166) | endpoint | e2e.no_keys |
-| [apps/desktop/macos/Sources/RocketVibeKit/AppModel.swift:1167](../../apps/desktop/macos/Sources/RocketVibeKit/AppModel.swift#L1167) | endpoint | e2e.failed |
-| [apps/desktop/macos/Sources/RocketVibeKit/AppModel.swift:1170](../../apps/desktop/macos/Sources/RocketVibeKit/AppModel.swift#L1170) | endpoint | e2e.failed |
+| [apps/desktop/macos/Sources/RocketVibeKit/AppModel.swift:1202](../../apps/desktop/macos/Sources/RocketVibeKit/AppModel.swift#L1202) | endpoint | rooms.nothing_unread |
+| [apps/desktop/macos/Sources/RocketVibeKit/AppModel.swift:1204](../../apps/desktop/macos/Sources/RocketVibeKit/AppModel.swift#L1204) | endpoint | rooms.mark_failed |
+| [apps/desktop/macos/Sources/RocketVibeKit/AppModel.swift:1231](../../apps/desktop/macos/Sources/RocketVibeKit/AppModel.swift#L1231) | endpoint | e2e.wrong |
+| [apps/desktop/macos/Sources/RocketVibeKit/AppModel.swift:1232](../../apps/desktop/macos/Sources/RocketVibeKit/AppModel.swift#L1232) | endpoint | e2e.no_keys |
+| [apps/desktop/macos/Sources/RocketVibeKit/AppModel.swift:1233](../../apps/desktop/macos/Sources/RocketVibeKit/AppModel.swift#L1233) | endpoint | e2e.failed |
+| [apps/desktop/macos/Sources/RocketVibeKit/AppModel.swift:1236](../../apps/desktop/macos/Sources/RocketVibeKit/AppModel.swift#L1236) | endpoint | e2e.failed |
 | [apps/mobile/app/login.tsx:578](../../apps/mobile/app/login.tsx#L578) | endpoint | chat.example.org |
 | [apps/mobile/app/message-actions.tsx:121](../../apps/mobile/app/message-actions.tsx#L121) | call:GET | 'settings.public' |
 | [apps/mobile/app/message-actions.tsx:122](../../apps/mobile/app/message-actions.tsx#L122) | endpoint | settings.public |
