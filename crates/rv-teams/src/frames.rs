@@ -57,6 +57,14 @@ pub fn user_activity(active: bool, cv: &str) -> String {
     format!("5:::{event}")
 }
 
+/// Trouter's acknowledgement of a `trouter.message_loss` event, carrying the
+/// event's own arguments; unacknowledged, the event comes back again.
+pub fn processed_message_loss(text: &str) -> Option<String> {
+    let event: Value = serde_json::from_str(text.splitn(4, ':').nth(3)?).ok()?;
+    let args = event.get("args")?;
+    Some(format!("5:::{}", json!({"name": "trouter.processed_message_loss", "args": args})))
+}
+
 /// The answer a pushed request expects, or Trouter delivers it again.
 pub fn reply(envelope: &Value) -> Option<String> {
     let id = envelope.get("id")?;

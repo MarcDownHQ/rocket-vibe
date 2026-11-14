@@ -20,7 +20,9 @@ use rv_provider::socket::State;
 use rv_provider::socket::{LiveEvent, Sink, Stream};
 
 const HANDSHAKE: Duration = Duration::from_secs(15);
-/// Trouter's heartbeat is 70 s: three missed are a dead socket.
+/// Trouter closes a socket that sends nothing for its 70 s heartbeat timeout and
+/// pushes no heartbeat of its own: the client sends one this often, answered by a noop.
+const HEARTBEAT_EVERY: Duration = Duration::from_secs(30);
 const SILENCE_MAX: Duration = Duration::from_secs(210);
 const REGISTER_AGAIN: Duration = Duration::from_secs(6 * 3600);
 /// How often an endpoint kept online says it is active again; Teams' web app
@@ -269,7 +271,7 @@ impl Actor {
             return Ended::Lost;
         }
         let mut last_traffic = Instant::now();
-        let mut check = tokio::time::interval(Duration::from_secs(30));
+        let mut check = tokio::time::interval(HEARTBEAT_EVERY);
         let mut activity = tokio::time::interval_at(Instant::now() + ACTIVITY_EVERY, ACTIVITY_EVERY);
         let mut renew = tokio::time::interval_at(Instant::now() + REGISTER_AGAIN, REGISTER_AGAIN);
         loop {
@@ -305,6 +307,9 @@ impl Actor {
                     if last_traffic.elapsed() > SILENCE_MAX {
                         return Ended::Lost;
                     }
+                    if socket.sink.send(WsMessage::text(frames::HEARTBEAT)).await.is_err() {
+                        return Ended::Lost;
+                    }
                 }
                 _ = activity.tick() => {
                     if self.keep_online.load(Ordering::SeqCst) && !self.report_activity(&mut socket.sink).await {
@@ -334,6 +339,11 @@ impl Actor {
             Frame::Heartbeat => sink.send(WsMessage::text(frames::HEARTBEAT)).await.is_ok(),
             Frame::Event(name) => {
                 if name == "trouter.message_loss" {
+                    if let Some(reply) = frames::processed_message_loss(text)
+                        && sink.send(WsMessage::text(reply)).await.is_err()
+                    {
+                        return false;
+                    }
                     self.emit(LiveEvent::Authenticated);
                 }
                 true
