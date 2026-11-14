@@ -6,7 +6,7 @@
 import { useRouter } from 'expo-router';
 import * as SecureStore from 'expo-secure-store';
 import { useCallback, useEffect, useMemo, useState, useSyncExternalStore } from 'react';
-import { Alert, Modal, PermissionsAndroid, Platform, Pressable, StyleSheet, Text, View } from 'react-native';
+import { Alert, Modal, PermissionsAndroid, Platform, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { dismissible } from './alerts.ts';
 import Animated, { useAnimatedStyle, useSharedValue, withRepeat, withSequence, withTiming } from 'react-native-reanimated';
 
@@ -320,6 +320,59 @@ export function VoiceTile({ c, client, card, width, height, you, onLongPress }: 
   );
 }
 
+/**
+ * A shared screen on a stage that goes full screen at a tap, the people in a
+ * narrow column at its right, cameras as thumbnails.
+ */
+export function ScreenStage({ c, client, sharer, cards, press }: {
+  c: Colors; client: RestClient | null; sharer: VoiceCard; cards: VoiceCard[]; press?: (card: VoiceCard) => (() => void) | undefined;
+}) {
+  const t = useT();
+  const [fullscreen, setFullscreen] = useState(false);
+  if (VoiceVideoView === null) return null;
+  return (
+    <>
+      <View style={styles.shareRow}>
+        <Pressable style={[styles.stage, { backgroundColor: c.deepCard, borderColor: c.border }]} onPress={() => setFullscreen(true)}
+          accessibilityRole="button" accessibilityLabel={t('voice.fullscreen')}>
+          <VoiceVideoView identity={sharer.uid} source="screen" fit="contain" style={StyleSheet.absoluteFill} />
+          <Text style={[styles.stageLabel, { color: c.text, backgroundColor: c.background }]} numberOfLines={1}>
+            <InlineIcon name="video-display" /> {t('voice.screenOf', { name: sharer.name })}
+          </Text>
+          <Text style={[styles.stageFull, { color: c.text, backgroundColor: c.background }]}>⛶</Text>
+        </Pressable>
+        <ScrollView style={styles.strip} contentContainerStyle={styles.stripContent} showsVerticalScrollIndicator={false}>
+          {cards.map(card => <MiniCard key={card.uid} c={c} client={client} card={card} onLongPress={press?.(card)} />)}
+        </ScrollView>
+      </View>
+      <Modal visible={fullscreen} transparent={false} animationType="fade" statusBarTranslucent navigationBarTranslucent
+        supportedOrientations={['portrait', 'landscape']} onRequestClose={() => setFullscreen(false)}>
+        <Pressable style={styles.fullscreen} onPress={() => setFullscreen(false)} accessibilityRole="button" accessibilityLabel={t('voice.exitFullscreen')}>
+          <VoiceVideoView identity={sharer.uid} source="screen" fit="contain" style={StyleSheet.absoluteFill} />
+        </Pressable>
+      </Modal>
+    </>
+  );
+}
+
+/** Someone beside a shared screen: a small camera, or the avatar, and the name. */
+function MiniCard({ c, client, card, onLongPress }: { c: Colors; client: RestClient | null; card: VoiceCard; onLongPress?: () => void }) {
+  const border = useVoiceGlow(card.speaking);
+  return (
+    <Pressable onLongPress={onLongPress} delayLongPress={350} style={[styles.mini, { backgroundColor: c.card, borderColor: c.border }]}>
+      <Animated.View pointerEvents="none" style={[StyleSheet.absoluteFill, styles.miniGlow, { borderColor: c.online }, border]} />
+      {card.camera && VoiceVideoView !== null ? (
+        <View style={styles.miniCamera}>
+          <VoiceVideoView identity={card.uid} source="camera" fit="cover" style={StyleSheet.absoluteFill} />
+        </View>
+      ) : (
+        <SpeakingAvatar c={c} client={client} uid={card.uid} name={card.name} speaking={card.speaking} size={44} radius={22} />
+      )}
+      <Text style={[styles.miniName, { color: c.text }]} numberOfLines={1}>{card.name}</Text>
+    </Pressable>
+  );
+}
+
 /** Microphone, sound and leave: the panel and the voice screen share them. */
 export function VoiceControls({ c, size = 'small' }: { c: Colors; size?: 'small' | 'large' }) {
   const voice = useVoice();
@@ -493,6 +546,17 @@ const styles = StyleSheet.create({
   tileGlow: { borderRadius: 20, borderWidth: 3, zIndex: 1 },
   tag: { position: 'absolute', left: 8, bottom: 8, maxWidth: '85%', flexDirection: 'row', alignItems: 'center', gap: 4, paddingHorizontal: 8, paddingVertical: 3, borderRadius: 8, opacity: 0.85 },
   tagName: { fontFamily: FONTS.bodyStrong, fontSize: 13, flexShrink: 1 },
+  shareRow: { flex: 1, flexDirection: 'row', gap: 10, padding: 12 },
+  stage: { flex: 1, borderRadius: 18, borderWidth: 1, overflow: 'hidden' },
+  strip: { width: 92, flexGrow: 0 },
+  stripContent: { gap: 10 },
+  mini: { alignItems: 'center', gap: 6, paddingVertical: 10, paddingHorizontal: 6, borderRadius: 16, borderWidth: 1, overflow: 'hidden' },
+  miniGlow: { borderRadius: 16, borderWidth: 2, zIndex: 1 },
+  miniCamera: { width: 78, height: 58, borderRadius: 10, overflow: 'hidden' },
+  miniName: { fontFamily: FONTS.bodyStrong, fontSize: 11, maxWidth: '100%' },
+  stageLabel: { position: 'absolute', left: 10, bottom: 10, paddingHorizontal: 8, paddingVertical: 3, borderRadius: 8, fontFamily: FONTS.bodyBold, fontSize: 12, opacity: 0.85 },
+  stageFull: { position: 'absolute', right: 10, top: 10, paddingHorizontal: 8, paddingVertical: 2, borderRadius: 8, fontSize: 16, opacity: 0.85 },
+  fullscreen: { flex: 1, backgroundColor: '#000000' },
   occupants: { paddingLeft: 72, paddingRight: 16, paddingBottom: 6, gap: 2 },
   occupant: { flexDirection: 'row', alignItems: 'center', gap: 8 },
   occupantName: { fontFamily: FONTS.bodyBold, fontSize: 13, flexShrink: 1 },
