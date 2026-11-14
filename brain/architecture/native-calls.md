@@ -409,7 +409,12 @@ meetings with video (2 to 3 months more).
   subsequent offer doesn't match"): the offer goes to the sidecar (`Command::RemoteOffer`, `Event::LocalAnswer`)
   under the call's own `mid` (`renegotiation_offer`), and the answer goes back under Teams' `mid` with every
   section of its offer, refused ones at port 0 (`teams_answer`). A hold that was refused kept the microphone
-  flowing to the other side. Android does the same through `remoteOffer`.
+  flowing to the other side. Android does the same through `remoteOffer`. **Teams' hold offer also gives
+  extension id 3 another URI** (its `skype.com/.../fast_bandwidth_feedback`, where the call had
+  transport-wide-cc), which libwebrtc refuses ("RTP extension ID reassignment not supported"; found live
+  2026-11-14: Teams waited about 15 s for the answer, then dropped the media, and a resume stayed on hold).
+  `renegotiation_offer` therefore fits the offer to the call's last plain SDP: an `a=extmap` whose id or URI
+  that SDP binds otherwise is left out, so the answer declines it.
 - **Ending**: the other side's `callEnd`/`conversationEnd` ends the voice session with `remote_ended`,
   90 s without an answer with `no_answer`. Neither is a join failure (`Ended::is_join_failure`), so the page
   does not open: it would ring them again.
