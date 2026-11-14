@@ -246,6 +246,16 @@ mod tests {
     use super::*;
 
     #[test]
+    fn a_message_loss_is_acknowledged_with_its_own_arguments() {
+        let event = r#"5:2::{"name":"trouter.message_loss","args":[{"droppedIndicators":[{"tag":"messaging","etag":"2026-11-14T09:39:38Z"}]}]}"#;
+        let reply = processed_message_loss(event).unwrap();
+        let body: Value = serde_json::from_str(reply.strip_prefix("5:::").unwrap()).unwrap();
+        assert_eq!(body["name"], "trouter.processed_message_loss");
+        assert_eq!(body["args"][0]["droppedIndicators"][0]["etag"], "2026-11-14T09:39:38Z");
+        assert_eq!(processed_message_loss("5:2::not json"), None);
+    }
+
+    #[test]
     fn a_presence_push_is_read_from_its_path_only() {
         let body = r#"{"presence":[{"mri":"8:orgid:a","etag":"A1","presence":{"availability":"Available","activity":"Available"}}]}"#;
         let push = json!({"id": 1, "method": "POST", "url": "/v4/f/abc/unifiedPresenceService", "body": body});
