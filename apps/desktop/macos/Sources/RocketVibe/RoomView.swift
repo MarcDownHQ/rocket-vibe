@@ -101,6 +101,14 @@ struct RoomView: View {
     }
 
     func call() {
+        if let whatsapp = model.provider.whatsapp {
+            let (rid, title) = (model.room.rid, L("call.window_title", ["room": model.room.name]))
+            Task {
+                if let native = await whatsapp.startCall(rid: rid, title: title) { NativeCallWindow.show(native, title: title) }
+                else { app.notice = L("call.failed") }
+            }
+            return
+        }
         Task {
             let expected = app.sessionId
             let link = try? await model.startCall()
@@ -322,7 +330,7 @@ struct MessageList: View {
                 }
             }
             .task(id: [model.messages.last?.id, app.thread?.threadId]) {
-                guard model.provider.legacy != nil else {return}
+                guard model.provider.legacy != nil || model.provider.whatsapp != nil else {return}
                 try? await Task.sleep(nanoseconds: 1_500_000_000)
                 if !Task.isCancelled && pinned && model.context == nil && NSApp.isActive && model.threadId == nil
                     && app.thread == nil && (model.room.unread > 0 || model.room.alert) {

@@ -84,8 +84,15 @@ public final class RoomModel {
     public var supportsObservedReads:Bool { active && nativeReadEnabled && (threadId == nil || provider.native?.supportedFeatures().contains("threads") == true) }
     private var nativeReadEnabled = false
     public func markLegacyRead() async {
-        guard active, threadId == nil, !Task.isCancelled, let chat else { return }
+        guard active, threadId == nil, !Task.isCancelled else { return }
+        if let whatsapp = provider.whatsapp { whatsapp.markRead(rid: room.rid); return }
+        guard let chat else { return }
         await chat.markRead(rid:room.rid)
+    }
+    /// A WhatsApp send that never left: its words come back to an empty composer.
+    func giveBack(_ text: String) {
+        guard active, draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
+        draft = text
     }
     public func favoriteState() throws -> NativeFavoriteState? {
         guard active, let native=provider.native else { throw CancellationError() }
@@ -322,6 +329,8 @@ public final class RoomModel {
     private var roomAccessTask: Task<Void, Never>?
     private let nativeMembership: String?
     @ObservationIgnored private var nativeQuote: NativeQuoteSelection?
+    /// The WhatsApp message the next send answers.
+    @ObservationIgnored private var whatsAppReply: String?
     @ObservationIgnored private var privateQuote: NativePrivateQuoteSelection?
     public private(set) var pendingQuote: Quote?
     private var privateMode: Bool { provider.native != nil && room.encrypted }
@@ -345,7 +354,8 @@ public final class RoomModel {
     @ObservationIgnored private var quoteAuthorPoll: Task<Void, Never>?
     public var canSend: Bool { threadWriteAllowed && quoteSendingDraft == nil && (!privateMode || privateReady)
         && (privateMode || privateQuote == nil || (quoteVisible && quoteAuthor != nil && !quoteAuthorBusy))
-        && (!draft.trimmingCharacters(in:.whitespacesAndNewlines).isEmpty || nativeQuote != nil || privateQuote != nil) }
+        && (!draft.trimmingCharacters(in:.whitespacesAndNewlines).isEmpty || nativeQuote != nil || privateQuote != nil)
+        && provider.whatsapp?.sending(rid: room.rid) != true }
     public private(set) var threadWriteAllowed = true
     @ObservationIgnored private var actionLoads: Set<String> = []
     @ObservationIgnored private var mutations: [String: NativeMessageActions] = [:]
@@ -370,6 +380,8 @@ public final class RoomModel {
                 Task { try? await native.setTyping(room:rid,root:thread,active:!text.trimmingCharacters(in:.whitespacesAndNewlines).isEmpty,membership:membership) }
             } else if let chat = provider.legacy {
                 chat.setTyping(rid: rid, active: !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+            } else if let whatsapp = provider.whatsapp {
+                whatsapp.setTyping(rid: rid, active: !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
             }
             draftSave?.cancel()
             draftSave = Task {
@@ -591,7 +603,8 @@ public final class RoomModel {
     }
 
     func refreshTyping() {
-        let fresh = provider.native?.typing(room:room.rid,root:threadId) ?? (threadId == nil ? (chat?.typing(rid:room.rid) ?? []) : [])
+        let fresh = provider.native?.typing(room:room.rid,root:threadId)
+            ?? (threadId == nil ? (chat?.typing(rid:room.rid) ?? provider.whatsapp?.typing(rid: room.rid) ?? []) : [])
         if fresh != typing { typing = fresh }
     }
 
@@ -866,6 +879,10 @@ public final class RoomModel {
                 else { _ = try native.sendQuotesFromMembership(room:room.rid,text:text,membership:nativeMembership,quotes:nativeQuote.map { [$0] } ?? []) }
                 cancelQuote()
             }
+            else if let whatsapp = provider.whatsapp {
+                try whatsapp.send(rid: room.rid, text: text, reply: whatsAppReply)
+                cancelQuote()
+            }
             else {
                 let shown = alsoInRoom && supportsAlsoInRoom
                 alsoInRoom = false
@@ -917,6 +934,8 @@ public final class RoomModel {
             } else if let native = provider.native {
                 try await native.react(room: room.rid, messageId: message.id, emoji: shortcode, present: add)
                 if active { reload() }
+            } else if let whatsapp = provider.whatsapp {
+                try whatsapp.react(messageId: message.id, shortcode: shortcode, add: add)
             } else if let chat {
                 try await chat.react(messageId: message.id, shortcode: shortcode, add: add)
             }
@@ -942,6 +961,7 @@ public final class RoomModel {
             return result
         }
         if provider.native != nil && message.system != nil { return [] }
+        if let whatsapp = provider.whatsapp { return whatsapp.actions(messageId: message.id) }
         guard let chat else {
             loadNativeActions(message)
             guard let rights = nativeActions[message.id] else { return [.copy] }
@@ -1072,6 +1092,10 @@ public final class RoomModel {
             reload()
             return
         }
+        if let whatsapp = provider.whatsapp {
+            guard active else { throw RvError.Local(message: L("native.error")) }
+            return try whatsapp.edit(messageId: message.id, text: text)
+        }
         try await editableChat().edit(rid: room.rid, messageId: message.id, text: text)
     }
 
@@ -1090,6 +1114,10 @@ public final class RoomModel {
             mutations.removeValue(forKey: message.id)
             reload()
             return
+        }
+        if let whatsapp = provider.whatsapp {
+            guard active else { throw RvError.Local(message: L("native.error")) }
+            return try whatsapp.delete(messageId: message.id)
         }
         try await editableChat().delete(rid: room.rid, messageId: message.id)
     }
@@ -1171,6 +1199,11 @@ public final class RoomModel {
             } catch { self.error = L("quote.unavailable") }
             return
         }
+        if provider.whatsapp != nil {
+            whatsAppReply = message.id
+            pendingQuote = Quote(unavailable:false,below:false,link:"",author:message.author,body:message.body,images:message.images,files:message.files,quotes:[])
+            return
+        }
         guard let chat else { return }
         let q = await chat.quote(
             kind: room.kind, slug: room.slug, rid: room.rid, messageId: message.id, text: message.text ?? "")
@@ -1182,6 +1215,7 @@ public final class RoomModel {
         privateHandle?.cancelQuote()
         privateQuote = nil
         nativeQuote = nil
+        whatsAppReply = nil
         pendingQuote = nil
     }
 
@@ -1281,6 +1315,10 @@ public final class RoomModel {
                 try await chat.attach(rid: room.rid, thread: threadId, path: path, name: name, mime: mime, caption: caption, temporary: temporary)
             } else if let native=provider.native, let nativeMembership {
                 try await native.attach(rid: room.rid, thread: threadId, path: path, name: name, mime: mime, caption: caption, temporary: temporary, membership: nativeMembership)
+            } else if let whatsapp = provider.whatsapp {
+                try whatsapp.sendFile(rid: room.rid, path: path, name: name, mime: mime, caption: caption ?? "", reply: whatsAppReply)
+                cancelQuote()
+                return nil
             } else { return L("native.error") }
             refreshUploads()
             return nil

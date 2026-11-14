@@ -909,15 +909,20 @@ struct BackgroundCallCard: View {
                 Spacer()
                 Button(L("voice_session.decline"), role: .destructive) { app.declineBackgroundCall(call) }
                     .foregroundStyle(Color.red)
-                Button(L("voice_session.accept")) {
-                    let title = L("call.window_title", ["room": call.caller])
-                    Task {
-                        if let link = await app.answerBackgroundCall(call), let url = URL(string: link) {
-                            CallWindow.show(url, title: title)
+                if call.phoneOnly {
+                    Button(L("wa.call_on_phone")) { app.ignoreBackgroundCall(call) }
+                        .keyboardShortcut(.defaultAction)
+                } else {
+                    Button(L("voice_session.accept")) {
+                        let title = L("call.window_title", ["room": call.caller])
+                        Task {
+                            if let link = await app.answerBackgroundCall(call), let url = URL(string: link) {
+                                CallWindow.show(url, title: title)
+                            }
                         }
                     }
+                    .keyboardShortcut(.defaultAction)
                 }
-                .keyboardShortcut(.defaultAction)
             }
         }
         .padding(20)
@@ -937,18 +942,23 @@ struct RingingCallCard: View {
                 Spacer()
                 Button(L("voice_session.decline"), role: .destructive) { app.declineCall(call) }
                     .foregroundStyle(Color.red)
-                Button(L("voice_session.accept")) {
-                    let title = L("call.window_title", ["room": app.callerName(call)])
-                    Task {
-                        if let chat = app.provider?.legacy, chat.teamsCallAnswerable(rid: call.rid),
-                           let native = await chat.answerTeamsCall(rid: call.rid, title: title) {
-                            NativeCallWindow.show(native, title: title)
-                            return
+                if app.answeredOnPhone(call) {
+                    Button(L("wa.call_on_phone")) { app.ignoreCall() }
+                        .keyboardShortcut(.defaultAction)
+                } else {
+                    Button(L("voice_session.accept")) {
+                        let title = L("call.window_title", ["room": app.callerName(call)])
+                        Task {
+                            if let chat = app.provider?.legacy, chat.teamsCallAnswerable(rid: call.rid),
+                               let native = await chat.answerTeamsCall(rid: call.rid, title: title) {
+                                NativeCallWindow.show(native, title: title)
+                                return
+                            }
+                            if let link = await app.answerCall(call), let url = URL(string: link) { CallWindow.show(url, title: title, displayName: app.account?.username, chat: app.provider?.legacy) }
                         }
-                        if let link = await app.answerCall(call), let url = URL(string: link) { CallWindow.show(url, title: title, displayName: app.account?.username, chat: app.provider?.legacy) }
                     }
+                    .keyboardShortcut(.defaultAction)
                 }
-                .keyboardShortcut(.defaultAction)
             }
         }
         .padding(20)

@@ -5,6 +5,7 @@ import RocketVibeCore
 public enum ChatProvider {
     case rocketChat(Chat)
     case vibez(NativeChat)
+    case whatsapp(WhatsAppChat)
 
     public var legacy: Chat? {
         if case let .rocketChat(chat) = self { return chat }
@@ -14,76 +15,88 @@ public enum ChatProvider {
         if case let .vibez(chat) = self { return chat }
         return nil
     }
-    public var supportsFiles: Bool { legacy != nil || native?.supportedFeatures().contains("uploads") == true }
-    public var supportsEditing: Bool { legacy != nil || native?.supportedFeatures().contains("editing") == true }
+    public var whatsapp: WhatsAppChat? {
+        if case let .whatsapp(chat) = self { return chat }
+        return nil
+    }
+    public var supportsFiles: Bool { legacy != nil || whatsapp != nil || native?.supportedFeatures().contains("uploads") == true }
+    public var supportsEditing: Bool { legacy != nil || whatsapp != nil || native?.supportedFeatures().contains("editing") == true }
     public var supportsRoomInfo: Bool { legacy != nil || native?.supportedFeatures().contains("room_info") == true }
     public var supportsProfiles: Bool { legacy != nil || native?.profilesAvailable() == true }
     // Native rooms have no Jitsi meetings: their voice sessions come later.
-    public var supportsCalls: Bool { legacy != nil }
+    public var supportsCalls: Bool { legacy != nil || whatsapp != nil }
     public func startPersonCall(username:String,userId:String) async throws -> String {
         switch self {
         case let .rocketChat(chat):
             let rid = try await chat.openDm(username:username)
             return try await chat.startCall(rid:rid)
-        case .vibez: throw CancellationError()
+        case .vibez, .whatsapp: throw CancellationError()
         }
     }
     public func callAvailable(rid:String, membership:String? = nil) async -> Bool {
         switch self {
         case let .rocketChat(chat): return await chat.callAvailable(rid:rid)
+        case let .whatsapp(chat): return chat.callPossible(rid:rid)
         case .vibez: return false
         }
     }
     public func startCall(rid:String, membership:String? = nil) async throws -> String {
         switch self {
         case let .rocketChat(chat): return try await chat.startCall(rid:rid)
-        case .vibez: throw CancellationError()
+        case .vibez, .whatsapp: throw CancellationError()
         }
     }
     func joinCall(rid:String,callId:String,membership:String?) async throws -> String {
         switch self {
         case let .rocketChat(chat): return try await chat.joinCall(callId:callId)
-        case .vibez: throw CancellationError()
+        case .vibez, .whatsapp: throw CancellationError()
         }
     }
     func callLink(rid:String,callId:String,membership:String?) async throws -> String {
         switch self {
         case let .rocketChat(chat): return try await chat.callLink(callId:callId)
-        case .vibez: throw CancellationError()
+        case .vibez, .whatsapp: throw CancellationError()
         }
     }
     public func person(key:String,byId:Bool) async throws -> Person {
         switch self {case let .rocketChat(chat):return try await chat.person(key:key,byId:byId)
-        case let .vibez(chat):return try await chat.person(key:key,byId:byId)}
+        case let .vibez(chat):return try await chat.person(key:key,byId:byId)
+        case .whatsapp: throw CancellationError()}
     }
     func roomDetails(rid: String) async throws -> RoomDetails {
         switch self { case let .rocketChat(chat): return try await chat.roomDetails(rid: rid)
-        case let .vibez(chat): return try await chat.roomDetails(room: rid) }
+        case let .vibez(chat): return try await chat.roomDetails(room: rid)
+        case .whatsapp: throw CancellationError() }
     }
 
     /// The account's server administration and reports.
-    public func admin() -> ServerAdmin {
+    public func admin() -> ServerAdmin? {
         switch self { case let .rocketChat(chat): return chat.admin()
-        case let .vibez(chat): return chat.admin() }
+        case let .vibez(chat): return chat.admin()
+        case .whatsapp: return nil }
     }
     /// Members may report messages and accounts here.
     public var supportsReports: Bool { legacy != nil || native?.reportsSupported() == true }
 
     func account() -> Account {
         switch self { case let .rocketChat(chat): return chat.account()
-        case let .vibez(chat): return chat.account() }
+        case let .vibez(chat): return chat.account()
+        case let .whatsapp(chat): return chat.account() }
     }
     func shutdown() {
         switch self { case let .rocketChat(chat): chat.shutdown()
-        case let .vibez(chat): chat.shutdown() }
+        case let .vibez(chat): chat.shutdown()
+        case let .whatsapp(chat): chat.shutdown() }
     }
     func listen(_ listener: Listener) {
         switch self { case let .rocketChat(chat): chat.setListener(listener: listener)
-        case let .vibez(chat): chat.setListener(listener: listener) }
+        case let .vibez(chat): chat.setListener(listener: listener)
+        case let .whatsapp(chat): chat.setListener(listener: listener) }
     }
     func rooms() throws -> [RoomGroup] {
         switch self { case let .rocketChat(chat): return chat.rooms()
-        case let .vibez(chat): return try chat.roomGroups() }
+        case let .vibez(chat): return try chat.roomGroups()
+        case let .whatsapp(chat): return chat.rooms() }
     }
     func messages(rid: String, limit: Int64, thread: String?, unreadAfter: Int64?, nativeBoundary:NativeRoomReadState? = nil, nativeMembership:String? = nil) throws -> [MessageItem] {
         switch self {
@@ -95,19 +108,23 @@ public enum ChatProvider {
                 return try chat.messageItemsFromBoundary(room:rid,limit:UInt32(clamping:limit),membership:boundary.membership,rootPosition:boundary.rootPosition)
             }
             return try chat.messageItems(room: rid, limit: UInt32(clamping: limit))
+        case let .whatsapp(chat):
+            return thread == nil ? chat.messages(rid: rid) : []
         }
     }
     func draft(rid: String, thread: String?) throws -> String {
         switch self { case let .rocketChat(chat): return chat.draft(rid: rid, threadId: thread)
         case let .vibez(chat):
             if let thread { return try chat.threadDraftFromMembership(room:rid,root:thread,membership:chat.membershipVersion(room:rid)) }
-            return try chat.draft(room: rid) }
+            return try chat.draft(room: rid)
+        case let .whatsapp(chat): return thread == nil ? chat.draft(rid: rid) : "" }
     }
     func setDraft(rid: String, thread: String?, text: String) throws {
         switch self { case let .rocketChat(chat): chat.setDraft(rid: rid, threadId: thread, text: text)
         case let .vibez(chat):
             if let thread { try chat.setThreadDraftFromMembership(room:rid,root:thread,text:text,membership:chat.membershipVersion(room:rid)) }
-            else { try chat.setDraft(room: rid, text: text) } }
+            else { try chat.setDraft(room: rid, text: text) }
+        case let .whatsapp(chat): if thread == nil { chat.setDraft(rid: rid, text: text) } }
     }
     func load(room: Room, thread: String?) async throws -> Bool {
         switch self {
@@ -117,12 +134,15 @@ public enum ChatProvider {
         case let .vibez(chat):
             if let thread { try await chat.loadThread(room:room.rid,root:thread); return false }
             return try await chat.history(room: room.rid, older: false)
+        case .whatsapp:
+            return false
         }
     }
     /// Whether more is older, and how many rows to show when the server says.
     func loadOlder(room: Room, oldestTs: Int64) async throws -> OlderPage {
         switch self { case let .rocketChat(chat): return try await chat.loadOlder(rid: room.rid, kind: room.kind, oldestTs: oldestTs)
-        case let .vibez(chat): return OlderPage(more: try await chat.history(room: room.rid, older: true), limit: nil) }
+        case let .vibez(chat): return OlderPage(more: try await chat.history(room: room.rid, older: true), limit: nil)
+        case .whatsapp: return OlderPage(more: false, limit: nil) }
     }
     /// `alsoInRoom`: a thread reply also shown in the room (Rocket.Chat only).
     public func send(rid: String, text: String, thread: String? = nil, alsoInRoom: Bool = false) async throws {
@@ -132,26 +152,37 @@ public enum ChatProvider {
             else { await chat.send(rid: rid, text: text, threadId: thread) }
         case let .vibez(chat):
             if let thread { _ = try chat.sendReplyFromMembership(room:rid,root:thread,text:text,membership:chat.membershipVersion(room:rid),quotes:[]) }
-            else { _ = try chat.send(room: rid, text: text) } }
+            else { _ = try chat.send(room: rid, text: text) }
+        case let .whatsapp(chat): try chat.send(rid: rid, text: text, reply: nil) }
     }
     func retry(_ id: String) async throws {
         switch self { case let .rocketChat(chat): await chat.retry(id: id)
-        case let .vibez(chat): try chat.retry(id: id) }
+        case let .vibez(chat): try chat.retry(id: id)
+        // An unconfirmed WhatsApp send is never sent again from here: it may have arrived.
+        case .whatsapp: throw RvError.Local(message: L("wa.send_uncertain")) }
     }
     func signOut() async throws {
         switch self { case let .rocketChat(chat): await chat.signOut()
-        case let .vibez(chat): try await chat.logout() }
+        case let .vibez(chat): try await chat.logout()
+        case let .whatsapp(chat): try await chat.unlink() }
     }
     public func spotlight(query: String) async throws -> [Found] {
         switch self { case let .rocketChat(chat): return try await chat.spotlight(query: query)
-        case let .vibez(chat): return try await chat.spotlight(query: query) }
+        case let .vibez(chat): return try await chat.spotlight(query: query)
+        case let .whatsapp(chat):
+            return try await chat.search(text: query).map { .user(id: $0.jid, username: $0.name, name: $0.name) } }
     }
     func direct(username: String,userId:String? = nil) async throws -> String {
         switch self { case let .rocketChat(chat): return try await chat.openDm(username: username)
-        case let .vibez(chat): if let userId,!userId.isEmpty{return try await chat.directUser(userId:userId)};return try await chat.direct(username: username) }
+        case let .vibez(chat): if let userId,!userId.isEmpty{return try await chat.directUser(userId:userId)};return try await chat.direct(username: username)
+        case let .whatsapp(chat):
+            guard let userId, !userId.isEmpty else { throw CancellationError() }
+            chat.startChat(jid: userId, name: username)
+            return userId }
     }
     func join(rid: String) async throws {
         switch self { case let .rocketChat(chat): try await chat.joinChannel(rid: rid)
-        case let .vibez(chat): _ = try await chat.joinPublic(room: rid) }
+        case let .vibez(chat): _ = try await chat.joinPublic(room: rid)
+        case .whatsapp: throw CancellationError() }
     }
 }

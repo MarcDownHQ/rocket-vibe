@@ -572,7 +572,10 @@ so a peer's standard Opus or CELT escape frames are not decoded). Its audio is P
   (`JitsiSession.startPcm`: `AudioRecord` `VOICE_COMMUNICATION` with `AcousticEchoCanceler` and
   `NoiseSuppressor`, `AudioTrack` `USAGE_VOICE_COMMUNICATION`, 16 kHz). The library cross-compiles for
   arm64 with the call features.
-- **Not run**: a call with a phone, either way, on either app. SwiftUI has no WhatsApp account yet.
+- **SwiftUI** (2026-11-12): the same `carry_call` through rv-ffi (`jitsi_call::carry_whatsapp`,
+  `WhatsAppChat.answerCall` / `startCall`), shown in `NativeCallWindow`; background accounts ring
+  through `background.rs` `rings`, whose `phone_only` keeps "Answer on the phone".
+- **Not run**: a call with a phone, either way, on any app.
   Group and video calls (built in the library) are not offered.
 
 ## Order

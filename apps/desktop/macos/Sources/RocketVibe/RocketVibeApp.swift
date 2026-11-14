@@ -84,6 +84,7 @@ struct RocketVibeApp: App {
             Task { try? await app.provider?.send(rid: rid, text: text) }
         }
         app.appIsActive = { NSApp.isActive }
+        app.onNativeCall = { native, title in NativeCallWindow.show(native, title: title) }
         app.onIncoming = { [app] incoming in
             let watching = NSApp.isActive && app.room?.rid == incoming.rid
             if !watching { notifier.show(incoming, scope: app.native?.notificationKey(rid: incoming.rid)) }
@@ -222,6 +223,18 @@ struct RootView: View {
                     .animation(.easeOut(duration: 0.16), value: app.admin != nil)
                     .modalOverlay(item: Binding(get: { app.reporting }, set: { if $0 == nil { app.cancelReport() } })) { draft in
                         ReportSheet(draft: draft)
+                    }
+                    .modalOverlay(
+                        isPresented: Binding(get: { app.whatsAppLink != nil }, set: { if !$0 { app.closeWhatsAppLink() } }),
+                        style: .sheet(width: 420, height: 600)
+                    ) {
+                        if let link = app.whatsAppLink { WhatsAppLinkSheet(model: link) }
+                    }
+                    .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
+                        app.appActivityChanged(true)
+                    }
+                    .onReceive(NotificationCenter.default.publisher(for: NSApplication.didResignActiveNotification)) { _ in
+                        app.appActivityChanged(false)
                     }
                     // The account's reminders (account menu): a click outside closes the list.
                     .modalOverlay(isPresented: Binding(get: { app.remindersShown }, set: { app.remindersShown = $0 })) {

@@ -9,6 +9,7 @@ section here.
 
 ### Added
 
+- macOS (SwiftUI): WhatsApp (experimental) as an account of the app, linked by QR or code: conversations, photos and attachments, replies, reactions, edits and deletions, files sent, notifications with reply, 1:1 audio calls answered and placed inside the app, unlink. The app carries the licence notice of the crates the engine links.
 - WhatsApp (experimental): a 1:1 call is answered and placed inside the app, audio only, from the call prompt and a person's chat; video and group calls stay on the phone.
 - Teams (experimental): an incoming call is answered inside the app, audio only, when Teams sends its offer with the ring; its page stays the fallback.
 - Mattermost: calls through the server's Calls plugin run inside the app, audio only: the room's call button where the channel's calls are on, Join on the call card, and a direct message's call rings.

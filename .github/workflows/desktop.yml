@@ -645,10 +645,11 @@ jobs:
 
   macos-swiftui:
     if: github.ref_type == 'tag' || github.event_name == 'workflow_dispatch'
-    needs: [voice]
+    needs: [voice, whatsapp]
     uses: ./.github/workflows/desktop-swiftui.yml
     with:
       voice-artifact: true
+      whatsapp-licenses: true
     secrets: inherit
 
   release:

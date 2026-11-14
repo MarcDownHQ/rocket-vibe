@@ -13,6 +13,7 @@ public extension RoomModel {
         switch provider {
         case let .vibez(chat): result = try await (gifs ? chat.socialGifs(query: query) : chat.socialStickers())
         case let .rocketChat(chat): if gifs { result = try await chat.socialGifs(room: rid, query: query) } else { result = try chat.socialStickers() }
+        case .whatsapp: throw CancellationError()
         }
         try socialGuard(); return result
     }
@@ -22,6 +23,7 @@ public extension RoomModel {
         switch provider {
         case let .vibez(chat): try await chat.saveSticker(operation: operation, title: title, url: item.url)
         case let .rocketChat(chat): try chat.saveSticker(operation: operation, title: title, url: item.url)
+        case .whatsapp: throw CancellationError()
         }
         try socialGuard()
     }
@@ -30,6 +32,7 @@ public extension RoomModel {
         switch provider {
         case let .vibez(chat): try await chat.removeSticker(id: id)
         case let .rocketChat(chat): try chat.removeSticker(id: id)
+        case .whatsapp: throw CancellationError()
         }
         try socialGuard()
     }
@@ -38,6 +41,7 @@ public extension RoomModel {
         switch provider {
         case let .vibez(chat): try await chat.sendSocialImage(room: rid, root: threadId, operation: operation, title: item.title, url: item.url)
         case let .rocketChat(chat): try await chat.sendSocialImage(room: rid, root: threadId, operation: operation, title: item.title, url: item.url, giphyId: gif ? item.id : nil, query: query)
+        case .whatsapp: throw CancellationError()
         }
         try socialGuard()
     }

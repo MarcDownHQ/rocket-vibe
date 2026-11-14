@@ -8,24 +8,28 @@ extension ChatProvider {
         switch self {
         case let .rocketChat(chat): return try chat.setReminder(draft: draft, due: due)
         case let .vibez(chat): return try chat.setReminder(draft: draft, due: due)
+        case .whatsapp: throw CancellationError()
         }
     }
     func reminder(_ messageId: String) -> ReminderItem? {
         switch self {
         case let .rocketChat(chat): return chat.reminder(messageId: messageId)
         case let .vibez(chat): return chat.reminder(messageId: messageId)
+        case .whatsapp: return nil
         }
     }
     func reminders() -> [ReminderItem] {
         switch self {
         case let .rocketChat(chat): return chat.reminders()
         case let .vibez(chat): return chat.reminders()
+        case .whatsapp: return []
         }
     }
     func cancelReminder(_ messageId: String) throws -> String {
         switch self {
         case let .rocketChat(chat): return try chat.cancelReminder(messageId: messageId)
         case let .vibez(chat): return try chat.cancelReminder(messageId: messageId)
+        case .whatsapp: throw CancellationError()
         }
     }
 }
@@ -33,7 +37,7 @@ extension ChatProvider {
 extension RoomModel {
     /// Any sent message that is not a system line can carry a reminder.
     public func canRemind(_ message: MessageItem) -> Bool {
-        active && message.delivery == .sent && message.system == nil && !message.id.isEmpty
+        active && provider.whatsapp == nil && message.delivery == .sent && message.system == nil && !message.id.isEmpty
     }
 }
 
