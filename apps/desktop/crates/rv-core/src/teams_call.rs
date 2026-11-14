@@ -215,11 +215,10 @@ impl Session {
             eprintln!("teams call: answered {call_id}");
         }
         self.dismiss_call();
-        let mid = calling::audio_mid(&plain).map(str::to_owned);
         let session = self.clone();
         let voice = voice.clone();
         tokio::spawn(async move {
-            drive(&session, &voice, &identity, &created, false, mid, &mut pushes).await;
+            drive(&session, &voice, &identity, &created, false, Some(plain), &mut pushes).await;
         });
         Ok(())
     }
@@ -305,7 +304,7 @@ async fn drive(
     identity: &Identity,
     created: &Value,
     test: bool,
-    // The audio section's mid of a call answered here, accepted already.
+    // The plain offer of a call answered here, accepted already.
     accepted: Option<String>,
     pushes: &mut tokio::sync::broadcast::Receiver<Value>,
 ) {
@@ -317,7 +316,8 @@ async fn drive(
     let mut roster: BTreeMap<String, String> = BTreeMap::new();
     let mut answered = accepted.is_some();
     let mut answered_at = answered.then(tokio::time::Instant::now);
-    let mut session_mid: Option<String> = accepted;
+    // What the call negotiated last, in plain WebRTC: a new offer must fit it.
+    let mut negotiated: Option<String> = accepted;
     // Teams' conversation holds this client through this long poll's 30 s lease.
     let broker = links.get("subscribe").and_then(Value::as_str).map(|first| {
         let (session, chain, first) = (session.clone(), chain.to_owned(), first.to_owned());
@@ -367,8 +367,7 @@ async fn drive(
                         if debugging {
                             eprintln!("teams call: new offer {}", calling::sdp_sections(&sdp));
                         }
-                        let mid = session_mid.as_deref().or_else(|| calling::audio_mid(&sdp)).unwrap_or("0");
-                        let Some(plain) = calling::renegotiation_offer(&sdp, mid) else {
+                        let Some(plain) = calling::renegotiation_offer(&sdp, negotiated.as_deref()) else {
                             eprintln!("Teams call: a new offer without audio");
                             continue;
                         };
@@ -376,6 +375,7 @@ async fn drive(
                             eprintln!("Teams call: a new offer went unanswered");
                             continue;
                         };
+                        negotiated = Some(plain);
                         let answer = calling::teams_answer(&answer, &sdp);
                         if debugging {
                             eprintln!("teams call: answering {}", calling::sdp_sections(&answer));
@@ -390,8 +390,8 @@ async fn drive(
                         };
                         answered = true;
                         answered_at = Some(tokio::time::Instant::now());
-                        session_mid = calling::audio_mid(&answer).map(str::to_owned);
                         voice.remote_answer(&answer).await;
+                        negotiated = Some(answer);
                         if let Some(link) = acknowledge {
                             let body = calling::acknowledge_acceptance(&identity.caller());
                             report("acknowledgement", teams.service.calling_post(&link, chain, &body).await.map(|_| ()));

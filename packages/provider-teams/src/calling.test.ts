@@ -128,7 +128,7 @@ describe('Teams calling', () => {
   });
   test('a new offer keeps the call\'s mid, its answer the offer\'s sections', () => {
     const offer = 'v=0\r\ns=-\r\nt=0 0\r\na=group:BUNDLE 7 8\r\nm=audio 5 RTP/SAVP 111\r\nc=IN IP4 1.2.3.4\r\na=inactive\r\na=mid:7\r\nm=video 5 RTP/SAVP 34\r\na=mid:8\r\n';
-    const plain = renegotiationOffer(offer, '0')!;
+    const plain = renegotiationOffer(offer, 'v=0\r\ns=-\r\nt=0 0\r\nm=audio 9 UDP/TLS/RTP/SAVPF 111\r\na=mid:0\r\n')!;
     assert.equal(audioMid(plain), '0');
     assert.ok(plain.includes('a=group:BUNDLE 0\r\n') && plain.includes('a=inactive') && !plain.includes('m=video'));
     const local = 'v=0\r\ns=-\r\nt=0 0\r\na=group:BUNDLE 0\r\nm=audio 9 UDP/TLS/RTP/SAVPF 111\r\nc=IN IP4 0.0.0.0\r\na=inactive\r\na=mid:0\r\n';
@@ -137,6 +137,22 @@ describe('Teams calling', () => {
     assert.ok(answer.includes('a=group:BUNDLE 7\r\n') && answer.includes('m=video 0 ') && answer.includes('a=mid:8'));
     assert.equal(nextSubscription({ nextSubscribeUrl: 'https://b/next' }), 'https://b/next');
     assert.equal(nextSubscription({ nextSubscribeUrl: 'http://b/next' }), null);
+  });
+  test('a new offer leaves out an extension id the call gave another URI', () => {
+    const negotiated = 'v=0\r\ns=-\r\nt=0 0\r\nm=audio 9 UDP/TLS/RTP/SAVPF 111\r\na=mid:0\r\n'
+      + 'a=extmap:1 urn:ietf:params:rtp-hdrext:ssrc-audio-level\r\n'
+      + 'a=extmap:3 http://www.ietf.org/id/draft-holmer-rmcat-transport-wide-cc-extensions-01\r\n';
+    const offer = 'v=0\r\ns=-\r\nt=0 0\r\nm=audio 5 RTP/SAVP 111\r\nc=IN IP4 1.2.3.4\r\na=mid:1\r\n'
+      + 'a=extmap:1 urn:ietf:params:rtp-hdrext:ssrc-audio-level\r\n'
+      + 'a=extmap:3 http:\\\\skype.com\\experiments\\rtp-hdrext\\fast_bandwidth_feedback#version_3\r\n'
+      + 'a=extmap:5 http://www.ietf.org/id/draft-holmer-rmcat-transport-wide-cc-extensions-01\r\n'
+      + 'a=extmap:6 urn:ietf:params:rtp-hdrext:sdes:mid\r\n';
+    const plain = renegotiationOffer(offer, negotiated)!;
+    assert.equal(audioMid(plain), '0');
+    assert.ok(plain.includes('a=extmap:1 urn:ietf:params:rtp-hdrext:ssrc-audio-level\r\n'));
+    assert.ok(plain.includes('a=extmap:6 urn:ietf:params:rtp-hdrext:sdes:mid\r\n'));
+    assert.ok(!plain.includes('a=extmap:3 ') && !plain.includes('a=extmap:5 '), plain);
+    assert.equal(renegotiationOffer(offer, null)!.split('a=extmap:').length - 1, 4);
   });
   test('a running call holds its lease, registers its leg and answers a hold', async () => {
     let push: (envelope: Record<string, unknown>) => void = () => {};

@@ -114,11 +114,30 @@ function withMid(sdp: string, mid: string): string {
   return `${out.join('\r\n')}\r\n`;
 }
 
-/** A new offer of Teams' in plain WebRTC, under the `mid` the call already negotiated:
- *  libwebrtc refuses a later offer whose section has another one. */
-export function renegotiationOffer(sdp: string, sessionMid: string): string | null {
+/** A new offer of Teams' in plain WebRTC, made to fit what `negotiated` (the call's
+ *  current plain SDP) set: libwebrtc refuses a later offer whose section has another
+ *  `mid`, or that gives an extension id another URI. Teams' hold offer moves id 3 from
+ *  transport-wide-cc to its own feedback extension: such an extension is left out, so
+ *  the answer declines it. */
+export function renegotiationOffer(sdp: string, negotiated: string | null): string | null {
   const plain = webrtcAnswer(sdp);
-  return plain === null ? null : withMid(plain, sessionMid);
+  if (plain === null || negotiated === null) return plain;
+  const active = sdpLines(negotiated).map(extension).filter((e) => e !== null);
+  const kept = sdpLines(plain).filter((line) => {
+    const own = extension(line);
+    return own === null || !active.some((other) => (other.id === own.id) !== (other.uri === own.uri));
+  });
+  const text = `${kept.join('\r\n')}\r\n`;
+  const mid = audioMid(negotiated);
+  return mid === null ? text : withMid(text, mid);
+}
+
+/** An `a=extmap` line's id and URI. */
+function extension(line: string): { id: string; uri: string } | null {
+  if (!line.startsWith('a=extmap:')) return null;
+  const [first, uri] = line.slice('a=extmap:'.length).split(' ');
+  if (first === undefined || uri === undefined) return null;
+  return { id: first.split('/')[0] ?? first, uri };
 }
 
 /** A local answer to Teams' `offer`, in Teams' dialect: the offer's sections in its
@@ -391,7 +410,7 @@ export async function answerExternalCall(deps: CallDeps, engine: ExternalCallEng
     const local = await engine.answerOffer(plain);
     if (local === null) throw new Error('call_answer_failed');
     await deps.post(links.acceptance, chain, acceptBody(caller, teamsAnswer(local, ring.offer), ring.mediaLeg));
-    runCall(deps, engine, caller, chain, links, pushes, audioMid(plain) ?? '0');
+    runCall(deps, engine, caller, chain, links, pushes, plain);
   } catch (error) {
     pushes.stop();
     throw error;
@@ -416,15 +435,16 @@ function listen(deps: CallDeps): Pushes {
 
 /**
  * The call's run until it ends: the broker lease, the endpoint metadata, the
- * answer (when placed here), renegotiations, the roster and the end. `sessionMid`
- * is the audio section's mid of a call answered here, accepted already.
+ * answer (when placed here), renegotiations, the roster and the end. `accepted`
+ * is the plain offer of a call answered here, accepted already.
  */
 function runCall(deps: CallDeps, engine: ExternalCallEngine, caller: Caller, chain: string, links: Doc, pushes: Pushes, accepted: string | null): void {
   const leaveLink = links.leave;
   const leave = () => { if (typeof leaveLink === 'string') void deps.post(leaveLink, chain, leaveBody(caller)).catch(() => {}); };
   let done = false;
   let answered = accepted !== null;
-  let sessionMid: string | null = accepted;
+  // What the call negotiated last, in plain WebRTC: a new offer must fit it.
+  let negotiated: string | null = accepted;
   const sleep = deps.sleep ?? ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
   const holdLease = async (first: string) => {
     let url = first;
@@ -457,15 +477,16 @@ function runCall(deps: CallDeps, engine: ExternalCallEngine, caller: Caller, cha
       const answer = webrtcAnswer(event.sdp);
       if (answer === null) { finish('connect_failed'); leave(); return; }
       answered = true;
-      sessionMid = audioMid(answer);
+      negotiated = answer;
       void engine.answer(answer);
       if (event.acknowledge !== null) void deps.post(event.acknowledge, chain, acknowledgeBody(caller)).catch(() => {});
       if (event.callLeg !== null) void deps.post(event.callLeg, chain, registerOnLegBody(caller)).catch(() => {});
     } else if (event.kind === 'negotiation' && engine.answerOffer !== undefined) {
-      const plain = renegotiationOffer(event.sdp, sessionMid ?? audioMid(event.sdp) ?? '0');
+      const plain = renegotiationOffer(event.sdp, negotiated);
       if (plain === null) return;
       void engine.answerOffer(plain).then((local) => {
         if (local === null || done) return;
+        negotiated = plain;
         return deps.post(event.answerLink, chain, answerNegotiationBody(teamsAnswer(local, event.sdp), event.mediaLeg));
       }).catch(() => {});
     } else if (event.kind === 'roster') {
