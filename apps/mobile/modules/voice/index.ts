@@ -17,6 +17,9 @@ export type VoiceSnapshot={
   /** The own camera is on; the own screen is shared. */
   camera?:boolean;
   sharing?:boolean;
+  /** Whether this call takes the own camera, the own screen: a native call's provider may not (a Slack huddle, a Mattermost plugin without video). */
+  canCamera?:boolean;
+  canScreen?:boolean;
   /** Frames are end-to-end encrypted (an encrypted room). */
   encrypted?:boolean;
   /** Why the last connection ended (LiveKit's reason, lowercase): duplicate_identity, participant_removed... */
@@ -33,14 +36,17 @@ type Bridge={
   connect(options:VoiceConnect):Promise<void>;
   disconnect():Promise<void>;
   /**
-   * Joins a Jitsi Meet conference natively, audio only (Rocket.Chat's Jitsi provider,
-   * kChat's kMeet with its `jwt`); false when this build cannot, so the meeting's page is kept.
+   * Joins a Jitsi Meet conference natively, cameras and screens included (Rocket.Chat's Jitsi
+   * provider, kChat's kMeet with its `jwt`); false when this build cannot, so the meeting's page is kept.
    */
   connectJitsi(callId:string,meeting:string,displayName:string,token:string|null,title:string):Promise<boolean>;
   /** Joins an Amazon Chime meeting natively, audio only (a Slack huddle); false when this build cannot, so the huddle's page is kept. */
   connectChime(callId:string,signalingUrl:string,audioHost:string,attendeeId:string,joinToken:string,origin:string,title:string):Promise<boolean>;
-  /** Joins a Mattermost Calls plugin call natively, audio only; `iceServers` is the plugin's servers as JSON. False when this build cannot. */
-  connectMattermost(callId:string,server:string,token:string,channelId:string,userId:string,iceServers:string,title:string):Promise<boolean>;
+  /**
+   * Joins a Mattermost Calls plugin call natively; `iceServers` is the plugin's servers as JSON,
+   * `sends` what the plugin lets a member send. False when this build cannot.
+   */
+  connectMattermost(callId:string,server:string,token:string,channelId:string,userId:string,iceServers:string,title:string,sends:{screen:boolean;camera:boolean}):Promise<boolean>;
   /**
    * A call whose signalling the app speaks itself (Teams), audio only: the offer
    * arrives on `localOffer`, the rest goes through the `remote*` functions.
@@ -102,5 +108,5 @@ type Bridge={
 export const VoiceNative=requireOptionalNativeModule<Bridge>('Voice');
 
 export type VoiceVideoProps=ViewProps&{identity:string;source:'camera'|'screen';fit?:'cover'|'contain'};
-/** A participant's camera or screen, from the engine's room. Null without the module. */
+/** A participant's camera or screen, from the engine's room or native call. Null without the module. */
 export const VoiceVideoView:ComponentType<VoiceVideoProps>|null=VoiceNative?requireNativeViewManager<VoiceVideoProps>('Voice'):null;

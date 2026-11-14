@@ -281,7 +281,7 @@ function Call({
         await requestMicrophone();
         const call = await nativeMattermost(client, callId);
         if (call === null || !alive) return false;
-        return await VoiceNative.connectMattermost(callId, call.server, call.token, call.channelId, call.userId, JSON.stringify(call.iceServers), title);
+        return await VoiceNative.connectMattermost(callId, call.server, call.token, call.channelId, call.userId, JSON.stringify(call.iceServers), title, { screen: call.screen, camera: call.camera });
       } catch {
         return false;
       }

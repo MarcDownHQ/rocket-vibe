@@ -32,6 +32,8 @@ class VoiceService : Service() {
       ACTION_LEAVE -> VoiceEngine.leave()
     }
     if (VoiceEngine.roomId == null) {
+      projection?.invoke(false)
+      projection = null
       ServiceCompat.stopForeground(this, ServiceCompat.STOP_FOREGROUND_REMOVE)
       foreground = false
       stopSelf()
@@ -43,8 +45,16 @@ class VoiceService : Service() {
       else ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PLAYBACK
     // A camera kept on in the background needs its own foreground type.
     if (VoiceEngine.camera && granted(Manifest.permission.CAMERA)) type = type or ServiceInfo.FOREGROUND_SERVICE_TYPE_CAMERA
-    ServiceCompat.startForeground(this, NOTIFICATION, notification(this), type)
+    // A native call's screen: Android 14 lets the projection start only once this type is held.
+    val projecting = VoiceEngine.projecting && Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q
+    val ready = projection
+    projection = null
+    val held = projecting && runCatching {
+      ServiceCompat.startForeground(this, NOTIFICATION, notification(this), type or ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PROJECTION)
+    }.isSuccess
+    if (!held) ServiceCompat.startForeground(this, NOTIFICATION, notification(this), type)
     foreground = true
+    ready?.invoke(held)
     return START_NOT_STICKY
   }
 
@@ -57,9 +67,19 @@ class VoiceService : Service() {
     /** A call notification may only be posted once the service is in the foreground. */
     @Volatile private var foreground = false
 
+    /** Called once the service is back in the foreground, with whether it holds the media projection type. */
+    private var projection: ((Boolean) -> Unit)? = null
+
     fun start(context: Context) {
       running = true
       ContextCompat.startForegroundService(context, Intent(context, VoiceService::class.java))
+    }
+
+    /** Restarts the service with the media projection type ([VoiceEngine.projecting]), then [ready]. */
+    fun project(context: Context, ready: (Boolean) -> Unit) {
+      projection?.invoke(false)
+      projection = ready
+      start(context)
     }
     /** Mute state and title moved: redraw the notification. */
     fun refresh(context: Context) {

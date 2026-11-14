@@ -59,7 +59,10 @@ export function pluginCalls(client: MmClient, directory: MmDirectory, userId: st
       if (config.NeedsTURNCredentials === true) iceServers.push(...iceServersOf(await get<unknown>('/turn-credentials').catch(() => [])));
       if (client.token === null) throw new Error('signed_out');
       current = channelOf(id);
-      return { server: client.baseUrl, token: client.token, channelId: channelOf(id), userId, iceServers };
+      return {
+        server: client.baseUrl, token: client.token, channelId: channelOf(id), userId, iceServers,
+        screen: config.AllowScreenSharing === true, camera: config.EnableVideo === true,
+      };
     },
     personName: async (identity) => {
       if (!people.has(identity) && current !== null) {

@@ -7,18 +7,25 @@ import android.os.SystemClock
 import android.util.Log
 import livekit.org.webrtc.AudioTrack
 import livekit.org.webrtc.DataChannel
+import livekit.org.webrtc.DefaultVideoDecoderFactory
+import livekit.org.webrtc.DefaultVideoEncoderFactory
 import livekit.org.webrtc.IceCandidate
 import livekit.org.webrtc.MediaConstraints
 import livekit.org.webrtc.MediaStream
 import livekit.org.webrtc.PeerConnection
 import livekit.org.webrtc.PeerConnectionFactory
 import livekit.org.webrtc.RtpReceiver
+import livekit.org.webrtc.RtpSender
+import livekit.org.webrtc.RtpTransceiver
 import livekit.org.webrtc.SdpObserver
 import livekit.org.webrtc.SessionDescription
+import livekit.org.webrtc.VideoSource
+import livekit.org.webrtc.VideoTrack
 import livekit.org.webrtc.audio.JavaAudioDeviceModule
 import org.json.JSONObject
 import java.net.HttpURLConnection
 import java.net.URL
+import java.nio.ByteBuffer
 import java.util.concurrent.ConcurrentHashMap
 
 /**
@@ -35,24 +42,33 @@ internal object JitsiCall {
   }
 
   @JvmStatic external fun start(meeting: String, configJs: String, displayName: String, token: String?): Long
-  @JvmStatic external fun startMattermost(server: String, token: String, channelId: String, userId: String, iceServers: String): Long
+  @JvmStatic external fun startMattermost(server: String, token: String, channelId: String, userId: String, iceServers: String, screen: Boolean, camera: Boolean): Long
   @JvmStatic external fun startChime(signalingUrl: String, audioHost: String, attendeeId: String, joinToken: String, origin: String): Long
   @JvmStatic external fun offer(handle: Long, sdp: String)
   @JvmStatic external fun next(handle: Long, timeoutMs: Long): String?
   @JvmStatic external fun answer(handle: Long, sdp: String)
   @JvmStatic external fun candidate(handle: Long, mid: String, line: String)
   @JvmStatic external fun muted(handle: Long, muted: Boolean)
+  /** This side's camera or screen went on or off its peer connection: the provider renegotiates. */
+  @JvmStatic external fun video(handle: Long, camera: Boolean, screen: Boolean)
+  /** A remote video track arrived: a `named` event follows when its own ids say whose it is. */
+  @JvmStatic external fun remoteVideo(handle: Long, track: String, stream: String)
   @JvmStatic external fun leave(handle: Long)
   @JvmStatic external fun free(handle: Long)
 }
 
-/** What joining a Mattermost Calls plugin call takes; `iceServers` is the plugin's servers as JSON. */
+/**
+ * What joining a Mattermost Calls plugin call takes; `iceServers` is the plugin's
+ * servers as JSON, `screen` and `camera` what the plugin lets a member send.
+ */
 internal data class MattermostCall(
   val server: String,
   val token: String,
   val channelId: String,
   val userId: String,
   val iceServers: String,
+  val screen: Boolean,
+  val camera: Boolean,
 )
 
 /** An Amazon Chime attendee's credentials (a Slack huddle). */
@@ -65,9 +81,10 @@ internal data class ChimeCredentials(
 )
 
 /**
- * One native call, audio only: libwebrtc (the copy LiveKit ships) answers a Jitsi
- * bridge's offer or offers to Chime, the signalling runs in Rust. [onChange] and
- * [onEnd] are called on the main thread.
+ * One native call: libwebrtc (the copy LiveKit ships) answers a Jitsi bridge's
+ * offer or offers to Chime and Mattermost, the signalling runs in Rust. Besides
+ * the microphone it sends this side's camera and screen where the provider takes
+ * them, and receives everyone's. [onChange] and [onEnd] are called on the main thread.
  */
 internal class JitsiSession(
   private val app: Context,
@@ -85,7 +102,29 @@ internal class JitsiSession(
   private var localId = ""
   /** The data channel the provider wants opened by the offer (Mattermost's SFU), by its label. */
   private var channelLabel: String? = null
+  private var channelProtocol = ""
   private var channel: DataChannel? = null
+  /** The provider's messages for that channel, until it opens. */
+  private val outbox = ArrayList<String>()
+  /** What the provider takes from this side, and the stream id each local video track carries. */
+  var canCamera = false; private set
+  var canScreen = false; private set
+  private val streams = HashMap<String, String>()
+  /** The provider's offers carry this side's sections (Jitsi): a local track goes on the first unused one. */
+  private var offersLocalSections = false
+  /** This side's captures, kept across media sessions; their tracks and senders, for the current peer connection. */
+  private val captures = HashMap<String, LocalCapture>()
+  private val localTracks = HashMap<String, Pair<VideoSource, VideoTrack>>()
+  private val senders = HashMap<String, RtpSender>()
+  /** What the provider was last told this side sends: camera, screen. */
+  private var told = false to false
+  /** Answers refused in a row, each answered by offering again. */
+  private var reoffers = 0
+  /** Remote video tracks by id, with their stream; the provider's list of them, and those named by their own ids. */
+  private val remoteVideos = HashMap<String, Pair<String, VideoTrack>>()
+  private var listed = false
+  private var videos: List<RemoteVideo> = emptyList()
+  private val named = HashMap<String, RemoteVideo>()
   private var deafened = false
   /** Everyone else: endpoint id to display name and whether they are muted. */
   private val roster = LinkedHashMap<String, Pair<String, Boolean>>()
@@ -274,7 +313,7 @@ internal class JitsiSession(
   fun startMattermost(c: MattermostCall): Boolean {
     if (!JitsiCall.available) return false
     Thread({
-      hold { JitsiCall.startMattermost(c.server, c.token, c.channelId, c.userId, c.iceServers) }
+      hold { JitsiCall.startMattermost(c.server, c.token, c.channelId, c.userId, c.iceServers, c.screen, c.camera) }
     }, "mattermost-call").start()
     return true
   }
@@ -346,6 +385,34 @@ internal class JitsiSession(
       "local" -> {
         localId = event.optString("id")
         channelLabel = event.optString("dataChannel").takeIf { it.isNotEmpty() && !event.isNull("dataChannel") }
+        channelProtocol = event.optString("dataProtocol")
+        canCamera = event.optBoolean("canCamera")
+        canScreen = event.optBoolean("canScreen")
+        streams[CAMERA] = event.optString("cameraStream", localId)
+        streams[SCREEN] = event.optString("screenStream", localId)
+        offersLocalSections = event.optBoolean("offersLocalSections")
+        // A capture the provider does not take ends (a rejoin keeps what it still takes).
+        if (!canCamera) captures.remove(CAMERA)?.stop()
+        if (!canScreen) captures.remove(SCREEN)?.let { it.stop(); onScreenStopped?.invoke() }
+        onChange()
+      }
+      "videos" -> {
+        val list = event.optJSONArray("videos")
+        videos = (0 until (list?.length() ?: 0)).map { i ->
+          val v = list!!.getJSONObject(i)
+          RemoteVideo(v.getString("track"), v.getString("member"), v.optString("kind", CAMERA))
+        }
+        listed = true
+        onChange()
+      }
+      "named" -> {
+        val track = event.getString("track")
+        named[track] = RemoteVideo(track, event.getString("member"), event.optString("kind", CAMERA))
+        onChange()
+      }
+      "data" -> {
+        outbox.add(event.getString("text"))
+        flush()
       }
       "ice" -> {
         val servers = event.optJSONArray("servers")
@@ -360,7 +427,7 @@ internal class JitsiSession(
         relayOnly = event.optBoolean("relayOnly")
         localOffer()
       }
-      "answer" -> pc?.setRemoteDescription(Sdp(), SessionDescription(SessionDescription.Type.ANSWER, event.getString("sdp")))
+      "answer" -> remoteAnswerOfProvider(event.getString("sdp"))
       "levels" -> {
         val list = event.getJSONArray("levels")
         val now = SystemClock.elapsedRealtime()
@@ -399,7 +466,11 @@ internal class JitsiSession(
       .setUseHardwareAcousticEchoCanceler(true)
       .setUseHardwareNoiseSuppressor(true)
       .createAudioDeviceModule()
-    val f = PeerConnectionFactory.builder().setAudioDeviceModule(adm).createPeerConnectionFactory()
+    val egl = NativeVideo.egl.eglBaseContext
+    val f = PeerConnectionFactory.builder().setAudioDeviceModule(adm)
+      .setVideoEncoderFactory(DefaultVideoEncoderFactory(egl, true, true))
+      .setVideoDecoderFactory(DefaultVideoDecoderFactory(egl))
+      .createPeerConnectionFactory()
     audio = adm; factory = f
     val config = PeerConnection.RTCConfiguration(iceServers).apply {
       sdpSemantics = PeerConnection.SdpSemantics.UNIFIED_PLAN
@@ -411,25 +482,199 @@ internal class JitsiSession(
     val track = f.createAudioTrack("${localId}-a0", f.createAudioSource(MediaConstraints()))
     track.setEnabled(VoiceEngine.microphone && !VoiceEngine.deafened)
     created.addTrack(track, listOf(localId))
-    channelLabel?.let { channel = created.createDataChannel(it, DataChannel.Init()) }
+    channelLabel?.let { label ->
+      channel = created.createDataChannel(label, DataChannel.Init().apply { protocol = channelProtocol })?.also { dc ->
+        dc.registerObserver(object : DataChannel.Observer {
+          override fun onBufferedAmountChange(previous: Long) {}
+          override fun onStateChange() { main.post { if (!closed) flush() } }
+          override fun onMessage(buffer: DataChannel.Buffer) {}
+        })
+      }
+    }
     microphone = track
     pc = created
+    attachVideo()
     return created
   }
 
+  /** The provider's messages, once its data channel is open. */
+  private fun flush() {
+    val dc = channel ?: return
+    if (dc.state() != DataChannel.State.OPEN) return
+    for (text in outbox) dc.send(DataChannel.Buffer(ByteBuffer.wrap(text.toByteArray()), false))
+    outbox.clear()
+  }
+
+  /**
+   * Each capture on its sender of the current peer connection, each stopped one
+   * off it: on the first unused section where the provider's offers carry this
+   * side's, else on a section of its own, never one opened for another's track.
+   */
+  private fun attachVideo() {
+    val p = pc ?: return
+    val f = factory ?: return
+    for (kind in listOf(CAMERA, SCREEN)) {
+      val capture = captures[kind]
+      val current = localTracks[kind]
+      if (capture != null && current == null) {
+        val source = f.createVideoSource(kind == SCREEN)
+        val track = f.createVideoTrack("$localId-$kind", source)
+        val sender = senders[kind]
+        val attached = if (sender != null) sender.setTrack(track, false) else {
+          val stream = streams[kind] ?: localId
+          runCatching {
+            if (offersLocalSections) p.addTrack(track, listOf(stream))
+            else p.addTransceiver(track, RtpTransceiver.RtpTransceiverInit(RtpTransceiver.RtpTransceiverDirection.SEND_ONLY, listOf(stream))).sender
+          }.getOrNull()?.also { senders[kind] = it } != null
+        }
+        if (attached) {
+          capture.target = source.capturerObserver
+          localTracks[kind] = source to track
+        } else {
+          Log.w("RocketVibeVoice", "jitsi: $kind track refused")
+          track.dispose(); source.dispose()
+          captures.remove(kind)?.stop()
+          if (kind == SCREEN) onScreenStopped?.invoke()
+        }
+      } else if (capture == null && current != null) {
+        senders[kind]?.setTrack(null, false)
+        localTracks.remove(kind)
+        current.second.dispose(); current.first.dispose()
+      }
+    }
+  }
+
+  /** This side's video on the peer connection, then the provider told what is sent. */
+  private fun syncVideo() {
+    if (pc == null) return onChange()
+    attachVideo()
+    val now = (localTracks[CAMERA] != null) to (localTracks[SCREEN] != null)
+    if (now != told) {
+      told = now
+      if (handle != 0L) JitsiCall.video(handle, now.first, now.second)
+    }
+    onChange()
+  }
+
+  /** Called when the screen's capture ends without being asked (Android ended the projection, the provider refused it). */
+  var onScreenStopped: (() -> Unit)? = null
+
+  /** Films with the front camera, or stops; false when the provider does not take it or no camera opens. */
+  fun setCamera(on: Boolean): Boolean {
+    if (!on) {
+      captures.remove(CAMERA)?.stop()
+      syncVideo()
+      return false
+    }
+    if (!canCamera) return false
+    if (captures[CAMERA] == null) captures[CAMERA] = LocalCapture.camera(app) ?: return false
+    syncVideo()
+    return true
+  }
+
+  /** Shares the screen from the user's consent; false when the provider does not take it or the capture fails. */
+  fun startScreen(consent: android.content.Intent, width: Int, height: Int, fps: Int): Boolean {
+    if (!canScreen) return false
+    captures.remove(SCREEN)?.stop()
+    captures[SCREEN] = LocalCapture.screen(app, consent, width, height, fps) {
+      main.post { if (!closed && captures.remove(SCREEN)?.also { it.stop() } != null) { syncVideo(); onScreenStopped?.invoke() } }
+    } ?: return false
+    syncVideo()
+    return true
+  }
+
+  fun stopScreen() {
+    captures.remove(SCREEN)?.stop()
+    syncVideo()
+  }
+
+  /**
+   * The remote tracks as the provider names them, by track id: whose and what.
+   * A track it does not name is its stream's camera until it names any.
+   */
+  private fun shown(): Map<String, RemoteVideo> = remoteVideos.mapNotNull { (id, value) ->
+    val stream = value.first
+    val known = videos.firstOrNull { it.track == id } ?: videos.firstOrNull { it.track == stream } ?: named[id]
+    when {
+      known != null -> id to known
+      !listed -> id to RemoteVideo(id, stream, CAMERA)
+      else -> null
+    }
+  }.toMap()
+
+  /** Someone's camera or screen, this side's included; null while it is not sent. */
+  fun videoFeed(identity: String, screen: Boolean): VideoFeed? {
+    val kind = if (screen) SCREEN else CAMERA
+    if (identity == localId) return captures[kind]
+    val id = shown().entries.firstOrNull { it.value.member == identity && it.value.kind == kind }?.key ?: return null
+    return remoteVideos[id]?.second?.let { RtcFeed(it) }
+  }
+
+  fun localIdentity(): String = localId
+
+  /**
+   * The provider's offer set and answered. An offer of this side's still waiting
+   * for its answer is rolled back first: this side yields, and offers again once
+   * it answered.
+   */
   private fun offer(sdp: String) {
     val p = peer() ?: return onEnd("connect_failed")
+    val yielded = p.signalingState() == PeerConnection.SignalingState.HAVE_LOCAL_OFFER
+    val answer = {
+      p.setRemoteDescription(object : Sdp() {
+        override fun onSetSuccess() {
+          p.createAnswer(object : Sdp() {
+            override fun onCreateSuccess(answer: SessionDescription) {
+              p.setLocalDescription(object : Sdp() {
+                override fun onSetSuccess() {
+                  main.post {
+                    if (closed || pc !== p) return@post
+                    if (handle != 0L) JitsiCall.answer(handle, answer.description)
+                    if (yielded) { offering = false; reoffer() }
+                    syncVideo()
+                  }
+                }
+              }, answer)
+            }
+          }, MediaConstraints())
+        }
+      }, SessionDescription(SessionDescription.Type.OFFER, sdp))
+    }
+    if (!yielded) return answer()
+    offering = false
+    p.setLocalDescription(object : Sdp() {
+      override fun onSetSuccess() { main.post { if (pc === p) answer() } }
+      override fun onSetFailure(error: String?) { super.onSetFailure(error); main.post { if (pc === p) answer() } }
+    }, SessionDescription(SessionDescription.Type.ROLLBACK, ""))
+  }
+
+  /**
+   * The provider's answer to this side's offer. One crossing an offer of the
+   * provider's that this side yielded to comes too late and is dropped; one that
+   * cannot be set on a running call is answered by offering again, a few times.
+   */
+  private fun remoteAnswerOfProvider(sdp: String) {
+    val p = pc ?: return
+    if (connected && p.signalingState() == PeerConnection.SignalingState.STABLE) return
     p.setRemoteDescription(object : Sdp() {
-      override fun onSetSuccess() {
-        p.createAnswer(object : Sdp() {
-          override fun onCreateSuccess(answer: SessionDescription) {
-            p.setLocalDescription(object : Sdp() {
-              override fun onSetSuccess() { if (handle != 0L) JitsiCall.answer(handle, answer.description) }
-            }, answer)
-          }
-        }, MediaConstraints())
+      override fun onSetSuccess() { main.post { if (pc === p) { reoffers = 0; syncVideo() } } }
+      override fun onSetFailure(error: String?) {
+        super.onSetFailure(error)
+        main.post {
+          if (closed || pc !== p) return@post
+          if (connected && reoffers < REOFFERS) { reoffers++; reoffer() } else lost = "connect_failed"
+        }
       }
-    }, SessionDescription(SessionDescription.Type.OFFER, sdp))
+    }, SessionDescription(SessionDescription.Type.ANSWER, sdp))
+  }
+
+  /** This side's offer anew, the one waiting rolled back first. */
+  private fun reoffer() {
+    val p = pc ?: return
+    if (p.signalingState() != PeerConnection.SignalingState.HAVE_LOCAL_OFFER) return localOffer()
+    p.setLocalDescription(object : Sdp() {
+      override fun onSetSuccess() { main.post { if (pc === p) localOffer() } }
+    }, SessionDescription(SessionDescription.Type.ROLLBACK, ""))
   }
 
   /** The local offer made and set; it goes out once gathering completed, or after a moment. */
@@ -441,6 +686,8 @@ internal class JitsiSession(
           override fun onSetSuccess() {
             main.post {
               offering = true
+              // A renegotiation gathers nothing new: waiting would only leave room for the provider's own offer to cross it.
+              if (connected) return@post sendOffer()
               main.postDelayed({ sendOffer() }, GATHERING_MS)
               if (p.iceGatheringState() == PeerConnection.IceGatheringState.COMPLETE) sendOffer()
             }
@@ -480,11 +727,26 @@ internal class JitsiSession(
       }
     }
     override fun onAddTrack(receiver: RtpReceiver, streams: Array<out MediaStream>) {
+      (receiver.track() as? VideoTrack)?.let { video ->
+        val id = video.id()
+        val stream = streams.firstOrNull()?.id ?: ""
+        main.post {
+          if (closed) return@post
+          remoteVideos[id] = stream to video
+          if (handle != 0L) JitsiCall.remoteVideo(handle, id, stream)
+          onChange()
+        }
+        return
+      }
       val track = receiver.track() as? AudioTrack ?: return
       val endpoint = streams.firstOrNull()?.id ?: return
       mixed = endpoint
       track.setEnabled(!deafened)
       tracks[endpoint] = track
+    }
+    override fun onRemoveTrack(receiver: RtpReceiver) {
+      val id = runCatching { receiver.track()?.id() }.getOrNull() ?: return
+      main.post { if (remoteVideos.remove(id) != null) onChange() }
     }
     override fun onSignalingChange(state: PeerConnection.SignalingState) {}
     override fun onIceConnectionChange(state: PeerConnection.IceConnectionState) {}
@@ -517,15 +779,18 @@ internal class JitsiSession(
     val now = SystemClock.elapsedRealtime()
     val local = mapOf(
       "identity" to localId, "speaking" to false, "muted" to (!VoiceEngine.microphone || VoiceEngine.deafened),
-      "deafened" to VoiceEngine.deafened, "level" to 0.0, "local" to true, "camera" to false, "screen" to false,
+      "deafened" to VoiceEngine.deafened, "level" to 0.0, "local" to true,
+      "camera" to (captures[CAMERA] != null), "screen" to (captures[SCREEN] != null),
     )
+    val sent = shown().values
     return listOf(local) + roster.map { (id, value) ->
       // One mixed stream and one person: its loudness is theirs.
       val source = if (roster.size == 1 && heard[id] == null && levels[id] == null) mixed ?: id else id
       mapOf(
         "identity" to id, "name" to value.first, "muted" to value.second, "deafened" to false,
         "speaking" to (!value.second && (heard[source]?.let { now - it < HANGOVER_MS } ?: false)),
-        "level" to (levels[source] ?: 0.0), "local" to false, "camera" to false, "screen" to false,
+        "level" to (levels[source] ?: 0.0), "local" to false,
+        "camera" to sent.any { it.member == id && it.kind == CAMERA }, "screen" to sent.any { it.member == id && it.kind == SCREEN },
       )
     }
   }
@@ -546,12 +811,19 @@ internal class JitsiSession(
     closed = true
     runCatching { pcm?.close() }
     dropMedia()
+    captures.values.forEach { it.stop() }
+    captures.clear()
   }
 
   /** One session's media: the peer connection, its tracks, who was heard. */
   private fun dropMedia() {
     channel?.dispose(); channel = null
+    outbox.clear()
+    captures.values.forEach { it.target = null }
     pc?.close(); pc?.dispose(); pc = null
+    localTracks.values.forEach { (source, track) -> track.dispose(); source.dispose() }
+    localTracks.clear(); senders.clear(); told = false to false; reoffers = 0
+    remoteVideos.clear(); videos = emptyList(); named.clear(); listed = false
     microphone = null
     factory?.dispose(); factory = null
     audio?.release(); audio = null
@@ -572,8 +844,14 @@ internal class JitsiSession(
     const val REPORTED_SPEAKING = 0.15
     const val GATHERING_MS = 5000L
     const val FIRST_CANDIDATE_MS = 500L
+    const val REOFFERS = 3
+    const val CAMERA = "camera"
+    const val SCREEN = "screen"
     const val HANGOVER_MS = 350L
     /** The pause before each rejoin; as many tries. */
     val REJOIN_DELAYS_S = longArrayOf(1, 2, 4, 8, 15)
   }
 }
+
+/** A remote video as the provider names it: its track (or stream) id, whose, `camera` or `screen`. */
+internal data class RemoteVideo(val track: String, val member: String, val kind: String)

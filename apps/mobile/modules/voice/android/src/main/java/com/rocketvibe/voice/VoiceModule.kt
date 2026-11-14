@@ -26,6 +26,12 @@ class ConnectOptions : Record {
   @Field val e2eeKey: String? = null
 }
 
+/** What a Mattermost Calls plugin lets a member send besides the microphone. */
+class MattermostSends : Record {
+  @Field val screen: Boolean = false
+  @Field val camera: Boolean = false
+}
+
 /** JS face of [VoiceEngine]: commands in, one `change` event carrying the whole snapshot out. */
 class VoiceModule : Module() {
   private val listener: () -> Unit = { sendEvent("change", VoiceEngine.last) }
@@ -67,8 +73,8 @@ class VoiceModule : Module() {
     AsyncFunction("connectChime") { callId: String, signalingUrl: String, audioHost: String, attendeeId: String, joinToken: String, origin: String, title: String ->
       VoiceEngine.connectChime(callId, ChimeCredentials(signalingUrl, audioHost, attendeeId, joinToken, origin), title)
     }.runOnQueue(Queues.MAIN)
-    AsyncFunction("connectMattermost") { callId: String, server: String, token: String, channelId: String, userId: String, iceServers: String, title: String ->
-      VoiceEngine.connectMattermost(callId, MattermostCall(server, token, channelId, userId, iceServers), title)
+    AsyncFunction("connectMattermost") { callId: String, server: String, token: String, channelId: String, userId: String, iceServers: String, title: String, sends: MattermostSends ->
+      VoiceEngine.connectMattermost(callId, MattermostCall(server, token, channelId, userId, iceServers, sends.screen, sends.camera), title)
     }.runOnQueue(Queues.MAIN)
     AsyncFunction("connectExternal") { callId: String, identity: String, title: String, answering: Boolean ->
       VoiceEngine.connectExternal(callId, identity, title, answering)

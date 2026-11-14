@@ -16,7 +16,9 @@ export type PcmCallEngine={
 };
 
 /** What the voice engine needs to join a Mattermost Calls plugin call itself. */
-export type MattermostCallCredentials={server:string;token:string;channelId:string;userId:string;iceServers:{urls:string[];username:string;credential:string}[]};
+export type MattermostCallCredentials={server:string;token:string;channelId:string;userId:string;iceServers:{urls:string[];username:string;credential:string}[];
+  /** What the plugin lets a member send besides the microphone (`/config` `AllowScreenSharing`, `EnableVideo`). */
+  screen:boolean;camera:boolean};
 
 /** The voice engine, for a call whose signalling the provider speaks itself. */
 export type ExternalCallEngine={

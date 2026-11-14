@@ -5,7 +5,6 @@ import android.view.ViewGroup
 import expo.modules.kotlin.AppContext
 import expo.modules.kotlin.views.ExpoView
 import io.livekit.android.renderer.TextureViewRenderer
-import io.livekit.android.room.track.VideoTrack
 import livekit.org.webrtc.RendererCommon
 import livekit.org.webrtc.VideoSink
 import kotlin.math.max
@@ -13,7 +12,7 @@ import kotlin.math.min
 import kotlin.math.roundToInt
 
 /**
- * One participant's camera or screen, rendered from the engine's room. It
+ * One participant's camera or screen, rendered from the engine's room or native call. It
  * rebinds itself when the track comes and goes, so JS only names who and what.
  * The renderer stretches frames to its own size, so this view sizes it to the
  * frame's proportions: inside the view (`contain`, letterboxed) or over it
@@ -22,7 +21,7 @@ import kotlin.math.roundToInt
 class VoiceVideoView(context: Context, appContext: AppContext) : ExpoView(context, appContext) {
   private val renderer = TextureViewRenderer(context)
   private var initialized = false
-  private var track: VideoTrack? = null
+  private var track: VideoFeed? = null
   var identity: String = ""
     set(value) { field = value; bind() }
   var source: String = "camera"
@@ -84,14 +83,14 @@ class VoiceVideoView(context: Context, appContext: AppContext) : ExpoView(contex
   }
 
   private fun unbind() {
-    track?.removeRenderer(renderer)
-    track?.removeRenderer(sizer)
+    track?.removeSink(renderer)
+    track?.removeSink(sizer)
     track = null
   }
 
   private fun bind() {
-    val next = VoiceEngine.videoTrack(identity, source == "screen")
-    if (next === track) return
+    val next = VoiceEngine.videoFeed(identity, source == "screen")
+    if (next == track) return
     unbind()
     if (next == null) return
     if (!initialized) {
@@ -101,8 +100,8 @@ class VoiceVideoView(context: Context, appContext: AppContext) : ExpoView(contex
     }
     // The own camera reads like a mirror; the screen never does.
     renderer.setMirror(source == "camera" && identity == VoiceEngine.localIdentity())
-    next.addRenderer(renderer)
-    next.addRenderer(sizer)
+    next.addSink(renderer)
+    next.addSink(sizer)
     track = next
   }
 }

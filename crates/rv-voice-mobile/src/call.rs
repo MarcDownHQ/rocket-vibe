@@ -14,7 +14,7 @@ use jni::JNIEnv;
 use jni::objects::{JClass, JString};
 use jni::sys::{jboolean, jlong, jstring};
 use rv_call::jitsi::Config;
-use rv_call::{CallSignaling, Candidate, Event};
+use rv_call::{CallSignaling, Candidate, Event, LocalVideo, VideoKind};
 use serde_json::{Value, json};
 use tokio::sync::mpsc as async_mpsc;
 
@@ -23,6 +23,8 @@ enum Command {
     Answer(String),
     Candidate(Candidate),
     Muted(bool),
+    Video(LocalVideo),
+    RemoteVideo { track: String, stream: String },
     Leave,
 }
 
@@ -38,6 +40,36 @@ pub struct Call {
     runtime: tokio::runtime::Runtime,
     commands: async_mpsc::UnboundedSender<Command>,
     events: Mutex<mpsc::Receiver<String>>,
+}
+
+fn kind_name(kind: VideoKind) -> &'static str {
+    match kind {
+        VideoKind::Camera => "camera",
+        VideoKind::Screen => "screen",
+    }
+}
+
+/// What the Kotlin side needs of the session before any media: its stream id,
+/// the data channel to open, what it may send and on which streams.
+pub fn local_json<S: CallSignaling>(session: &S) -> Value {
+    json!({
+        "type": "local",
+        "id": session.local_id(),
+        "dataChannel": session.data_channel(),
+        "dataProtocol": session.data_protocol(),
+        "canCamera": session.can_send(VideoKind::Camera),
+        "canScreen": session.can_send(VideoKind::Screen),
+        "cameraStream": session.video_stream(VideoKind::Camera),
+        "screenStream": session.video_stream(VideoKind::Screen),
+        "offersLocalSections": session.offers_local_sections(),
+    })
+}
+
+/// Whose and what a remote video track is, as its own ids say; `None` when
+/// they say nothing.
+pub fn named_json(track: &str, named: Option<(String, VideoKind)>) -> Option<Value> {
+    let (member, kind) = named?;
+    Some(json!({"type": "named", "track": track, "member": member, "kind": kind_name(kind)}))
 }
 
 /// The event as the Kotlin side reads it.
@@ -65,12 +97,8 @@ pub fn event_json(event: &Event) -> Value {
         Event::Over(reason) => json!({"type": "over", "reason": reason}),
         Event::MediaEnded => json!({"type": "media_ended"}),
         Event::Videos(videos) => {
-            let kind = |k: rv_call::VideoKind| match k {
-                rv_call::VideoKind::Camera => "camera",
-                rv_call::VideoKind::Screen => "screen",
-            };
             let videos: Vec<Value> =
-                videos.iter().map(|v| json!({"track": v.track, "member": v.member, "kind": kind(v.kind)})).collect();
+                videos.iter().map(|v| json!({"track": v.track, "member": v.member, "kind": kind_name(v.kind)})).collect();
             json!({"type": "videos", "videos": videos})
         }
         Event::DataMessage(text) => json!({"type": "data", "text": text}),
@@ -126,9 +154,7 @@ impl Call {
     ) -> Call {
         let (commands, command_rx) = async_mpsc::unbounded_channel();
         let (event_tx, events) = mpsc::channel();
-        let local = session.local_id().to_owned();
-        let channel = session.data_channel();
-        let _ = event_tx.send(json!({"type": "local", "id": local, "dataChannel": channel}).to_string());
+        let _ = event_tx.send(local_json(&session).to_string());
         runtime.spawn(drive(session, command_rx, event_tx));
         Call {
             runtime,
@@ -183,6 +209,16 @@ async fn drive<S: CallSignaling + Send>(
                 }
                 Some(Command::Muted(muted)) => {
                     let _ = session.set_muted(muted).await;
+                }
+                Some(Command::Video(video)) => {
+                    if let Err(e) = session.set_video(video).await {
+                        let _ = events.send(json!({"type": "error", "message": e.to_string()}).to_string());
+                    }
+                }
+                Some(Command::RemoteVideo { track, stream }) => {
+                    if let Some(named) = named_json(&track, session.video_of(&track, &stream)) {
+                        let _ = events.send(named.to_string());
+                    }
                 }
                 Some(Command::Leave) | None => {
                     session.leave().await;
@@ -285,6 +321,8 @@ pub extern "system" fn Java_com_rocketvibe_voice_JitsiCall_startMattermost(
     channel_id: JString,
     user_id: JString,
     ice_servers: JString,
+    screen: jboolean,
+    camera: jboolean,
 ) -> jlong {
     let (Some(server), Some(token), Some(channel_id), Some(user_id), Some(ice_servers)) = (
         text(&mut env, &server),
@@ -295,7 +333,7 @@ pub extern "system" fn Java_com_rocketvibe_voice_JitsiCall_startMattermost(
     ) else {
         return 0;
     };
-    let config = rv_call::mattermost::Config { server, token, channel_id, user_id, screen: false, camera: false };
+    let config = rv_call::mattermost::Config { server, token, channel_id, user_id, screen: screen != 0, camera: camera != 0 };
     match Call::start_mattermost(config, &ice_servers) {
         Some(call) => {
             let handle = NEXT.fetch_add(1, Ordering::Relaxed);
@@ -375,6 +413,33 @@ pub extern "system" fn Java_com_rocketvibe_voice_JitsiCall_muted(
 ) {
     if let Some(call) = call(handle) {
         call.send(Command::Muted(muted != 0));
+    }
+}
+
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_com_rocketvibe_voice_JitsiCall_video(
+    _env: JNIEnv,
+    _class: JClass,
+    handle: jlong,
+    camera: jboolean,
+    screen: jboolean,
+) {
+    if let Some(call) = call(handle) {
+        call.send(Command::Video(LocalVideo { camera: camera != 0, screen: screen != 0 }));
+    }
+}
+
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_com_rocketvibe_voice_JitsiCall_remoteVideo(
+    mut env: JNIEnv,
+    _class: JClass,
+    handle: jlong,
+    track: JString,
+    stream: JString,
+) {
+    if let (Some(call), Some(track)) = (call(handle), text(&mut env, &track)) {
+        let stream = text(&mut env, &stream).unwrap_or_default();
+        call.send(Command::RemoteVideo { track, stream });
     }
 }
 
