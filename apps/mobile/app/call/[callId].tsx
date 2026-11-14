@@ -15,7 +15,7 @@ import { WebView } from 'react-native-webview';
 
 import { callAllowed as teamsCallAllowed } from '@rocket-vibe/provider-teams/translate';
 import type { ExternalCallEngine, PcmCallEngine } from '@rocket-vibe/provider-api/calls';
-import { answerNative, answerableNative, callContext, callPersonName, callSends, carriesPcm, carryNative, joinConference, joinsInRoomNative, nativeChime, nativeJitsi, nativeMattermost, placeNative } from '../../lib/call.ts';
+import { answerableNative, answerNative, callContext, callPersonName, callRoom, callSends, carriesPcm, carryNative, joinConference, joinsInRoomNative, nativeChime, nativeJitsi, nativeMattermost, placeNative } from '../../lib/call.ts';
 import { sameOrigin, originOf } from '../../lib/origin.ts';
 import { VoiceNative, VoiceVideoView, type VoiceSnapshot } from '../../modules/voice/index.ts';
 import type { RestClient } from '../../lib/rest.ts';
@@ -24,6 +24,7 @@ import { useT } from '../../ui/i18n.ts';
 import type { TranslateFn as T } from '../../ui/messages.ts';
 import { ControlButton, ScreenStage, VoiceTile, type VoiceCard } from '../../ui/voice.tsx';
 import { notify } from '../../ui/toast.tsx';
+import { Icon } from '../../ui/icon.tsx';
 import { useSession } from '../../ui/session.tsx';
 import {useSync} from '../../ui/sync.tsx';
 import { type Colors, FONTS, useColors } from '../../ui/theme.ts';
@@ -389,6 +390,8 @@ function Call({
   // Teams passes through Microsoft's sign-in and CDNs: its lock is Microsoft's
   // own pages (`callAllowed` in provider-teams), not one origin.
   const teams = client.kind === 'teams';
+  // The call's room, its chat opened over this screen: the voice engine holds the call meanwhile, back returns here.
+  const room = callRoom(callId, rid);
 
   return (
     <View style={[styles.full, { backgroundColor: '#000', paddingTop: insets.top }]}>
@@ -398,6 +401,18 @@ function Call({
         <Text style={[styles.title, { color: c.text }]} numberOfLines={1}>
           {title}
         </Text>
+        {native && room !== null && (
+          <Pressable
+            onPress={() => router.push({ pathname: '/room/[rid]', params: { rid: room } })}
+            hitSlop={8}
+            accessibilityRole="button"
+            accessibilityLabel={t('voice.openChat')}
+            android_ripple={{ color: c.ripple, borderless: true }}
+            style={styles.chat}
+          >
+            <Icon name="chat-message-new" size={22} color={c.secondaryText} />
+          </Pressable>
+        )}
         <Pressable
           onPress={finish}
           hitSlop={10}
@@ -611,7 +626,8 @@ const styles = StyleSheet.create({
     paddingVertical: 10,
     borderBottomWidth: StyleSheet.hairlineWidth,
   },
-  title: { fontFamily: FONTS.title, fontSize: 16, flexShrink: 1 },
+  title: { fontFamily: FONTS.title, fontSize: 16, flexShrink: 1, flexGrow: 1 },
+  chat: { padding: 4 },
   finish: { borderRadius: 20, paddingHorizontal: 16, paddingVertical: 8 },
   finishText: { fontFamily: FONTS.bodyStrong, fontSize: 14 },
   loadingText: { fontFamily: FONTS.body, fontSize: 14 },
