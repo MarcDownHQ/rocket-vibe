@@ -541,6 +541,77 @@ mod tests {
         assert!(ice_servers_of("not json").is_empty());
     }
 
+    /// A provider that takes cameras only, on streams of its own, in sections of its own.
+    struct Fake;
+
+    impl CallSignaling for Fake {
+        async fn next_event(&mut self) -> Option<Event> {
+            None
+        }
+        async fn answer(&mut self, _sdp: &str) -> Result<(), rv_call::Error> {
+            Ok(())
+        }
+        async fn local_candidate(&mut self, _candidate: Candidate) -> Result<(), rv_call::Error> {
+            Ok(())
+        }
+        async fn set_muted(&mut self, _muted: bool) -> Result<(), rv_call::Error> {
+            Ok(())
+        }
+        async fn leave(&mut self) {}
+        fn local_id(&self) -> &str {
+            "me"
+        }
+        fn data_channel(&self) -> Option<&'static str> {
+            Some("dc")
+        }
+        fn data_protocol(&self) -> &'static str {
+            "proto"
+        }
+        fn can_send(&self, kind: VideoKind) -> bool {
+            kind == VideoKind::Camera
+        }
+        fn video_stream(&self, kind: VideoKind) -> String {
+            format!("me-{}", kind_name(kind))
+        }
+    }
+
+    #[test]
+    fn the_local_event_says_what_the_call_takes_and_on_which_streams() {
+        assert_eq!(
+            local_json(&Fake),
+            json!({
+                "type": "local", "id": "me", "dataChannel": "dc", "dataProtocol": "proto",
+                "canCamera": true, "canScreen": false,
+                "cameraStream": "me-camera", "screenStream": "me-screen",
+                "offersLocalSections": false,
+            })
+        );
+    }
+
+    #[test]
+    fn a_track_named_by_its_ids_reads_whose_and_what() {
+        assert_eq!(
+            named_json("screen_s1_x", Some(("s1".into(), VideoKind::Screen))),
+            Some(json!({"type": "named", "track": "screen_s1_x", "member": "s1", "kind": "screen"}))
+        );
+        assert_eq!(named_json("t", None), None);
+        assert_eq!(
+            named_json("video_s2_y", rv_call::mattermost::video_of("video_s2_y")),
+            Some(json!({"type": "named", "track": "video_s2_y", "member": "s2", "kind": "camera"}))
+        );
+    }
+
+    #[test]
+    fn the_remote_videos_read_as_a_list() {
+        let videos = event_json(&Event::Videos(vec![rv_call::RemoteVideo {
+            track: "e1-v0".into(),
+            member: "e1".into(),
+            kind: VideoKind::Camera,
+        }]));
+        assert_eq!(videos, json!({"type": "videos", "videos": [{"track": "e1-v0", "member": "e1", "kind": "camera"}]}));
+        assert_eq!(event_json(&Event::DataMessage("hi".into())), json!({"type": "data", "text": "hi"}));
+    }
+
     #[test]
     fn a_page_that_is_not_jitsi_starts_nothing() {
         assert!(Call::start("https://example.com/room", "var config = {};", "Ana", None).is_none());

@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import {describe,test} from 'node:test';
 import {RestClient} from './rest.ts';
-import {memoizedCallAvailable,callContext,setProviderCalls,startConference,joinConference,probeCallAvailable,withoutToken,nativeJitsi,type NativeCalls} from './call.ts';
+import {memoizedCallAvailable,callContext,setProviderCalls,startConference,joinConference,probeCallAvailable,withoutToken,nativeJitsi,callRoom,callSends,type NativeCalls} from './call.ts';
 
 test('existing Rocket.Chat call endpoints and media state remain unchanged',async()=>{
   const requests:{path:string;method:string;body:unknown}[]=[];
@@ -70,4 +70,19 @@ test('a Jitsi or kMeet meeting is joined natively with its token, nothing else i
   assert.equal(nativeJitsi('teams','https://teams.microsoft.com/l/call/0/0?users=a'),null);
   assert.equal(nativeJitsi('slack','https://app.slack.com/client/T/C?open=start_huddle'),null);
   assert.equal(nativeJitsi('rocketchat','http://meet.example/room'),null);
+});
+
+test("a call's chat is the room it was opened from, else a Mattermost plugin call's channel",()=>{
+  assert.equal(callRoom('abc123','r1'),'r1');
+  assert.equal(callRoom('mmcalls:ch1',undefined),'ch1');
+  assert.equal(callRoom('mmcalls:ch1',''),'ch1');
+  assert.equal(callRoom('mmcalls:',undefined),null);
+  assert.equal(callRoom('abc123',undefined),null);
+});
+
+test('a native call shows a camera or screen button only where the engine says the call takes it',()=>{
+  assert.deepEqual(callSends({canCamera:true,canScreen:true}),{camera:true,screen:true});
+  assert.deepEqual(callSends({canCamera:false,canScreen:true}),{camera:false,screen:true});
+  assert.deepEqual(callSends({}),{camera:false,screen:false});
+  assert.deepEqual(callSends(null),{camera:false,screen:false});
 });
