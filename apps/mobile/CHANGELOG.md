@@ -7,6 +7,11 @@ release, and its notes are that version's section here.
 
 ## [Unreleased]
 
+### Added
+
+- Calls inside the app (Rocket.Chat's Jitsi, kChat's kMeet, Mattermost's Calls plugin) show the others' cameras and shared screens, and send your camera and screen where the server takes them (Mattermost: a screen, and a camera when the plugin enables video).
+- The call screen has a chat button: the call's room opens over it while the call goes on, and Back returns to the call.
+
 ## [0.27.0] - 2026-11-18
 
 ### Added

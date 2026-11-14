@@ -57,7 +57,7 @@ A huddle runs natively first, in the same call window as a native Jitsi call: `r
 
 A call started in a chat, and any call of a channel or a meeting chat (the one running there joined, else the meeting, a channel with neither starting one), runs natively (its video below), on the account's own sign-in, in the same call window as a native Jitsi call; Teams' web page is its fallback. See [native calls](../architecture/native-calls.md#teams-calls-placed-from-a-chat-audio-2026-11-06). Otherwise Teams calls open in the app's call window on Teams' web app, like a kMeet call, never in Teams' app or the browser (user decision 2026-10-31). As a fallback, starting one in a chat opens Teams' call link ringing the chat's people (`https://teams.microsoft.com/l/call/0/0?users=<upn,...>`, their sign-in names from the middle tier's short profiles). A call card's Join opens a channel call itself (`l/meetup-join/...`) or a chat's conversation page. The window stays on Microsoft's pages, keeps its data across calls (GTK Linux: one Chromium profile per Teams account), and needs one Microsoft sign-in the first time: no token the app holds can sign it in. An incoming Teams call rings with the same prompt as a Rocket.Chat or kChat call: Teams pushes it to a calling registration the apps now make beside the chat one; Decline declines it in Teams, Accept opens the conversation in the call window, where Teams' web app answers it if it is signed in and loads before the caller gives up (unverified live). Mechanism: [teams](../architecture/teams.md) (Calls row). An incoming Teams call is answered natively too, when its ring carries the offer: Accept joins it in the native call window (SwiftUI: from the foreground prompt), its page the fallback.
 
-## Video and the room's chat in a native call (desktop, 2026-11-12)
+## Video and the room's chat in a native call (2026-11-12)
 
 The native call window (GTK `native_call.rs`, SwiftUI `NativeCallWindow.swift`) shows the others'
 cameras in their tiles and a shared screen on a stage, and sends this side's camera (not on macOS:
@@ -65,11 +65,12 @@ the sidecar captures none there) and screen where the provider takes them: Jitsi
 Mattermost's Calls plugin a screen, and a camera where the plugin enables video. A WhatsApp call
 (GTK) shows the peer's camera and sends this side's camera or screen as its one picture, the camera off
 until turned on; a video call is answered in the app. A Teams call carried natively shows the other
-person's camera and shared screen, and sends this side's camera and screen; in a channel's or meeting's
-call, up to four people's cameras and a shared screen, asked of Teams' media server (not yet run against Teams).
-A Slack huddle shows the others' cameras and screens and sends this side's camera and screen (see above). A header button opens the chat of the call's room beside the call. Android
-owes both. Mechanism: [native calls](../architecture/native-calls.md#video-in-native-calls-2026-11-12),
-for WhatsApp [its video](../architecture/native-calls.md#whatsapp-11-calls-video-2026-11-21), for Teams
+person's camera and shared screen, and sends this side's camera and screen; in a channel's or meeting's call, up to four people's
+cameras and a shared screen, asked of Teams' media server (GTK and SwiftUI, not yet run against Teams). A Slack huddle shows the others' cameras and screens and sends this side's camera, not its screen (GTK and SwiftUI). A header button opens the chat of the call's room beside the
+call. Android's call screen (`app/call/[callId].tsx`) does the same with its stage and strip, and its chat
+button opens the call's room over the call while it goes on; it owes Teams' video and huddles' video. Mechanism:
+[native calls](../architecture/native-calls.md#video-in-native-calls-2026-11-12), for WhatsApp
+[its video](../architecture/native-calls.md#whatsapp-11-calls-video-2026-11-21), for Teams
 [its video](../architecture/native-calls.md#teams-call-video-2026-11-23).
 
 ## Mattermost (Calls plugin)
@@ -77,8 +78,8 @@ for WhatsApp [its video](../architecture/native-calls.md#whatsapp-11-calls-video
 A Mattermost server running the Calls plugin gets the room's call button where the channel's
 calls are on (a free server: direct messages only), and its call posts become call cards (the
 length once over). A call is the channel's, joined natively in the call window (GTK and SwiftUI
-through the `rv-voice` sidecar, Android over JNI), audio only on Android; on desktop screens are
-shared, and cameras where the plugin enables video; there is no page to fall
+through the `rv-voice` sidecar, Android over JNI); screens are shared, and cameras where the plugin
+enables video; there is no page to fall
 back to, so a call that cannot be joined says so. A DM's running call rings like kChat's.
 Mechanism: [native calls](../architecture/native-calls.md#mattermost-calls-plugin-audio-2026-11-11).
 

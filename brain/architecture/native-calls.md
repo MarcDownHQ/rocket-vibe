@@ -735,8 +735,20 @@ then run on the bench. kChat has no such plugin: its calls stay kMeet's.
   redrawn on its changes, and a composer posting through the outbox) behind a header button
   (`native_call::Opened::chat`); SwiftUI the room's `MessageList` and `Composer` on a `RoomModel` of
   its own (`AppModel::callChat`).
-- **Owed**: Android (video and the chat button); Chime (this side's screen share, the `#content` socket);
-  the plugin's `MediaMap`. WhatsApp's video has its own path, below; Teams' is after it.
+- **Android** (`JitsiCall.kt`, `NativeVideo.kt`, rv-voice-mobile's `local` event and `video`/`videoOf`
+  calls): `JitsiSession` sends the front camera (Camera2) and the screen (media projection, `VoiceService`
+  taking that foreground type while a native call shares), the captures outliving a media session; a
+  track goes on the first unused section where the provider's offers carry this side's (Jitsi), else on a
+  send-only section of its own; the data channel opens with its protocol, its messages waiting for it;
+  crossing offers handled as on desktop. Remote videos are named from the call's list, else from the
+  track's own ids, else shown as their stream's camera until the list comes. The call screen shows a
+  camera in its tile, a shared screen on the stage with the people in a strip (`ScreenStage`, shared with
+  the Vibez voice screen), camera and screen buttons only where the call can send them, and a chat button
+  opening the call's room over the call. Checked by compiling only (Kotlin, TypeScript, rv-voice-mobile
+  tests), not run on a device.
+- **Owed**: Chime (this side's screen share, the `#content` socket; huddle video on Android, whose
+  rv-voice-mobile offers carry no video section); the plugin's `MediaMap`. WhatsApp's
+  video has its own path, below; Teams' is after it.
 
 ### WhatsApp 1:1 calls, audio (2026-11-11)
 
@@ -985,6 +997,8 @@ Teams meetings and video last.
 - apps/desktop/voice/src/call.rs, apps/desktop/voice/src/video.rs, crates/rv-call/src/jitsi/sdp.rs,
   apps/desktop/crates/rv-gtk/src/native_call.rs, apps/desktop/crates/rv-gtk/src/call_chat.rs,
   apps/desktop/macos/Sources/RocketVibe/NativeCallWindow.swift
+- apps/mobile/modules/voice/android/src/main/java/com/rocketvibe/voice/NativeVideo.kt,
+  apps/mobile/app/call/[callId].tsx, crates/rv-voice-mobile/src/call.rs
 - crates/rv-call/src/mattermost, apps/desktop/crates/rv-core/src/mattermost/calls.rs,
   apps/mobile/providers/mattermost/pluginCalls.ts
 - The Calls plugin 1.12.3 (`mattermost-plugin-calls-v1.12.3-linux-amd64.tar.gz`, its webapp
