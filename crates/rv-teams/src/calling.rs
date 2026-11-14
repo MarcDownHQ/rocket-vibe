@@ -165,10 +165,37 @@ fn with_mid(sdp: &str, mid: &str) -> String {
     out
 }
 
-/// A new offer of Teams' in plain WebRTC, under the `mid` this call already negotiated:
-/// libwebrtc refuses a later offer whose section has another one.
-pub fn renegotiation_offer(sdp: &str, session_mid: &str) -> Option<String> {
-    Some(with_mid(&webrtc_answer(sdp)?, session_mid))
+/// A new offer of Teams' in plain WebRTC, made to fit what `negotiated` (the call's
+/// current plain SDP) set: libwebrtc refuses a later offer whose section has another
+/// `mid`, or that gives an extension id another URI. Teams' hold offer moves id 3 from
+/// transport-wide-cc to its own feedback extension: such an extension is left out, so
+/// the answer declines it.
+pub fn renegotiation_offer(sdp: &str, negotiated: Option<&str>) -> Option<String> {
+    let plain = webrtc_answer(sdp)?;
+    let Some(negotiated) = negotiated else { return Some(plain) };
+    let active = extensions(negotiated);
+    let mut kept = String::with_capacity(plain.len());
+    for line in plain.lines() {
+        let clashes = extension(line).is_some_and(|(id, uri)| {
+            active.iter().any(|&(other_id, other_uri)| (other_id == id) != (other_uri == uri))
+        });
+        if !clashes {
+            kept.push_str(line);
+            kept.push_str("\r\n");
+        }
+    }
+    Some(audio_mid(negotiated).map_or_else(|| kept.clone(), |mid| with_mid(&kept, mid)))
+}
+
+/// An `a=extmap` line's id and URI.
+fn extension(line: &str) -> Option<(&str, &str)> {
+    let mut fields = line.strip_prefix("a=extmap:")?.split(' ');
+    let id = fields.next()?.split('/').next()?;
+    Some((id, fields.next()?))
+}
+
+fn extensions(sdp: &str) -> Vec<(&str, &str)> {
+    sdp.lines().filter_map(extension).collect()
 }
 
 /// `RV_CALL_DEBUG=1`: each section of an SDP: its kind, `mid` and direction.
@@ -617,7 +644,8 @@ mod tests {
     fn a_new_offer_keeps_the_calls_mid_and_its_answer_the_offers() {
         let offer = "v=0\r\ns=-\r\nt=0 0\r\na=group:BUNDLE 7 8\r\nm=audio 5 RTP/SAVP 111\r\nc=IN IP4 1.2.3.4\r\n\
             a=inactive\r\na=mid:7\r\nm=video 5 RTP/SAVP 34\r\na=mid:8\r\n";
-        let plain = renegotiation_offer(offer, "0").unwrap();
+        let negotiated = "v=0\r\ns=-\r\nt=0 0\r\nm=audio 9 UDP/TLS/RTP/SAVPF 111\r\na=mid:0\r\n";
+        let plain = renegotiation_offer(offer, Some(negotiated)).unwrap();
         assert_eq!(audio_mid(&plain), Some("0"));
         assert!(plain.contains("a=group:BUNDLE 0\r\n") && plain.contains("a=inactive") && !plain.contains("m=video"));
         let local = "v=0\r\ns=-\r\nt=0 0\r\na=group:BUNDLE 0\r\nm=audio 9 UDP/TLS/RTP/SAVPF 111\r\nc=IN IP4 0.0.0.0\r\n\
@@ -626,6 +654,24 @@ mod tests {
         assert_eq!(audio_mid(&answer), Some("7"));
         assert!(answer.contains("a=group:BUNDLE 7\r\n") && answer.contains("m=video 0 ") && answer.contains("a=mid:8"));
         assert_eq!(sdp_sections(offer), "audio port 5 inactive mid 7; video port 5 mid 8");
+    }
+
+    #[test]
+    fn a_new_offer_leaves_out_an_extension_id_the_call_gave_another_uri() {
+        let negotiated = "v=0\r\ns=-\r\nt=0 0\r\nm=audio 9 UDP/TLS/RTP/SAVPF 111\r\na=mid:0\r\n\
+            a=extmap:1 urn:ietf:params:rtp-hdrext:ssrc-audio-level\r\n\
+            a=extmap:3 http://www.ietf.org/id/draft-holmer-rmcat-transport-wide-cc-extensions-01\r\n";
+        let offer = "v=0\r\ns=-\r\nt=0 0\r\nm=audio 5 RTP/SAVP 111\r\nc=IN IP4 1.2.3.4\r\na=mid:1\r\n\
+            a=extmap:1 urn:ietf:params:rtp-hdrext:ssrc-audio-level\r\n\
+            a=extmap:3 http:\\\\skype.com\\experiments\\rtp-hdrext\\fast_bandwidth_feedback#version_3\r\n\
+            a=extmap:5 http://www.ietf.org/id/draft-holmer-rmcat-transport-wide-cc-extensions-01\r\n\
+            a=extmap:6 urn:ietf:params:rtp-hdrext:sdes:mid\r\n";
+        let plain = renegotiation_offer(offer, Some(negotiated)).unwrap();
+        assert_eq!(audio_mid(&plain), Some("0"));
+        assert!(plain.contains("a=extmap:1 urn:ietf:params:rtp-hdrext:ssrc-audio-level\r\n"));
+        assert!(plain.contains("a=extmap:6 urn:ietf:params:rtp-hdrext:sdes:mid\r\n"));
+        assert!(!plain.contains("a=extmap:3 ") && !plain.contains("a=extmap:5 "), "{plain}");
+        assert_eq!(renegotiation_offer(offer, None).unwrap().matches("a=extmap:").count(), 4);
     }
 
     #[test]
