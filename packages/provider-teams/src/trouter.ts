@@ -50,6 +50,17 @@ export function parseFrame(text: string): Frame {
 
 export const HEARTBEAT = '2::';
 
+/** Trouter's acknowledgement of a `trouter.message_loss` event, with the event's own arguments; unacknowledged, it comes back. Mirrors `frames::processed_message_loss`. */
+export function processedMessageLossFrame(text: string): string | null {
+  try {
+    const event = JSON.parse(text.split(':').slice(3).join(':')) as unknown;
+    if (typeof event !== 'object' || event === null || (event as Doc).name !== 'trouter.message_loss') return null;
+    return `5:::${JSON.stringify({ name: 'trouter.processed_message_loss', args: (event as Doc).args })}`;
+  } catch {
+    return null;
+  }
+}
+
 /** The socket's activity, as Teams' web app reports it. Mirrors `frames::user_activity`. */
 export function activityFrame(active: boolean, cv: string): string {
   return `5:::${JSON.stringify({ name: 'user.activity', args: [{ state: active ? 'active' : 'inactive', cv }] })}`;
@@ -215,7 +226,8 @@ export type TrouterOptions = {
 };
 
 const CLIENT_INFO = JSON.stringify({ cv: '2026.10.0.1', ua: 'TeamsCDL', hr: '', v: '1415/26.10.0.0' });
-/** Trouter's heartbeat is 70 s: three missed are a dead socket. */
+/** Trouter closes a socket that sends nothing for its 70 s heartbeat timeout and pushes no heartbeat of its own: the client sends one this often, answered by a noop. */
+const HEARTBEAT_EVERY_MS = 30_000;
 const SILENCE_MS = 210_000;
 const REGISTER_EVERY_MS = 6 * 3600_000;
 const PRESENCE_EVERY_MS = 120_000;
@@ -349,7 +361,10 @@ export class TeamsTrouter implements Listener {
     await new Promise<void>((resolve, reject) => {
       const timer = setTimeout(() => reject(new TeamsError('trouter_timeout')), this.timeoutMs);
       ws.onmessage = (e) => {
-        if (typeof e.data === 'string' && parseFrame(e.data).kind === 'connect') {
+        if (typeof e.data !== 'string') return;
+        const loss = processedMessageLossFrame(e.data);
+        if (loss) ws.send(loss);
+        else if (parseFrame(e.data).kind === 'connect') {
           clearTimeout(timer);
           ws.send(authenticateFrame(skype, params));
           resolve();
@@ -372,7 +387,8 @@ export class TeamsTrouter implements Listener {
     }, ACTIVITY_EVERY_MS));
     this.timers.push(setInterval(() => {
       if (Date.now() - this.lastTraffic > SILENCE_MS) { this.ws?.close(); this.cleanUp(); }
-    }, 30_000));
+      else this.send(HEARTBEAT);
+    }, HEARTBEAT_EVERY_MS));
     this.timers.push(setInterval(() => {
       void this.register(epid, surl.href).then((ok) => { if (!ok) { this.ws?.close(); this.cleanUp(); } });
     }, REGISTER_EVERY_MS));
@@ -423,7 +439,12 @@ export class TeamsTrouter implements Listener {
         this.send(HEARTBEAT);
         return;
       case 'event':
-        if (frame.name === 'trouter.message_loss') { this.ws?.close(); this.cleanUp(); }
+        if (frame.name === 'trouter.message_loss') {
+          const loss = processedMessageLossFrame(text);
+          if (loss) this.send(loss);
+          this.ws?.close();
+          this.cleanUp();
+        }
         return;
       case 'request': {
         const reply = replyFrame(frame.envelope);
