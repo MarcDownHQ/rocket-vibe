@@ -753,6 +753,7 @@
     "crates/rv-teams/examples/teams-feed.rs",
     "crates/rv-teams/examples/teams-foci.rs",
     "crates/rv-teams/examples/teams-ic3.rs",
+    "crates/rv-teams/examples/teams-live-probe.rs",
     "crates/rv-teams/examples/teams-shapes.rs",
     "crates/rv-teams/src/auth.rs",
     "crates/rv-teams/src/calling.rs",
