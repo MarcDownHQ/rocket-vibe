@@ -87,7 +87,8 @@ async fn main() {
     let mut threads: BTreeSet<(String, String)> = BTreeSet::new();
     for m in &all {
         top.extend(m.as_object().map(|o| o.keys().cloned().collect::<Vec<_>>()).unwrap_or_default());
-        prop_keys.extend(m["properties"].as_object().map(|o| o.keys().cloned().collect::<Vec<_>>()).unwrap_or_default());
+        prop_keys
+            .extend(m["properties"].as_object().map(|o| o.keys().cloned().collect::<Vec<_>>()).unwrap_or_default());
         let a = &m["properties"]["activity"];
         let t = format!(
             "{}/{}/{}",
@@ -96,11 +97,20 @@ async fn main() {
             a["sourceThreadType"].as_str().unwrap_or("?")
         );
         *by_type.entry(t.clone()).or_default() += 1;
-        keys_by_type.entry(t.clone()).or_default().extend(a.as_object().map(|o| o.keys().cloned().collect::<Vec<_>>()).unwrap_or_default());
+        keys_by_type
+            .entry(t.clone())
+            .or_default()
+            .extend(a.as_object().map(|o| o.keys().cloned().collect::<Vec<_>>()).unwrap_or_default());
         thread_kinds.entry(t.clone()).or_default().insert(kind_of(a["sourceThreadId"].as_str().unwrap_or("")));
         let entry = chain.entry(t.clone()).or_default();
-        let rc = a["sourceReplyChainId"].as_u64().map(|n| n.to_string()).or_else(|| a["sourceReplyChainId"].as_str().map(str::to_owned));
-        let mid = a["sourceMessageId"].as_u64().map(|n| n.to_string()).or_else(|| a["sourceMessageId"].as_str().map(str::to_owned));
+        let rc = a["sourceReplyChainId"]
+            .as_u64()
+            .map(|n| n.to_string())
+            .or_else(|| a["sourceReplyChainId"].as_str().map(str::to_owned));
+        let mid = a["sourceMessageId"]
+            .as_u64()
+            .map(|n| n.to_string())
+            .or_else(|| a["sourceMessageId"].as_str().map(str::to_owned));
         if let Some(rc) = &rc {
             entry.0 += 1;
             if Some(rc) == mid.as_ref() {
