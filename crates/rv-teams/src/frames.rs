@@ -57,6 +57,14 @@ pub fn user_activity(active: bool, cv: &str) -> String {
     format!("5:::{event}")
 }
 
+/// Trouter's acknowledgement of a `trouter.message_loss` event, carrying the
+/// event's own arguments; unacknowledged, the event comes back again.
+pub fn processed_message_loss(text: &str) -> Option<String> {
+    let event: Value = serde_json::from_str(text.splitn(4, ':').nth(3)?).ok()?;
+    let args = event.get("args")?;
+    Some(format!("5:::{}", json!({"name": "trouter.processed_message_loss", "args": args})))
+}
+
 /// The answer a pushed request expects, or Trouter delivers it again.
 pub fn reply(envelope: &Value) -> Option<String> {
     let id = envelope.get("id")?;
@@ -236,6 +244,16 @@ fn thread_in(value: &Value) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_message_loss_is_acknowledged_with_its_own_arguments() {
+        let event = r#"5:2::{"name":"trouter.message_loss","args":[{"droppedIndicators":[{"tag":"messaging","etag":"2026-11-14T09:39:38Z"}]}]}"#;
+        let reply = processed_message_loss(event).unwrap();
+        let body: Value = serde_json::from_str(reply.strip_prefix("5:::").unwrap()).unwrap();
+        assert_eq!(body["name"], "trouter.processed_message_loss");
+        assert_eq!(body["args"][0]["droppedIndicators"][0]["etag"], "2026-11-14T09:39:38Z");
+        assert_eq!(processed_message_loss("5:2::not json"), None);
+    }
 
     #[test]
     fn a_presence_push_is_read_from_its_path_only() {

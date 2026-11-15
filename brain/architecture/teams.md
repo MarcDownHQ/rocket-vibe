@@ -159,7 +159,17 @@ to that path, `{presence: [{mri, presence: {availability, activity}}]}`
 (`frames::presence_push`, `presencePush`). Presence is also read again every two minutes,
 a missed push being otherwise wrong until the next reconnection (before 2026-11-03 it was
 read only at connection setup, so a colleague stayed "Busy" long after a call).
-`trouter.message_loss` or a dropped socket reconnects, then catches up.
+The handshake answers `<sid>:70:70:xhr-polling`, and **Trouter pushes no heartbeat**: the
+client sends `2::` every 30 s (answered `8::`), or Trouter closes the socket cleanly about
+85 s after connecting (probed 2026-11-14, `teams-live-probe` example; before that fix both
+apps lost every live push in the gap until they reconnected). Trouter sends
+`trouter.message_loss` (`droppedIndicators [{tag, etag}]`) right after connecting, and again
+every few seconds until the client answers `5:::{"name":"trouter.processed_message_loss",
+"args":<the event's args>}` (`frames::processed_message_loss`, `processedMessageLossFrame`;
+mobile, which closed on every one, reconnected in a loop). Answered, it came back no more
+in a 190 s run. Desktop catches up on it; mobile acknowledges the ones sent while it
+registers (its connection setup catches up after) and reconnects on a later one, then
+catches up; a dropped socket reconnects, then catches up.
 
 **My own presence.** Teams' web app declares each connection as one of my presence
 endpoints, `PUT {unifiedPresence}/v1/me/endpoints/ {id: <chat registrationId>,

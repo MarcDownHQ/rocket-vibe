@@ -10,7 +10,7 @@ import { TeamsClient } from './client.ts';
 import { TeamsMessageActions, TeamsOutbox, clientMessageId } from './outbox.ts';
 import { TEAMS_EVENTS, THREAD_COUNTERS, TeamsRooms, TeamsSync, TeamsThreads, TeamsTranslator } from './sync.ts';
 import { TeamsDirectory } from './translate.ts';
-import { chatEvent, parseFrame } from './trouter.ts';
+import { chatEvent, parseFrame, processedMessageLossFrame } from './trouter.ts';
 import { TEAMS_CAPABILITIES, teamsPinned, typingAction } from './index.ts';
 import { teamsCalls } from './calls.ts';
 
@@ -207,6 +207,17 @@ test('a Trouter message frame carries a chat event', () => {
   assert.equal(event?.name, 'NewMessage');
   assert.equal(event?.resource.id, '6000');
   assert.equal(parseFrame('3:::not json').kind, 'other');
+});
+
+test('a Trouter message loss is acknowledged with its own arguments', () => {
+  const event = '5:2::{"name":"trouter.message_loss","args":[{"droppedIndicators":[{"tag":"messaging","etag":"2026-11-14T09:39:38Z"}]}]}';
+  const reply = processedMessageLossFrame(event);
+  assert.ok(reply?.startsWith('5:::'));
+  const body = JSON.parse(reply!.slice(4)) as { name: string; args: { droppedIndicators: { etag: string }[] }[] };
+  assert.equal(body.name, 'trouter.processed_message_loss');
+  assert.equal(body.args[0]?.droppedIndicators[0]?.etag, '2026-11-14T09:39:38Z');
+  assert.equal(processedMessageLossFrame('5:3::{"name":"trouter.connected","args":[]}'), null);
+  assert.equal(processedMessageLossFrame('5:3::not json'), null);
 });
 
 test('typing posts a Control/Typing to the conversation, and a clear when it stops', async () => {
