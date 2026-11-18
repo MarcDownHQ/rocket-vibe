@@ -28,7 +28,12 @@ rm -rf "$out"
 mkdir -p "$out/bin" "$out/lib/gstreamer-1.0" "$out/share/glib-2.0/schemas" "$out/share/icons" "$out/etc"
 cp target/release/rocket-vibe-gtk.exe "$out/bin/"
 # The call window's WebView2 loader, which the exe loads at start: GNU builds link it as a DLL.
-loader=$(find target/release/build -path "*webview2-com-sys-*/out/x64/WebView2Loader.dll" | head -n 1)
+# Cargo's build directory layout changes between releases: any build output dir of the crate.
+loader=$(find target -path "*webview2-com-sys*/out/x64/WebView2Loader.dll" -print -quit)
+if [ -z "$loader" ]; then
+  echo "no WebView2Loader.dll under target/" >&2
+  exit 1
+fi
 cp "$loader" "$out/bin/"
 # Static C runtime, no DLL of its own: rv-core looks for it beside the exe.
 if [ -n "$voice" ]; then cp "$voice" "$out/bin/rv-voice.exe"; fi
