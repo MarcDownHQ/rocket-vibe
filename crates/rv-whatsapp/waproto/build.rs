@@ -57,6 +57,20 @@ struct LocalField {
 /// original wire numbers; either kind must stop on a future collision.
 const LOCAL_FIELDS: &[LocalField] = &[
     LocalField {
+        message: "Config",
+        name: "version",
+        number: 2,
+        kind: field_descriptor_proto::Type::TYPE_UINT32,
+        type_name: None,
+    },
+    LocalField {
+        message: "Field",
+        name: "notReportableMinVersion",
+        number: 3,
+        kind: field_descriptor_proto::Type::TYPE_UINT32,
+        type_name: None,
+    },
+    LocalField {
         // Deriving the stored cipher/mac/iv from this seed is one-way, so a
         // skipped message key that kept only the derived material could never be
         // projected back into a seed-based external format.
