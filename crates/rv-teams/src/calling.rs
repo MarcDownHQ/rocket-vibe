@@ -427,21 +427,12 @@ impl Caller<'_> {
     }
 }
 
-/// `epconv`'s body placing a call with this offer: to `to`'s accounts, or, with
-/// none, Microsoft's Test Call.
-pub fn place_call(caller: &Caller, to: &[String], thread: Option<&str>, offer: &str, modality_id: &str) -> Value {
-    let cb = |path: &str| caller.callback(path);
-    let test = to.is_empty();
-    let oid = caller.mri.strip_prefix("8:orgid:").unwrap_or(caller.mri);
-    let group_chat = match thread {
-        _ if test => json!({"threadId": format!("19:{oid}_{ECHO_BOT}@unq.gbl.spaces"), "messageId": null}),
-        Some(thread) => json!({"threadId": thread, "messageId": null}),
-        None => Value::Null,
-    };
-    let targets: Vec<Value> = to.iter().map(|mri| json!({"id": mri, "participantId": modality_id})).collect();
-    let mut body = json!({
-        "conversationRequest": {
-            "conversationType": null, "subject": null, "suppressDialout": test,
+impl Caller<'_> {
+    /// The conversation's own callbacks, as a call's request names them.
+    fn conversation_request(&self, conversation_type: Option<&str>, suppress_dialout: bool) -> Value {
+        let cb = |path: &str| self.callback(path);
+        json!({
+            "conversationType": conversation_type, "subject": null, "suppressDialout": suppress_dialout,
             "roster": {"type": "Delta", "rosterUpdate": cb("conversation/rosterUpdate/")},
             "properties": {"allowConversationWithoutHost": true, "enableGroupCallEventMessages": true,
                 "enableGroupCallUpgradeMessage": false, "enableGroupCallMeetupGeneration": false},
@@ -456,7 +447,42 @@ pub fn place_call(caller: &Caller, to: &[String], thread: Option<&str>, offer: &
                 "confirmUnmute": cb("conversation/confirmUnmute/"),
                 "receiveMessage": cb("conversation/receiveMessage/"),
             },
-        },
+        })
+    }
+
+    /// The audio call this offer invites, with this client's callbacks for it.
+    fn call_invitation(&self, offer: &str) -> Value {
+        let cb = |path: &str| self.callback(path);
+        json!({
+            "callModalities": ["Audio"], "replaces": null, "transferor": null,
+            "links": {"progress": cb("call/progress/"), "mediaAnswer": cb("call/mediaAnswer/"),
+                "acceptance": cb("call/acceptance/"), "redirection": cb("call/redirection/"), "end": cb("call/end/")},
+            "clientContentForMediaController": {"controlVideoStreaming": cb("call/controlVideoStreaming/"),
+                "csrcInfo": cb("call/csrcInfo/")},
+            "pstnContent": {"emergencyCallCountry": "", "platformName": self.client, "publicApiCall": false},
+            "mediaContent": {"blob": offer, "contentType": "application/sdp-ngc-1.0", "requiredFeatures": "nonByPass"},
+        })
+    }
+}
+
+fn endpoint_state(sequence: u32) -> Value {
+    json!({"endpointStateSequenceNumber": sequence, "endpointProperties":
+        {"additionalEndpointProperties": {"infoShownInReportMode": "FullInformation"}}})
+}
+
+/// `epconv`'s body placing a call with this offer: to `to`'s accounts, or, with
+/// none, Microsoft's Test Call.
+pub fn place_call(caller: &Caller, to: &[String], thread: Option<&str>, offer: &str, modality_id: &str) -> Value {
+    let test = to.is_empty();
+    let oid = caller.mri.strip_prefix("8:orgid:").unwrap_or(caller.mri);
+    let group_chat = match thread {
+        _ if test => json!({"threadId": format!("19:{oid}_{ECHO_BOT}@unq.gbl.spaces"), "messageId": null}),
+        Some(thread) => json!({"threadId": thread, "messageId": null}),
+        None => Value::Null,
+    };
+    let targets: Vec<Value> = to.iter().map(|mri| json!({"id": mri, "participantId": modality_id})).collect();
+    let mut body = json!({
+        "conversationRequest": caller.conversation_request(None, test),
         "groupContext": null,
         "groupChat": group_chat,
         "participants": {"from": caller.from(), "to": targets},
@@ -465,22 +491,132 @@ pub fn place_call(caller: &Caller, to: &[String], thread: Option<&str>, offer: &
         "clientEndpointCapabilities": 114259690,
         "endpointMetadata": {"holographicCapabilities": 3},
         "meetingInfo": null,
-        "endpointState": {"endpointStateSequenceNumber": 1, "endpointProperties":
-            {"additionalEndpointProperties": {"infoShownInReportMode": "FullInformation"}}},
-        "callInvitation": {
-            "callModalities": ["Audio"], "replaces": null, "transferor": null,
-            "links": {"progress": cb("call/progress/"), "mediaAnswer": cb("call/mediaAnswer/"),
-                "acceptance": cb("call/acceptance/"), "redirection": cb("call/redirection/"), "end": cb("call/end/")},
-            "clientContentForMediaController": {"controlVideoStreaming": cb("call/controlVideoStreaming/"),
-                "csrcInfo": cb("call/csrcInfo/")},
-            "pstnContent": {"emergencyCallCountry": "", "platformName": caller.client, "publicApiCall": false},
-            "mediaContent": {"blob": offer, "contentType": "application/sdp-ngc-1.0", "requiredFeatures": "nonByPass"},
-        },
+        "endpointState": endpoint_state(1),
+        "callInvitation": caller.call_invitation(offer),
     });
     if test {
         body["scenario"] = json!("UserInitiatedTestCall");
     }
     body
+}
+
+/// `epconv`'s body starting a channel's call, as Teams' Meet in a channel does:
+/// a call of the channel's thread that rings no one, its people joining from
+/// the channel.
+pub fn start_channel_call(caller: &Caller, thread: &str, offer: &str) -> Value {
+    json!({
+        "conversationRequest": caller.conversation_request(Some("huddleGroupCall"), true),
+        "groupContext": null,
+        "groupChat": {"threadId": thread, "messageId": null},
+        "participants": {"from": caller.from(), "to": []},
+        "capabilities": null,
+        "endpointCapabilities": 73463,
+        "clientEndpointCapabilities": 114259690,
+        "endpointMetadata": {"holographicCapabilities": 3},
+        "meetingInfo": null,
+        "endpointState": endpoint_state(1),
+        "callInvitation": caller.call_invitation(offer),
+    })
+}
+
+/// A meeting's call, or a channel's, as the conversation service finds it: the
+/// thread, the message it hangs off (`0` for the thread's own) and its organizer.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MeetingJoin {
+    pub thread: String,
+    pub message: String,
+    pub organizer: String,
+    pub tenant: String,
+}
+
+/// The call to join in a thread, from its threads document (`threadProperties=1`):
+/// the one running (`awareness_conversationLiveState:*`, `Active`), else the
+/// thread's meeting (`meeting`); `None` when it has neither.
+pub fn meeting_join(doc: &Value, thread: &str, tenant: &str) -> Option<MeetingJoin> {
+    let properties = doc.get("properties").or_else(|| doc.get("threadProperties"))?.as_object()?;
+    let parsed = |v: &Value| match v {
+        Value::String(s) => serde_json::from_str::<Value>(s).ok(),
+        Value::Object(_) => Some(v.clone()),
+        _ => None,
+    };
+    let text = |v: &Value, key: &str| v.get(key).and_then(Value::as_str).filter(|s| !s.is_empty()).map(str::to_owned);
+    let live = properties
+        .iter()
+        .filter(|(key, _)| key.starts_with("awareness_conversationLiveState"))
+        .filter_map(|(_, v)| parsed(v))
+        .find(|state| state.get("status").and_then(Value::as_str) == Some("Active"));
+    let meeting = properties.get("meeting").and_then(parsed);
+    let (organizer, tenant_id, message) = match (&live, &meeting) {
+        (Some(live), _) => {
+            let info = live.get("meetingInfo").unwrap_or(&Value::Null);
+            let initiator = || {
+                live.get("groupCallInitiator")
+                    .and_then(Value::as_str)
+                    .and_then(|m| m.strip_prefix("8:orgid:"))
+                    .map(str::to_owned)
+            };
+            (text(info, "organizerId").or_else(initiator)?, text(info, "tenantId"), None)
+        }
+        (None, Some(meeting)) => (
+            text(meeting, "organizerId")?,
+            text(meeting, "tenantId"),
+            meeting.get("meetingJoinUrl").and_then(Value::as_str).and_then(join_message),
+        ),
+        (None, None) => return None,
+    };
+    Some(MeetingJoin {
+        thread: thread.to_owned(),
+        message: message.unwrap_or_else(|| "0".to_owned()),
+        organizer,
+        tenant: tenant_id.unwrap_or_else(|| tenant.to_owned()),
+    })
+}
+
+/// The message a meeting link joins (`/l/meetup-join/<thread>/<message>`).
+fn join_message(link: &str) -> Option<String> {
+    let url = url::Url::parse(link).ok()?;
+    let mut segments = url.path_segments()?;
+    (segments.next()? == "l" && segments.next()? == "meetup-join").then_some(())?;
+    segments.nth(1).filter(|m| !m.is_empty()).map(str::to_owned)
+}
+
+/// `epconv`'s body resolving a meeting's conversation, before its call is joined.
+pub fn join_meeting(caller: &Caller, join: &MeetingJoin) -> Value {
+    let mut request = caller.conversation_request(None, false);
+    if let Some(request) = request.as_object_mut() {
+        request.remove("conversationType");
+        request.remove("suppressDialout");
+    }
+    json!({
+        "conversationRequest": request,
+        "groupContext": null,
+        "groupChat": {"threadId": join.thread, "messageId": join.message},
+        "participants": {"from": caller.from()},
+        "capabilities": null,
+        "endpointCapabilities": 73463,
+        "clientEndpointCapabilities": 114259690,
+        "endpointMetadata": {"holographicCapabilities": 3},
+        "meetingInfo": {"tenantId": join.tenant, "organizerId": join.organizer},
+        "endpointState": endpoint_state(0),
+    })
+}
+
+/// The conversation controller's body joining the meeting's call with this offer.
+pub fn join_meeting_call(caller: &Caller, join: &MeetingJoin, offer: &str) -> Value {
+    json!({
+        "conversationRequest": caller.conversation_request(None, true),
+        "contentSharing": null,
+        "participants": {"from": caller.from(), "to": []},
+        "capabilities": null,
+        "endpointCapabilities": 73463,
+        "clientEndpointCapabilities": 114259690,
+        "endpointMetadata": {"holographicCapabilities": 3},
+        "groupContext": null,
+        "groupChat": {"threadId": join.thread, "messageId": join.message},
+        "meetingInfo": {"organizerId": join.organizer, "tenantId": join.tenant},
+        "endpointState": endpoint_state(1),
+        "callInvitation": caller.call_invitation(offer),
+    })
 }
 
 /// The acknowledgement a `callAcceptance` waits for: without it the call
@@ -874,5 +1010,77 @@ mod tests {
         assert_eq!(group["groupChat"]["threadId"], "19:t@thread.v2");
         assert_eq!(real["participants"]["to"][0]["id"], "8:orgid:x");
         assert_eq!(real.get("scenario"), None);
+    }
+
+    #[test]
+    fn a_thread_joins_its_running_call_else_its_meeting() {
+        let live = json!({"status": "Active", "groupCallInitiator": "8:orgid:starter",
+            "meetingInfo": {"organizerId": "org", "tenantId": "ten"}})
+        .to_string();
+        let meeting = json!({"organizerId": "planner", "tenantId": "ten2",
+            "meetingJoinUrl": "https://teams.microsoft.com/l/meetup-join/19%3ameeting_x%40thread.v2/0?context=%7b%7d"})
+        .to_string();
+        let running = json!({"properties": {"awareness_conversationLiveState:0": live, "meeting": meeting}});
+        let join = meeting_join(&running, "19:t@thread.v2", "mine").unwrap();
+        assert_eq!(
+            join,
+            MeetingJoin {
+                thread: "19:t@thread.v2".into(),
+                message: "0".into(),
+                organizer: "org".into(),
+                tenant: "ten".into()
+            }
+        );
+        let planned = json!({"threadProperties": {"meeting": meeting,
+            "awareness_conversationLiveState:0": json!({"status": "Ended"}).to_string()}});
+        let join = meeting_join(&planned, "19:meeting_x@thread.v2", "mine").unwrap();
+        assert_eq!((join.organizer.as_str(), join.tenant.as_str(), join.message.as_str()), ("planner", "ten2", "0"));
+        let huddle = json!({"properties": {"awareness_conversationLiveState:0":
+            json!({"status": "Active", "groupCallInitiator": "8:orgid:starter"}).to_string()}});
+        let join = meeting_join(&huddle, "19:c@thread.tacv2", "mine").unwrap();
+        assert_eq!((join.organizer.as_str(), join.tenant.as_str()), ("starter", "mine"));
+        assert_eq!(meeting_join(&json!({"properties": {"topic": "x"}}), "19:c@thread.tacv2", "mine"), None);
+    }
+
+    #[test]
+    fn a_meeting_link_names_its_message() {
+        assert_eq!(
+            join_message("https://teams.microsoft.com/l/meetup-join/19%3ab%40thread.tacv2/1700000000000?context=x")
+                .as_deref(),
+            Some("1700000000000")
+        );
+        assert_eq!(join_message("https://teams.microsoft.com/l/call/0/0?users=a"), None);
+    }
+
+    #[test]
+    fn a_channel_call_and_a_meeting_join_speak_like_teams() {
+        let caller = Caller {
+            mri: "8:orgid:me",
+            name: "Me",
+            endpoint: "e",
+            participant: "p",
+            surl: "https://t/",
+            random: "r",
+            client: "c",
+        };
+        let start = start_channel_call(&caller, "19:c@thread.tacv2", "v=0");
+        assert_eq!(start["conversationRequest"]["conversationType"], "huddleGroupCall");
+        assert_eq!(start["groupChat"], json!({"threadId": "19:c@thread.tacv2", "messageId": null}));
+        assert_eq!(start["participants"]["to"], json!([]));
+        assert_eq!(start["callInvitation"]["mediaContent"]["blob"], "v=0");
+        let join = MeetingJoin {
+            thread: "19:m@thread.v2".into(),
+            message: "0".into(),
+            organizer: "org".into(),
+            tenant: "ten".into(),
+        };
+        let resolve = join_meeting(&caller, &join);
+        assert_eq!(resolve["meetingInfo"], json!({"tenantId": "ten", "organizerId": "org"}));
+        assert_eq!(resolve["groupChat"]["messageId"], "0");
+        assert!(resolve.get("callInvitation").is_none());
+        assert!(resolve["conversationRequest"].get("conversationType").is_none());
+        let call = join_meeting_call(&caller, &join, "v=0");
+        assert_eq!(call["callInvitation"]["links"]["acceptance"], "https://t/callAgent/e/r/call/acceptance/");
+        assert_eq!(call["meetingInfo"]["organizerId"], "org");
     }
 }
