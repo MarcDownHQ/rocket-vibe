@@ -309,14 +309,14 @@ markers at the time of generation. The JSON keeps the scope and all the files.
 | [apps/desktop/crates/rv-core/src/session.rs:1975](../../apps/desktop/crates/rv-core/src/session.rs#L1975) | call:POST | "commands.run" |
 | [apps/desktop/crates/rv-core/src/session.rs:2190](../../apps/desktop/crates/rv-core/src/session.rs#L2190) | call:GET | "chat.getMessage" |
 | [apps/desktop/crates/rv-core/src/session.rs:2190](../../apps/desktop/crates/rv-core/src/session.rs#L2190) | endpoint | chat.getMessage |
-| [apps/desktop/crates/rv-core/src/session.rs:2745](../../apps/desktop/crates/rv-core/src/session.rs#L2745) | call:GET | "video-conference.info" |
-| [apps/desktop/crates/rv-core/src/session.rs:2745](../../apps/desktop/crates/rv-core/src/session.rs#L2745) | endpoint | video-conference.info |
-| [apps/desktop/crates/rv-core/src/session.rs:2845](../../apps/desktop/crates/rv-core/src/session.rs#L2845) | call:GET | "chat.getMessage" |
-| [apps/desktop/crates/rv-core/src/session.rs:2845](../../apps/desktop/crates/rv-core/src/session.rs#L2845) | endpoint | chat.getMessage |
-| [apps/desktop/crates/rv-core/src/session.rs:2856](../../apps/desktop/crates/rv-core/src/session.rs#L2856) | call:GET | "chat.getThreadMessages", options).await?; |
-| [apps/desktop/crates/rv-core/src/session.rs:2856](../../apps/desktop/crates/rv-core/src/session.rs#L2856) | endpoint | chat.getThreadMessages |
-| [apps/desktop/crates/rv-core/src/session.rs:3223](../../apps/desktop/crates/rv-core/src/session.rs#L3223) | call:POST | "users.setPresence" |
-| [apps/desktop/crates/rv-core/src/session.rs:3223](../../apps/desktop/crates/rv-core/src/session.rs#L3223) | endpoint | users.setPresence |
+| [apps/desktop/crates/rv-core/src/session.rs:2751](../../apps/desktop/crates/rv-core/src/session.rs#L2751) | call:GET | "video-conference.info" |
+| [apps/desktop/crates/rv-core/src/session.rs:2751](../../apps/desktop/crates/rv-core/src/session.rs#L2751) | endpoint | video-conference.info |
+| [apps/desktop/crates/rv-core/src/session.rs:2851](../../apps/desktop/crates/rv-core/src/session.rs#L2851) | call:GET | "chat.getMessage" |
+| [apps/desktop/crates/rv-core/src/session.rs:2851](../../apps/desktop/crates/rv-core/src/session.rs#L2851) | endpoint | chat.getMessage |
+| [apps/desktop/crates/rv-core/src/session.rs:2862](../../apps/desktop/crates/rv-core/src/session.rs#L2862) | call:GET | "chat.getThreadMessages", options).await?; |
+| [apps/desktop/crates/rv-core/src/session.rs:2862](../../apps/desktop/crates/rv-core/src/session.rs#L2862) | endpoint | chat.getThreadMessages |
+| [apps/desktop/crates/rv-core/src/session.rs:3229](../../apps/desktop/crates/rv-core/src/session.rs#L3229) | call:POST | "users.setPresence" |
+| [apps/desktop/crates/rv-core/src/session.rs:3229](../../apps/desktop/crates/rv-core/src/session.rs#L3229) | endpoint | users.setPresence |
 | [apps/desktop/crates/rv-core/src/slack/threads.rs:82](../../apps/desktop/crates/rv-core/src/slack/threads.rs#L82) | endpoint | subscriptions.thread.getView |
 | [apps/desktop/crates/rv-core/src/slack/threads.rs:205](../../apps/desktop/crates/rv-core/src/slack/threads.rs#L205) | endpoint | subscriptions.thread.mark |
 | [apps/desktop/crates/rv-core/src/slack/threads.rs:211](../../apps/desktop/crates/rv-core/src/slack/threads.rs#L211) | endpoint | subscriptions.thread.clearAll |
@@ -539,12 +539,12 @@ markers at the time of generation. The JSON keeps the scope and all the files.
 | [apps/mobile/lib/call.ts:95](../../apps/mobile/lib/call.ts#L95) | endpoint | video-conference.join |
 | [apps/mobile/lib/call.ts:111](../../apps/mobile/lib/call.ts#L111) | call:GET | 'video-conference.info' |
 | [apps/mobile/lib/call.ts:111](../../apps/mobile/lib/call.ts#L111) | endpoint | video-conference.info |
-| [apps/mobile/lib/call.ts:207](../../apps/mobile/lib/call.ts#L207) | call:GET | 'video-conference.capabilities' |
-| [apps/mobile/lib/call.ts:207](../../apps/mobile/lib/call.ts#L207) | endpoint | video-conference.capabilities |
-| [apps/mobile/lib/call.ts:256](../../apps/mobile/lib/call.ts#L256) | call:GET | 'video-conference.info' |
-| [apps/mobile/lib/call.ts:256](../../apps/mobile/lib/call.ts#L256) | endpoint | video-conference.info |
-| [apps/mobile/lib/call.ts:280](../../apps/mobile/lib/call.ts#L280) | call:POST | 'video-conference.cancel' |
-| [apps/mobile/lib/call.ts:280](../../apps/mobile/lib/call.ts#L280) | endpoint | video-conference.cancel |
+| [apps/mobile/lib/call.ts:212](../../apps/mobile/lib/call.ts#L212) | call:GET | 'video-conference.capabilities' |
+| [apps/mobile/lib/call.ts:212](../../apps/mobile/lib/call.ts#L212) | endpoint | video-conference.capabilities |
+| [apps/mobile/lib/call.ts:261](../../apps/mobile/lib/call.ts#L261) | call:GET | 'video-conference.info' |
+| [apps/mobile/lib/call.ts:261](../../apps/mobile/lib/call.ts#L261) | endpoint | video-conference.info |
+| [apps/mobile/lib/call.ts:285](../../apps/mobile/lib/call.ts#L285) | call:POST | 'video-conference.cancel' |
+| [apps/mobile/lib/call.ts:285](../../apps/mobile/lib/call.ts#L285) | endpoint | video-conference.cancel |
 | [apps/mobile/lib/catchUp.ts:42](../../apps/mobile/lib/catchUp.ts#L42) | call:GET | 'rooms.get' |
 | [apps/mobile/lib/catchUp.ts:42](../../apps/mobile/lib/catchUp.ts#L42) | endpoint | rooms.get |
 | [apps/mobile/lib/catchUp.ts:45](../../apps/mobile/lib/catchUp.ts#L45) | call:GET | 'subscriptions.get' |

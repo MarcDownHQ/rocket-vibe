@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
 
-import { acceptBody, acknowledgeBody, answerExternalCall, attachBody, attachedLinks, audioMid, callPushEvent, isCallCallback, nextSubscription, placeCallBody, placeExternalCall, renegotiationOffer, teamsAnswer, teamsOffer, webrtcAnswer, type Caller } from './calling.ts';
+import { acceptBody, acknowledgeBody, answerExternalCall, attachBody, attachedLinks, audioMid, callPushEvent, isCallCallback, joinMessage, joinThreadCall, meetingJoin, nextSubscription, placeCallBody, placeExternalCall, renegotiationOffer, teamsAnswer, teamsOffer, webrtcAnswer, type Caller } from './calling.ts';
 
 const OFFER = 'v=0\r\no=- 1 2 IN IP4 127.0.0.1\r\ns=-\r\nt=0 0\r\na=group:BUNDLE 0\r\n'
   + 'm=audio 9 UDP/TLS/RTP/SAVPF 111\r\nc=IN IP4 0.0.0.0\r\n'
@@ -239,3 +239,58 @@ describe('Teams calling', () => {
     assert.equal((acceptBody({ mri: 'm', name: 'n', endpoint: 'e', participant: 'p', surl: 'https://t/', random: 'r' }, 'v=0', null).callAcceptance as { acceptedCallModalities: string[] }).acceptedCallModalities[0], 'Audio');
   });
 });
+
+describe('teams thread calls', () => {
+  test('a thread joins its running call, else its meeting', () => {
+    const live = JSON.stringify({ status: 'Active', groupCallInitiator: '8:orgid:starter', meetingInfo: { organizerId: 'org', tenantId: 'ten' } });
+    const meeting = JSON.stringify({ organizerId: 'planner', tenantId: 'ten2', meetingJoinUrl: 'https://teams.microsoft.com/l/meetup-join/19%3ameeting_x%40thread.v2/0?context=%7b%7d' });
+    assert.deepEqual(meetingJoin({ properties: { 'awareness_conversationLiveState:0': live, meeting } }, '19:t@thread.v2', 'mine'),
+      { thread: '19:t@thread.v2', message: '0', organizer: 'org', tenant: 'ten' });
+    const planned = { threadProperties: { meeting, 'awareness_conversationLiveState:0': JSON.stringify({ status: 'Ended' }) } };
+    assert.deepEqual(meetingJoin(planned, '19:meeting_x@thread.v2', 'mine'), { thread: '19:meeting_x@thread.v2', message: '0', organizer: 'planner', tenant: 'ten2' });
+    const huddle = { properties: { 'awareness_conversationLiveState:0': JSON.stringify({ status: 'Active', groupCallInitiator: '8:orgid:starter' }) } };
+    assert.deepEqual(meetingJoin(huddle, '19:c@thread.tacv2', 'mine'), { thread: '19:c@thread.tacv2', message: '0', organizer: 'starter', tenant: 'mine' });
+    assert.equal(meetingJoin({ properties: { topic: 'x' } }, '19:c@thread.tacv2', 'mine'), null);
+    assert.equal(joinMessage('https://teams.microsoft.com/l/meetup-join/19%3ab%40thread.tacv2/1700000000000?context=x'), '1700000000000');
+    assert.equal(joinMessage('https://teams.microsoft.com/l/call/0/0?users=a'), null);
+  });
+  const run = async (join: Parameters<typeof joinThreadCall>[3]) => {
+    const posted: [string, Record<string, unknown>][] = [];
+    let id = 0;
+    await joinThreadCall({
+      post: async (url, _chain, body) => {
+        posted.push([url, body]);
+        return url.endsWith('/epconv') && join !== null ? { conversationController: 'https://conv/c1' } : { links: { leave: 'https://conv/leave' } };
+      },
+      pushes: () => () => {},
+      poll: async () => ({}),
+      put: async () => {},
+      id: () => `id${++id}`,
+      me: { mri: '8:orgid:me', name: 'Me' },
+      surl: 'https://t/',
+    }, {
+      start: async () => {}, offer: async () => OFFER, answer: async () => {}, roster: async () => {},
+      ended: async () => {}, left: () => new Promise<void>(() => {}),
+    }, '19:c@thread.tacv2', join);
+    return posted;
+  };
+  test('a channel with no call starts its own, ringing no one', async () => {
+    const posted = await run(null);
+    assert.equal(posted.length, 1);
+    const [url, body] = posted[0]!;
+    assert.ok(url.endsWith('/epconv'));
+    assert.equal((body.conversationRequest as Record<string, unknown>).conversationType, 'huddleGroupCall');
+    assert.deepEqual(body.groupChat, { threadId: '19:c@thread.tacv2', messageId: null });
+    assert.deepEqual((body.participants as Record<string, unknown>).to, []);
+  });
+  test('a meeting is resolved, then its call joined on its controller', async () => {
+    const posted = await run({ thread: '19:m@thread.v2', message: '0', organizer: 'org', tenant: 'ten' });
+    assert.deepEqual(posted.map(([url]) => url), ['https://api.flightproxy.teams.microsoft.com/api/v2/epconv', 'https://conv/c1']);
+    const [[, resolve], [, call]] = posted as [[string, Record<string, unknown>], [string, Record<string, unknown>]];
+    assert.deepEqual(resolve.meetingInfo, { tenantId: 'ten', organizerId: 'org' });
+    assert.equal(resolve.callInvitation, undefined);
+    assert.deepEqual(call.groupChat, { threadId: '19:m@thread.v2', messageId: '0' });
+    assert.equal(((call.callInvitation as Record<string, unknown>).links as Record<string, unknown>).acceptance, 'https://t/callAgent/id1/id3/call/acceptance/');
+  });
+});
+

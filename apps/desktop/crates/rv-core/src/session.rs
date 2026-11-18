@@ -1067,11 +1067,11 @@ impl Session {
         }
     }
 
-    /// Whether a call can be started in this room: the server's calls, and on
-    /// Teams a chat only (a channel call needs a meeting this client cannot create).
+    /// Whether a call can be started in this room: the server's calls; any
+    /// Teams room.
     pub async fn room_callable(&self, rid: &str) -> bool {
-        if let Backend::Teams(teams) = self.backend() {
-            return teams.callable(rid);
+        if matches!(self.backend(), Backend::Teams(_)) {
+            return true;
         }
         if matches!(self.backend(), Backend::Mattermost(_)) && self.info.mattermost != Some(mattermost::Flavor::Kchat) {
             return self.call_available().await && mattermost::calls::enabled(&self.rest, rid).await;
@@ -2539,7 +2539,13 @@ impl Session {
 
     pub fn teams_call_possible(&self, rid: &str) -> bool {
         let Backend::Teams(teams) = self.backend() else { return false };
-        teams.call_targets(rid).is_some() && teams.call_route().is_some()
+        (teams.call_targets(rid).is_some() || teams.thread_call(rid)) && teams.call_route().is_some()
+    }
+
+    /// Whether this Teams room's call, started or joined, is its thread's own: a
+    /// channel's or a meeting's, which the app joins itself.
+    pub fn teams_thread_call(&self, rid: &str) -> bool {
+        matches!(self.backend(), Backend::Teams(teams) if teams.thread_call(rid))
     }
 
     /// Joins the huddle a call id names (starting it when none runs), for
@@ -2803,7 +2809,7 @@ impl Session {
     }
 
     /// The Teams account's tenant, which the conversation links carry.
-    fn teams_tenant(&self) -> &str {
+    pub(crate) fn teams_tenant(&self) -> &str {
         self.info.teams.as_ref().map(|a| a.tenant_id.as_str()).unwrap_or_default()
     }
 

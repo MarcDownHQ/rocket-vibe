@@ -3988,10 +3988,11 @@ impl ChatPage {
             return self.open_plugin_call(url, room);
         }
         if let Some(session) = self.session().filter(|s| s.info.teams.is_some()) {
-            // Starting a call in a chat runs natively; joining one keeps Teams' page.
+            // Starting a call in a chat runs natively, and any call of a channel or a
+            // meeting chat; joining a chat's running call keeps Teams' page.
             let room_id = self.current_rid().filter(|rid| {
                 rv_core::voice::available()
-                    && rv_core::teams::translate::is_call_start(url)
+                    && (rv_core::teams::translate::is_call_start(url) || session.teams_thread_call(rid))
                     && session.teams_call_possible(rid)
             });
             if let Some(rid) = room_id {

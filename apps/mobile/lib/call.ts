@@ -159,6 +159,11 @@ export async function placeNative(client: RestClient, room: string, engine: Exte
   return true;
 }
 
+/** Whether any call of this room, started or joined, is its own one `placeNative` joins (a Teams channel's or meeting's). */
+export function joinsInRoomNative(client: RestClient, room: string): boolean {
+  return bindings.get(client)?.calls?.joinsInRoom?.(room) === true;
+}
+
 /** Whether the call ringing in this room can be answered on the voice engine (Teams). */
 export function answerableNative(client: RestClient, room: string): boolean {
   return bindings.get(client)?.calls?.answerable?.(room) === true;

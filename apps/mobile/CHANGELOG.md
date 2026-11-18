@@ -9,6 +9,7 @@ release, and its notes are that version's section here.
 
 ### Added
 
+- Teams (experimental): calls in channels and meeting chats run in the app, audio only: the call button and a call card's Join join the call already running there, or the meeting, and a channel with no call starts one. Teams' page stays the fallback.
 - Voice: speaking with the microphone off in a voice room shows a reminder that you are muted (nothing is sent).
 - WhatsApp (experimental): calls ring in the app, and a 1:1 call is answered and placed inside it, audio only; video and group calls stay on the phone.
 - Teams (experimental): an incoming call is answered inside the app, audio only, when Teams sends its offer with the ring; its page stays the fallback.

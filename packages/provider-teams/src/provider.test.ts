@@ -356,7 +356,7 @@ test('a call opens the conversation in Teams: a channel through its Graph group,
   assert.equal(TEAMS_CAPABILITIES.videoCall, true);
 });
 
-test('starting a call in a chat rings its people by sign-in name; a channel offers none', async () => {
+test('starting a call in a chat rings its people by sign-in name; a channel has its own call', async () => {
   const chat = '19:aa_me@unq.gbl.spaces';
   const { client } = fake((call) => {
     if (call.url.includes('fetchShortProfile')) {
@@ -370,7 +370,7 @@ test('starting a call in a chat rings its people by sign-in name; a channel offe
   const teams = teamsCalls(client, rooms, 'tenant-1', '8:orgid:me');
   assert.equal(await teams.start(chat, null, () => true), 'https://teams.microsoft.com/l/call/0/0?users=ada%40contoso.com&login_hint=me%40contoso.com');
   assert.equal(await teams.available(chat), true);
-  assert.equal(await teams.available('19:ch@thread.tacv2'), false);
+  assert.equal(await teams.available('19:ch@thread.tacv2'), true);
   const link = 'https://teams.microsoft.com/l/call/0/0?users=ada%40contoso.com';
   assert.equal(await teams.join(link, {}, () => true), link, 'a started call\'s link is opened as it is');
   await assert.rejects(teams.join('https://evil.example/l/call', {}, () => true));

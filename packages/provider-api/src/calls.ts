@@ -46,6 +46,8 @@ export type NativeCalls={
   mattermost?:(id:string)=>Promise<MattermostCallCredentials>;
   /** Whether this room's call can run on the voice engine with `placeExternal`. */
   placeable?:(room:string)=>boolean;
+  /** Whether any call of this room, started or joined, is its own one `placeExternal` joins (a Teams channel's or meeting's). */
+  joinsInRoom?:(room:string)=>boolean;
   /** Places this room's call on the engine: resolves once the provider took it. */
   placeExternal?:(room:string,engine:ExternalCallEngine)=>Promise<void>;
   /** Whether the call ringing in this room can be answered on the voice engine. */

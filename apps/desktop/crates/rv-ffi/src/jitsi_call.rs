@@ -20,7 +20,8 @@ pub struct JitsiCallSession {
     asked: Mutex<HashSet<String>>,
 }
 
-/// Places a native Teams call in this chat; None to open Teams' page instead.
+/// Places a native Teams call in this chat, or joins a channel's or a meeting's;
+/// None to open Teams' page instead.
 pub(crate) async fn start_teams(session: Arc<Session>, rid: String, title: String) -> Option<Arc<JitsiCallSession>> {
     if !rv_core::voice::available() || !session.teams_call_possible(&rid) {
         return None;

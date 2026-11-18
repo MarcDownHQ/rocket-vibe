@@ -23,7 +23,8 @@ final class CallWindow: NSObject, WKUIDelegate, WKNavigationDelegate, NSWindowDe
     /// the cookie it goes to the browser, signed in there.
     /// A Jitsi Meet or kMeet meeting runs natively first (`NativeCallWindow`,
     /// `displayName` its name there); its page opens when that cannot be done.
-    /// A Teams call started in a chat (`teamsRoom`) runs natively first too.
+    /// A Teams call started in a chat (`teamsRoom`), or any call of a channel or
+    /// a meeting chat, runs natively first too.
     static func show(_ url: URL, title: String, slackCookie: String? = nil, displayName: String? = nil, chat: Chat? = nil, teamsRoom: String? = nil) {
         // A Mattermost Calls plugin call runs natively only: it has no page.
         if url.scheme == "mmcalls" {

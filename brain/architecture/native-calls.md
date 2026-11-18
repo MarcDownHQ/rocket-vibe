@@ -436,7 +436,7 @@ meetings with video (2 to 3 months more).
 ran 3 minutes (2026-11-07). The `a=mid` rewrite for hold and resume is in place but not yet run with a person. The media server connects before the callee answers, so `connected`
   comes while it rings (the window shows "waiting" until someone else is in the roster). **Not run**: hold and resume after the
   `a=mid` fix; a group chat's call; another network; SwiftUI (macOS CI only), Android on a
-  device (Kotlin compiled only). **Owed**: meetings, channels.
+  device (Kotlin compiled only). Channels and meetings: below.
 - **Answering an incoming call** (2026-11-11, from `teams.cloud.microsoft_call_in.har`): the ring
   push (`evt` 107, `gp`) carries the caller's offer (`callNotification.mediaContent.blob`, its
   `mediaLegId`), the `attach` link and the conversation's controller (`frames::Answering`, kept per
@@ -454,6 +454,24 @@ ran 3 minutes (2026-11-07). The `a=mid` rewrite for hold and resume is in place 
   (`answerExternalCall`, `connectExternal(..., answering)`); SwiftUI from the foreground prompt only
   (a background account's ring still opens the page). `callKeepAliveInterval` (2700 s) is
   unexplained: no capture shows what it wants, so a call past 45 minutes may end.
+- **Channels and meeting chats** (2026-11-18, from `teams.cloud.microsoft_channelmeeting.har` and
+  `teams.cloud.microsoft_calendarmeeting.har`): their call is the thread's own, joined rather than rung
+  (`TeamsSync::thread_call`, Android `joinsInRoom`), from the call button and a call card's Join alike.
+  The thread's document (`threads/<id>?threadProperties=1`) names it: a running call in
+  `awareness_conversationLiveState:<n>` (a JSON string, `status: Active`, `meetingInfo {organizerId,
+  tenantId}`, else `groupCallInitiator`), else the meeting chat's `meeting` (`organizerId`, `tenantId`,
+  `meetingJoinUrl` whose last segment is the message, `0` for a Meet now); `calling::meeting_join`.
+  **Joining** is two POSTs, as Teams' web client does: `epconv` with `conversationRequest` (no
+  `callInvitation`), `groupChat {threadId, messageId}` and `meetingInfo {tenantId, organizerId}` resolves
+  the conversation (`join_meeting`, answering its `conversationController`), then that controller takes the
+  same join with `participants.to: []` and the `callInvitation` (`join_meeting_call`), answering the call's
+  links (`subscribe`, `leave`, `updateEndpointMetadata`); the call then runs as a placed one. A channel with
+  no running call **starts** one in a single `epconv`: `conversationType: huddleGroupCall`,
+  `suppressDialout: true`, `groupChat {threadId, messageId: null}`, `to: []` (Teams' web client also lists
+  the channel's people with `invitationType: nudge`; not sent). A channel's call is keyed `messageId: 0`:
+  Teams' own rejoin used it. A meeting chat with neither, or any failure, keeps Teams' page. **Not yet run
+  live**: whether the meeting's media server answers by `call/acceptance/` as a person does, a lobby, the
+  roster of a large meeting.
 
 ### Long calls: what ended them, and recovery (2026-11-05)
 
@@ -598,10 +616,11 @@ Teams meetings and video last.
   Useful later: a huddle with a second participant's camera or a screen share (video
   subscription, the `ScreenSharingUrl` socket) and a `LEAVE`. A huddle opens in its own
   window: Chrome's DevTools setting "Auto-open DevTools for popups" catches it from the start.
-- **Teams**: what `callKeepAliveInterval` wants of a call past 45 minutes; a meeting join
-  (`meetingInfo`); a webrtc-internals dump of a Teams call (the `x-data` channel's messages).
-  The outgoing call's answer was read live (2026-11-06), the auth audience, its creating
-  request and screen sharing captured (2026-11-02).
+- **Teams**: what `callKeepAliveInterval` wants of a call past 45 minutes; a webrtc-internals
+  dump of a Teams call (the `x-data` channel's messages); the pushes of a meeting join (the HARs of
+  2026-11-18 hold its requests, not the socket). The outgoing call's answer was read live
+  (2026-11-06), the auth audience, its creating request and screen sharing captured (2026-11-02),
+  a meeting join and a channel call (2026-11-18).
 
 ## Sources
 

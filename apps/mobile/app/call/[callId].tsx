@@ -15,7 +15,7 @@ import { WebView } from 'react-native-webview';
 
 import { callAllowed as teamsCallAllowed } from '@rocket-vibe/provider-teams/translate';
 import type { ExternalCallEngine, PcmCallEngine } from '@rocket-vibe/provider-api/calls';
-import { answerNative, answerableNative, callContext, callPersonName, carriesPcm, carryNative, joinConference, nativeChime, nativeJitsi, nativeMattermost, placeNative } from '../../lib/call.ts';
+import { answerNative, answerableNative, callContext, callPersonName, carriesPcm, carryNative, joinConference, joinsInRoomNative, nativeChime, nativeJitsi, nativeMattermost, placeNative } from '../../lib/call.ts';
 import { sameOrigin, originOf } from '../../lib/origin.ts';
 import { VoiceNative, type VoiceSnapshot } from '../../modules/voice/index.ts';
 import type { RestClient } from '../../lib/rest.ts';
@@ -164,7 +164,7 @@ function Call({
     void (async () => {
       try {
         // A Slack huddle runs natively, else in Slack's app or the browser;
-        // Teams' calls stay here, on Teams' web app.
+        // Teams' calls the voice engine does not carry stay here, on Teams' web app.
         if (carriesPcm(client)) {
           if (await carriedNatively()) {
             if (alive) setNative(true);
@@ -208,10 +208,12 @@ function Call({
         if (alive) setError(t('call.joinFailed'));
       }
     })();
-    // A Teams call started here (its call link, not a Join) runs on the voice engine.
+    // A Teams call started here (its call link, not a Join), or any call of a
+    // channel or a meeting chat, runs on the voice engine.
     async function placedNatively(u: string): Promise<boolean> {
       const voice = VoiceNative;
-      if (pageOnly || voice === null || rid === undefined || !u.startsWith('https://teams.microsoft.com/l/call/')) return false;
+      if (pageOnly || voice === null || rid === undefined) return false;
+      if (!u.startsWith('https://teams.microsoft.com/l/call/') && !joinsInRoomNative(client, rid)) return false;
       try {
         await requestMicrophone();
         // Listening before the session opens: the offer can come at once.
