@@ -225,42 +225,158 @@ export type Caller = { mri: string; name: string; endpoint: string; participant:
 const callback = (c: Caller, path: string) => `${c.surl}callAgent/${c.endpoint}/${c.random}/${path}`;
 const fromOf = (c: Caller) => ({ id: c.mri, displayName: c.name, endpointId: c.endpoint, participantId: c.participant, languageId: 'en-us' });
 
-/** `epconv`'s body placing a call to `to`, a group's with its `thread`. */
-export function placeCallBody(c: Caller, to: readonly string[], thread: string | null, offer: string, target: string): Doc {
+const conversationRequest = (c: Caller, conversationType: string | null, suppressDialout: boolean): Doc => {
   const cb = (path: string) => callback(c, path);
   return {
-    conversationRequest: {
-      conversationType: null, subject: null, suppressDialout: false,
-      roster: { type: 'Delta', rosterUpdate: cb('conversation/rosterUpdate/') },
-      properties: { allowConversationWithoutHost: true, enableGroupCallEventMessages: true, enableGroupCallUpgradeMessage: false, enableGroupCallMeetupGeneration: false },
-      links: {
-        conversationEnd: cb('conversation/conversationEnd/'),
-        conversationUpdate: cb('conversation/conversationUpdate/'),
-        localParticipantUpdate: cb('conversation/localParticipantUpdate/'),
-        addParticipantSuccess: cb('conversation/addParticipantSuccess/'),
-        addParticipantFailure: cb('conversation/addParticipantFailure/'),
-        addModalitySuccess: cb('conversation/addModalitySuccess/'),
-        addModalityFailure: cb('conversation/addModalityFailure/'),
-        confirmUnmute: cb('conversation/confirmUnmute/'),
-        receiveMessage: cb('conversation/receiveMessage/'),
-      },
+    conversationType, subject: null, suppressDialout,
+    roster: { type: 'Delta', rosterUpdate: cb('conversation/rosterUpdate/') },
+    properties: { allowConversationWithoutHost: true, enableGroupCallEventMessages: true, enableGroupCallUpgradeMessage: false, enableGroupCallMeetupGeneration: false },
+    links: {
+      conversationEnd: cb('conversation/conversationEnd/'),
+      conversationUpdate: cb('conversation/conversationUpdate/'),
+      localParticipantUpdate: cb('conversation/localParticipantUpdate/'),
+      addParticipantSuccess: cb('conversation/addParticipantSuccess/'),
+      addParticipantFailure: cb('conversation/addParticipantFailure/'),
+      addModalitySuccess: cb('conversation/addModalitySuccess/'),
+      addModalityFailure: cb('conversation/addModalityFailure/'),
+      confirmUnmute: cb('conversation/confirmUnmute/'),
+      receiveMessage: cb('conversation/receiveMessage/'),
     },
+  };
+};
+
+const callInvitation = (c: Caller, offer: string): Doc => {
+  const cb = (path: string) => callback(c, path);
+  return {
+    callModalities: ['Audio'], replaces: null, transferor: null,
+    links: { progress: cb('call/progress/'), mediaAnswer: cb('call/mediaAnswer/'), acceptance: cb('call/acceptance/'), redirection: cb('call/redirection/'), end: cb('call/end/') },
+    clientContentForMediaController: { controlVideoStreaming: cb('call/controlVideoStreaming/'), csrcInfo: cb('call/csrcInfo/') },
+    pstnContent: { emergencyCallCountry: '', platformName: CALL_CLIENT, publicApiCall: false },
+    mediaContent: { blob: offer, contentType: 'application/sdp-ngc-1.0', requiredFeatures: 'nonByPass' },
+  };
+};
+
+const endpointState = (sequence: number): Doc => ({
+  endpointStateSequenceNumber: sequence,
+  endpointProperties: { additionalEndpointProperties: { infoShownInReportMode: 'FullInformation' } },
+});
+
+const ENDPOINT = { capabilities: null, endpointCapabilities: 73463, clientEndpointCapabilities: 114259690, endpointMetadata: { holographicCapabilities: 3 } };
+
+/** `epconv`'s body placing a call to `to`, a group's with its `thread`. */
+export function placeCallBody(c: Caller, to: readonly string[], thread: string | null, offer: string, target: string): Doc {
+  return {
+    conversationRequest: conversationRequest(c, null, false),
     groupContext: null,
     groupChat: thread === null ? null : { threadId: thread, messageId: null },
     participants: { from: fromOf(c), to: to.map((id) => ({ id, participantId: target })) },
-    capabilities: null,
-    endpointCapabilities: 73463,
-    clientEndpointCapabilities: 114259690,
-    endpointMetadata: { holographicCapabilities: 3 },
+    ...ENDPOINT,
     meetingInfo: null,
-    endpointState: { endpointStateSequenceNumber: 1, endpointProperties: { additionalEndpointProperties: { infoShownInReportMode: 'FullInformation' } } },
-    callInvitation: {
-      callModalities: ['Audio'], replaces: null, transferor: null,
-      links: { progress: cb('call/progress/'), mediaAnswer: cb('call/mediaAnswer/'), acceptance: cb('call/acceptance/'), redirection: cb('call/redirection/'), end: cb('call/end/') },
-      clientContentForMediaController: { controlVideoStreaming: cb('call/controlVideoStreaming/'), csrcInfo: cb('call/csrcInfo/') },
-      pstnContent: { emergencyCallCountry: '', platformName: CALL_CLIENT, publicApiCall: false },
-      mediaContent: { blob: offer, contentType: 'application/sdp-ngc-1.0', requiredFeatures: 'nonByPass' },
-    },
+    endpointState: endpointState(1),
+    callInvitation: callInvitation(c, offer),
+  };
+}
+
+/** `epconv`'s body starting a channel's call, as Teams' Meet in a channel does: it rings no one. */
+export function startChannelCallBody(c: Caller, thread: string, offer: string): Doc {
+  return {
+    conversationRequest: conversationRequest(c, 'huddleGroupCall', true),
+    groupContext: null,
+    groupChat: { threadId: thread, messageId: null },
+    participants: { from: fromOf(c), to: [] },
+    ...ENDPOINT,
+    meetingInfo: null,
+    endpointState: endpointState(1),
+    callInvitation: callInvitation(c, offer),
+  };
+}
+
+/** A meeting's call, or a channel's: its thread, the message it hangs off (`0` for the thread's own) and its organizer. */
+export type MeetingJoin = { thread: string; message: string; organizer: string; tenant: string };
+
+/**
+ * The call to join in a thread, from its threads document (`threadProperties=1`):
+ * the one running (`awareness_conversationLiveState:*`, `Active`), else the
+ * thread's meeting (`meeting`); null when it has neither. Mirrors `meeting_join`
+ * in `crates/rv-teams/src/calling.rs`.
+ */
+export function meetingJoin(doc: Doc, thread: string, tenant: string): MeetingJoin | null {
+  const properties = (doc.properties ?? doc.threadProperties) as Doc | undefined;
+  if (typeof properties !== 'object' || properties === null) return null;
+  const parsed = (v: unknown): Doc | null => {
+    if (typeof v === 'object' && v !== null && !Array.isArray(v)) return v as Doc;
+    if (typeof v !== 'string') return null;
+    try {
+      const value: unknown = JSON.parse(v);
+      return typeof value === 'object' && value !== null && !Array.isArray(value) ? value as Doc : null;
+    } catch {
+      return null;
+    }
+  };
+  const text = (d: Doc | null | undefined, key: string) => {
+    const v = d?.[key];
+    return typeof v === 'string' && v !== '' ? v : null;
+  };
+  const live = Object.entries(properties)
+    .filter(([key]) => key.startsWith('awareness_conversationLiveState'))
+    .map(([, v]) => parsed(v))
+    .find((state) => state?.status === 'Active') ?? null;
+  const meeting = parsed(properties.meeting);
+  let organizer: string | null;
+  let tenantId: string | null;
+  let message: string | null = null;
+  if (live !== null) {
+    const info = parsed(live.meetingInfo);
+    const initiator = text(live, 'groupCallInitiator');
+    organizer = text(info, 'organizerId') ?? (initiator?.startsWith('8:orgid:') ? initiator.slice(8) : null);
+    tenantId = text(info, 'tenantId');
+  } else if (meeting !== null) {
+    organizer = text(meeting, 'organizerId');
+    tenantId = text(meeting, 'tenantId');
+    const link = text(meeting, 'meetingJoinUrl');
+    message = link === null ? null : joinMessage(link);
+  } else return null;
+  if (organizer === null || organizer === '') return null;
+  return { thread, message: message ?? '0', organizer, tenant: tenantId ?? tenant };
+}
+
+/** The message a meeting link joins (`/l/meetup-join/<thread>/<message>`). */
+export function joinMessage(link: string): string | null {
+  let path: string[];
+  try {
+    path = new URL(link).pathname.split('/').filter((p) => p !== '');
+  } catch {
+    return null;
+  }
+  return path[0] === 'l' && path[1] === 'meetup-join' && (path[3] ?? '') !== '' ? path[3]! : null;
+}
+
+/** `epconv`'s body resolving a meeting's conversation, before its call is joined. */
+export function joinMeetingBody(c: Caller, join: MeetingJoin): Doc {
+  const { conversationType: _type, suppressDialout: _dialout, ...request } = conversationRequest(c, null, false);
+  return {
+    conversationRequest: request,
+    groupContext: null,
+    groupChat: { threadId: join.thread, messageId: join.message },
+    participants: { from: fromOf(c) },
+    ...ENDPOINT,
+    meetingInfo: { tenantId: join.tenant, organizerId: join.organizer },
+    endpointState: endpointState(0),
+  };
+}
+
+/** The conversation controller's body joining the meeting's call with this offer. */
+export function joinMeetingCallBody(c: Caller, join: MeetingJoin, offer: string): Doc {
+  return {
+    conversationRequest: conversationRequest(c, null, true),
+    contentSharing: null,
+    participants: { from: fromOf(c), to: [] },
+    ...ENDPOINT,
+    groupContext: null,
+    groupChat: { threadId: join.thread, messageId: join.message },
+    meetingInfo: { organizerId: join.organizer, tenantId: join.tenant },
+    endpointState: endpointState(1),
+    callInvitation: callInvitation(c, offer),
   };
 }
 
@@ -321,6 +437,32 @@ export async function placeExternalCall(deps: CallDeps, engine: ExternalCallEngi
   let created: Doc;
   try {
     created = await deps.post(EPCONV, chain, placeCallBody(caller, to, thread, teamsOffer(offer), deps.id()));
+  } catch (error) {
+    pushes.stop();
+    throw error;
+  }
+  runCall(deps, engine, caller, chain, (created.links ?? {}) as Doc, pushes, null);
+}
+
+/**
+ * Joins a channel's or a meeting chat's call on `engine`, as Teams' web client
+ * does: `join` (the running call, else the meeting), or with none starts the
+ * channel's call. Resolves once Teams took it.
+ */
+export async function joinThreadCall(deps: CallDeps, engine: ExternalCallEngine, thread: string, join: MeetingJoin | null): Promise<void> {
+  const caller: Caller = { ...deps.me, endpoint: deps.id(), participant: deps.id(), surl: deps.surl, random: deps.id() };
+  const chain = deps.id();
+  await engine.start(caller.endpoint);
+  const offer = teamsOffer(await engine.offer());
+  const pushes = listen(deps);
+  let created: Doc;
+  try {
+    if (join === null) created = await deps.post(EPCONV, chain, startChannelCallBody(caller, thread, offer));
+    else {
+      const controller = (await deps.post(EPCONV, chain, joinMeetingBody(caller, join))).conversationController;
+      if (typeof controller !== 'string') throw new Error('call_join_failed');
+      created = await deps.post(controller, chain, joinMeetingCallBody(caller, join, offer));
+    }
   } catch (error) {
     pushes.stop();
     throw error;

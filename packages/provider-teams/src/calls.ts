@@ -1,17 +1,19 @@
 /**
- * Teams calls in the app's call screen, on Teams' web app, unless started in a
- * chat, which the voice engine carries itself (`calling.ts`). A call card's id is its start
- * message: Join opens a channel call's own join page (`meetupLink`, the
- * starter as organizer), a chat call's conversation page. Starting one in a
- * chat opens Teams' call link ringing its people by their sign-in names; a
- * channel offers no call (it needs a meeting this client cannot create). A
- * channel's page needs its team's Graph group id, from the aggregator entry
- * when it carries it; a chat's only the tenant. Mirrors `TeamsSync::call_url`
- * and `join_url` in `apps/desktop/crates/rv-core/src/teams/sync.rs`.
+ * Teams calls in the app's call screen. The voice engine carries itself
+ * (`calling.ts`) a call started in a chat and any call of a channel or a
+ * meeting chat (`joinsInRoom`): the call running there is joined, else the
+ * meeting's, and a channel with neither starts one. Anything else stays on
+ * Teams' web app. A call card's id is its start message: Join opens a channel
+ * call's own join page (`meetupLink`, the starter as organizer), a chat call's
+ * conversation page. Starting one in a chat opens Teams' call link ringing its
+ * people by their sign-in names. A channel's page needs its team's Graph group
+ * id, from the aggregator entry when it carries it; a chat's only the tenant.
+ * Mirrors `TeamsSync::call_url` and `join_url` in
+ * `apps/desktop/crates/rv-core/src/teams/sync.rs`.
  */
 
 import type { ExternalCallEngine, NativeCalls } from '@rocket-vibe/provider-api/calls';
-import { answerExternalCall, placeExternalCall, type TeamsAnswering } from './calling.ts';
+import { answerExternalCall, joinThreadCall, meetingJoin, placeExternalCall, type TeamsAnswering } from './calling.ts';
 import type { TeamsClient } from './client.ts';
 import type { TeamsRooms } from './sync.ts';
 import { callAllowed, callLink, callPeople, channelLink, chatLink, meetupLink, mriOf, objectId, splitId, str } from './translate.ts';
@@ -48,9 +50,14 @@ export function teamsCalls(client: TeamsClient, rooms: TeamsRooms, tenant: strin
     const organizer = objectId(mriOf(str(start, 'from') ?? ''));
     return organizer ? meetupLink(call.rid, call.server, tenant, organizer) : url(call.rid);
   };
+  // A channel's or a meeting chat's call is the thread's own: joined, never rung.
+  const threadCall = (rid: string): boolean => {
+    const known = rooms.entries.get(rid);
+    return known !== undefined && (Boolean(known.team) || str(known.entry, 'chatType') === 'meeting');
+  };
   const ring = async (rid: string): Promise<string | null> => {
     const known = rooms.entries.get(rid);
-    if (!known || known.team) return null;
+    if (!known || threadCall(rid)) return null;
     const people = callPeople(me, known.entry);
     if (people.length === 0) return null;
     const rows = await client.profiles([...people, me]).catch(() => []);
@@ -77,11 +84,19 @@ export function teamsCalls(client: TeamsClient, rooms: TeamsRooms, tenant: strin
     surl,
   });
   const external = socket === undefined ? {} : {
-    placeable: (room: string) => targets(room) !== null && socket.route() !== null,
+    placeable: (room: string) => (threadCall(room) || targets(room) !== null) && socket.route() !== null,
+    joinsInRoom: threadCall,
     placeExternal: async (room: string, engine: ExternalCallEngine) => {
-      const target = targets(room);
       const surl = socket.route();
-      if (target === null || surl === null) throw new Error('call_not_placeable');
+      if (surl === null) throw new Error('call_not_placeable');
+      if (threadCall(room)) {
+        const join = meetingJoin(await client.roster(room), room, tenant);
+        if (join === null && !rooms.entries.get(room)?.team) throw new Error('call_not_placeable');
+        await joinThreadCall(deps(surl, socket), engine, room, join);
+        return;
+      }
+      const target = targets(room);
+      if (target === null) throw new Error('call_not_placeable');
       await placeExternalCall(deps(surl, socket), engine, target.people, target.thread);
     },
     answerable: (room: string) => socket.answerable?.has(room) === true && socket.route() !== null,
@@ -95,7 +110,7 @@ export function teamsCalls(client: TeamsClient, rooms: TeamsRooms, tenant: strin
   };
   return {
     ...external,
-    available: async (room) => !(room !== undefined && rooms.entries.get(room)?.team),
+    available: async () => true,
     memo: () => true,
     start: async (room) => (await ring(room)) ?? url(room),
     join: async (id) => join(id),
