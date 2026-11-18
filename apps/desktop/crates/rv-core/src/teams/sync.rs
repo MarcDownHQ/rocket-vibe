@@ -719,7 +719,7 @@ impl TeamsSync {
     /// Where starting a call goes: a chat's call link ringing its people,
     /// else the conversation's page.
     pub async fn call_url(&self, rid: &str, tenant: &str) -> Result<String, RestError> {
-        if self.callable(rid)
+        if !self.thread_call(rid)
             && let Some(url) = self.ring_url(rid).await
         {
             return Ok(url);
@@ -785,10 +785,14 @@ impl TeamsSync {
         uri.strip_suffix("unifiedPresenceService").map(str::to_owned)
     }
 
-    /// Whether a call can be started in a room: a chat. A channel call needs
-    /// a meeting this client cannot create.
-    pub fn callable(&self, rid: &str) -> bool {
-        self.team_of(rid).is_none()
+    /// Whether a room's call is its thread's own, joined rather than rung: a
+    /// channel's or a meeting chat's.
+    pub fn thread_call(&self, rid: &str) -> bool {
+        self.entries
+            .lock()
+            .unwrap()
+            .get(rid)
+            .is_some_and(|(entry, team)| team.is_some() || str_of(entry, "chatType") == Some("meeting"))
     }
 
     /// Where a call card's Join goes: a channel call's own join page, built from

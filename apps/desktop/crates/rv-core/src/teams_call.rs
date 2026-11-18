@@ -74,6 +74,11 @@ impl Session {
         if let Target::Incoming(rid) = &target {
             return self.answer_teams_call(voice, rid, route, label).await;
         }
+        if let Target::Room(rid) = &target
+            && teams.thread_call(rid)
+        {
+            return self.join_thread_call(voice, rid, route, label).await;
+        }
         let (to, thread) = match &target {
             Target::Incoming(_) => unreachable!("answered above"),
             Target::TestCall => (Vec::new(), None),
@@ -120,6 +125,83 @@ impl Session {
         tokio::spawn(async move {
             let test = target == Target::TestCall;
             drive(&session, &voice, &identity, &created, test, None, &mut pushes).await;
+        });
+        Ok(())
+    }
+}
+
+impl Session {
+    /// Joins a channel's or a meeting chat's call on `voice`, as Teams' web client
+    /// does: the call running in the thread, else its meeting; a channel with
+    /// neither starts one. An error leaves nothing running.
+    async fn join_thread_call(
+        self: &Arc<Self>,
+        voice: &VoiceController,
+        rid: &str,
+        route: String,
+        label: &str,
+    ) -> Result<(), RestError> {
+        let Backend::Teams(teams) = self.backend() else { return Err(RestError::incomplete("call: not Teams")) };
+        let thread = teams.service.roster(rid).await?;
+        let join = calling::meeting_join(&thread, rid, self.teams_tenant());
+        if join.is_none() && teams.team_of(rid).is_none() {
+            return Err(RestError::incomplete("call: this meeting names no organizer"));
+        }
+        let identity = Identity {
+            mri: self.info.user_id.clone(),
+            name: self.info.username.clone(),
+            endpoint: calling::random_id(),
+            participant: calling::random_id(),
+            route,
+            random: calling::random_id(),
+            chain: calling::random_id(),
+        };
+        voice
+            .connect_external(label, &identity.endpoint)
+            .await
+            .map_err(|e| RestError::incomplete(&format!("call: {e}")))?;
+        let Some(offer) = voice.local_offer().await else {
+            voice.disconnect().await;
+            return Err(RestError::incomplete("call: no offer"));
+        };
+        let (chain, caller, offer) = (identity.chain.as_str(), identity.caller(), calling::teams_offer(&offer));
+        let mut pushes = self.teams_call_pushes.subscribe();
+        let created = match &join {
+            Some(join) => {
+                match teams.service.calling_post(calling::EPCONV, chain, &calling::join_meeting(&caller, join)).await {
+                    Ok(conversation) => match conversation.get("conversationController").and_then(Value::as_str) {
+                        Some(controller) => {
+                            teams
+                                .service
+                                .calling_post(controller, chain, &calling::join_meeting_call(&caller, join, &offer))
+                                .await
+                        }
+                        None => Err(RestError::incomplete("call: the meeting's conversation has no controller")),
+                    },
+                    Err(e) => Err(e),
+                }
+            }
+            None => {
+                teams
+                    .service
+                    .calling_post(calling::EPCONV, chain, &calling::start_channel_call(&caller, rid, &offer))
+                    .await
+            }
+        };
+        let created = match created {
+            Ok(created) => created,
+            Err(e) => {
+                voice.disconnect().await;
+                return Err(e);
+            }
+        };
+        if std::env::var("RV_CALL_DEBUG").as_deref() == Ok("1") {
+            eprintln!("teams call: {} {rid}", if join.is_some() { "joined the call of" } else { "started a call in" });
+        }
+        let session = self.clone();
+        let voice = voice.clone();
+        tokio::spawn(async move {
+            drive(&session, &voice, &identity, &created, false, None, &mut pushes).await;
         });
         Ok(())
     }

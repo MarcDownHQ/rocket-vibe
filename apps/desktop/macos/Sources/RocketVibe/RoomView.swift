@@ -1398,8 +1398,10 @@ struct CallCard: View {
                     let link = try? await model.joinCall(callId:callId)
                     guard !Task.isCancelled, expected == app.sessionId, model.membershipIsCurrent else { return }
                     if let link, let url = URL(string: link) {
-                        CallWindow.show(url, title: L("message.call"), slackCookie: model.provider.legacy?.huddleCookie(),
-                                        displayName: app.account?.username, chat: model.provider.legacy)
+                        let legacy = model.provider.legacy
+                        CallWindow.show(url, title: L("message.call"), slackCookie: legacy?.huddleCookie(),
+                                        displayName: app.account?.username, chat: legacy,
+                                        teamsRoom: legacy?.teamsThreadCall(rid: model.room.rid) == true ? model.room.rid : nil)
                     } else {
                         app.notice = L("call.failed")
                     }

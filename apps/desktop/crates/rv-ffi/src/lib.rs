@@ -676,6 +676,12 @@ impl Chat {
         jitsi_call::start_teams(self.session.clone(), rid, title).await
     }
 
+    /// Whether this Teams room's call, started or joined, runs natively: a
+    /// channel's or a meeting chat's (`start_teams_call` joins it).
+    pub fn teams_thread_call(&self, rid: String) -> bool {
+        self.session.teams_thread_call(&rid)
+    }
+
     pub fn is_slack(&self) -> bool {
         self.session.info.slack.is_some()
     }
