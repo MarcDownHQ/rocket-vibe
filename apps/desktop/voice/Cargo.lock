@@ -2960,14 +2960,14 @@ dependencies = [
 
 [[package]]
 name = "rv-screen-audio"
-version = "0.30.2"
+version = "0.31.0"
 dependencies = [
  "pipewire",
 ]
 
 [[package]]
 name = "rv-voice"
-version = "0.30.2"
+version = "0.31.0"
 dependencies = [
  "cpal",
  "futures-util",
@@ -2985,7 +2985,7 @@ dependencies = [
 
 [[package]]
 name = "rv-voice-protocol"
-version = "0.30.2"
+version = "0.31.0"
 dependencies = [
  "serde",
  "serde_json",
