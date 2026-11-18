@@ -617,8 +617,7 @@ test("stopping clears private scheduled state before asynchronous teardown", asy
 test("stopping forgets the account's thread totals and their pending read", async () => {
   const target = Object.assign(app(), {
     threadTotals: { unread_threads: "3", unread_mentions: "1" } as
-      | { unread_threads: string; unread_mentions: string }
-      | undefined,
+      { unread_threads: string; unread_mentions: string } | undefined,
     threadTotalsSeen: "account A cursor",
     threadTotalsTimer: "totals-timer" as string | undefined,
     voice: {

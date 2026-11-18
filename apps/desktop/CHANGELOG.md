@@ -7,6 +7,8 @@ section here.
 
 ## [Unreleased]
 
+## [0.31.0] - 2026-11-18
+
 ### Added
 
 - Teams (experimental): calls in channels and meeting chats run in the app, audio only, on GTK and macOS (SwiftUI): the call button and a call card's Join join the call already running there, or the meeting, and a channel with no call starts one. Teams' page stays the fallback.
@@ -1516,7 +1518,8 @@ the mobile app (see `docs/PARITY.md`).
   `rocketvibe://` links) and zip; a macOS app in a DMG, signed with a Developer ID and
   notarized by Apple.
 
-[Unreleased]: https://github.com/MarcDownHQ/rocket-vibe/compare/desktop-v0.30.2...HEAD
+[Unreleased]: https://github.com/MarcDownHQ/rocket-vibe/compare/desktop-v0.31.0...HEAD
+[0.31.0]: https://github.com/MarcDownHQ/rocket-vibe/compare/desktop-v0.30.2...desktop-v0.31.0
 [0.30.2]: https://github.com/MarcDownHQ/rocket-vibe/compare/desktop-v0.30.1...desktop-v0.30.2
 [0.30.1]: https://github.com/MarcDownHQ/rocket-vibe/compare/desktop-v0.30.0...desktop-v0.30.1
 [0.30.0]: https://github.com/MarcDownHQ/rocket-vibe/compare/desktop-v0.29.0...desktop-v0.30.0

@@ -11,6 +11,8 @@ first release: everything before it is under that section.
 
 ## [Unreleased]
 
+## [0.12.0] - 2026-11-18
+
 ### Added
 
 - The account's threads across its rooms, as the `thread_inbox` capability: `GET /api/v1/threads` (`filter=followed|unread`, paged by latest reply), `GET /api/v1/threads/totals` for a badge, and `POST /api/v1/threads/read` to mark every followed thread read, idempotent per operation and told to the account's other sessions. Plaintext threads only (`docs/protocol/THREADS.md`).
@@ -283,7 +285,8 @@ first release: everything before it is under that section.
 - Web client: Serialize call teardown before rejoining and ignore stale voice grants after leaving or signing out.
 - Web client: Restore drafts before enabling the editor so opening a fresh room cannot erase the first typed characters.
 
-[Unreleased]: https://github.com/MarcDownHQ/rocket-vibe/compare/vibez-v0.11.0...HEAD
+[Unreleased]: https://github.com/MarcDownHQ/rocket-vibe/compare/vibez-v0.12.0...HEAD
+[0.12.0]: https://github.com/MarcDownHQ/rocket-vibe/compare/vibez-v0.11.0...vibez-v0.12.0
 [0.11.0]: https://github.com/MarcDownHQ/rocket-vibe/compare/vibez-v0.10.1...vibez-v0.11.0
 [0.10.1]: https://github.com/MarcDownHQ/rocket-vibe/compare/vibez-v0.10.0...vibez-v0.10.1
 [0.10.0]: https://github.com/MarcDownHQ/rocket-vibe/compare/vibez-v0.9.0...vibez-v0.10.0
