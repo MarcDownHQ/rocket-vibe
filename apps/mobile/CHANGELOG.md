@@ -7,6 +7,8 @@ release, and its notes are that version's section here.
 
 ## [Unreleased]
 
+## [0.27.0] - 2026-11-18
+
 ### Added
 
 - Teams (experimental): calls in channels and meeting chats run in the app, audio only: the call button and a call card's Join join the call already running there, or the meeting, and a channel with no call starts one. Teams' page stays the fallback.
@@ -1011,7 +1013,8 @@ First published version: Android, for Rocket.Chat 8 or later.
 - Profiles, room info, my profile (status, photo, information).
 - Interface in French and English.
 
-[Unreleased]: https://github.com/MarcDownHQ/rocket-vibe/compare/mobile-v0.26.1...HEAD
+[Unreleased]: https://github.com/MarcDownHQ/rocket-vibe/compare/mobile-v0.27.0...HEAD
+[0.27.0]: https://github.com/MarcDownHQ/rocket-vibe/compare/mobile-v0.26.1...mobile-v0.27.0
 [0.26.1]: https://github.com/MarcDownHQ/rocket-vibe/compare/mobile-v0.26.0...mobile-v0.26.1
 [0.26.0]: https://github.com/MarcDownHQ/rocket-vibe/compare/mobile-v0.25.1...mobile-v0.26.0
 [0.25.1]: https://github.com/MarcDownHQ/rocket-vibe/compare/mobile-v0.25.0...mobile-v0.25.1
