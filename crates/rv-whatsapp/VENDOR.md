@@ -6,8 +6,8 @@ reshaped to rocket-vibe's architecture over time; the commits after the vendorin
 what changed.
 
 The whatspec-generated artifacts (and the hand-written files upstream changed with them)
-were brought to upstream `aab35eb4` (2026-11-01, WhatsApp Web 2.3000.1052559453, whatspec
-`ae38809`); the rest of the tree is still `d73c3cc1`. See `brain/architecture/canaries.md`,
+were brought to upstream `85ef0e29` (2026-11-16, WhatsApp Web 2.3000.1054751086, whatspec
+`2ff4453`); the rest of the tree is still `d73c3cc1`. See `brain/architecture/canaries.md`,
 "Regenerating", for how.
 
 Left out on purpose (`brain/decisions.md`, "WhatsApp in Rust"):
