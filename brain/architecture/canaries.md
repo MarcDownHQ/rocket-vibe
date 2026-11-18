@@ -27,7 +27,11 @@ Each check answers `ok`, `broken` or `notice`. `scripts/canaries/issues.mjs` kee
 
 ## Regenerating
 
-`wa.whatspec` breaks when whatspec publishes a new extraction. The generator, upstream's `tools/whatspec-codegen`, is not vendored (`crates/rv-whatsapp/VENDOR.md`), and its emitters carry review gates (a MEX document id, a retained proto field) that upstream updates by hand on each snapshot. So the path that held on 2026-11-01:
+`wa.whatspec` breaks when whatspec publishes a new extraction. The generator, upstream's `tools/whatspec-codegen`, is not vendored (`crates/rv-whatsapp/VENDOR.md`), and its emitters carry review gates (a MEX document id, a retained proto field) that upstream updates by hand on each snapshot.
+
+Upstream usually lands the extraction within a day as one commit, `feat(protocol): update WhatsApp snapshot to <version>`. When every generated file of the tree is byte-identical to that commit's parent (compare each with `git show <commit>^:<path>`), apply the commit's diff to those files and their companions (`git apply --directory=crates/rv-whatsapp`, leaving out `tools/`, `plugins/`, `agent_docs/`, `Cargo.lock` and upstream changes unrelated to the snapshot), merge by hand the few files the tree changed (retained fields in `waproto/build.rs`, the history whitelist in `src/features/group_history.rs`), then run the gate (step 5). Upstream's `committed_artifacts` test holds its committed files to the generator's output, so the result is what the generator would write. That held on 2026-11-18 (2.3000.1054751086, upstream `85ef0e29`).
+
+When the tree's generated files are not the parent's, or upstream has not landed the snapshot, regenerate. The path that held on 2026-11-01:
 
 1. Clone whatsapp-rust at the vendored base and lay over it the `tools/whatspec-codegen` diff of upstream's own snapshot commit (`feat(protocol): update WhatsApp snapshot …`), skipping the emitters and fixture checks of upstream parts the tree lacks.
 2. Run `cargo run -p whatspec-codegen -- --update-lock --rev <whatspec sha>` in a throwaway container (upstream's nightly toolchain plus `protobuf-compiler`), never on the host.
