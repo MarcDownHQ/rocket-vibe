@@ -37,18 +37,20 @@ class VoiceModule : Module() {
   private val listener: () -> Unit = { sendEvent("change", VoiceEngine.last) }
   private val levelListener: (Double) -> Unit = { level -> sendEvent("level", mapOf("level" to level)) }
   private val mutedSpeechListener: () -> Unit = { sendEvent("mutedSpeech", emptyMap<String, Any>()) }
+  private val videoDeclinedListener: () -> Unit = { sendEvent("videoDeclined", emptyMap<String, Any>()) }
   private val hangUpListener: () -> Unit = { sendEvent("hangUp", emptyMap<String, Any>()) }
   private val offerListener: (String) -> Unit = { sdp -> sendEvent("localOffer", mapOf("sdp" to sdp)) }
   private var consent: Promise? = null
 
   override fun definition() = ModuleDefinition {
     Name("Voice")
-    Events("change", "level", "hangUp", "localOffer", "mutedSpeech")
+    Events("change", "level", "hangUp", "localOffer", "mutedSpeech", "videoDeclined")
     OnCreate {
       VoiceEngine.attach(appContext.reactContext ?: throw IllegalStateException("No React context"))
       VoiceEngine.listen(listener)
       VoiceEngine.listenLevel(levelListener)
       VoiceEngine.listenMutedSpeech(mutedSpeechListener)
+      VoiceEngine.listenVideoDeclined(videoDeclinedListener)
       CallService.listen(hangUpListener)
       VoiceEngine.onLocalOffer = offerListener
     }
@@ -56,6 +58,7 @@ class VoiceModule : Module() {
       VoiceEngine.unlisten(listener)
       VoiceEngine.unlistenLevel(levelListener)
       VoiceEngine.unlistenMutedSpeech(mutedSpeechListener)
+      VoiceEngine.unlistenVideoDeclined(videoDeclinedListener)
       CallService.unlisten(hangUpListener)
       VoiceEngine.onLocalOffer = null
     }

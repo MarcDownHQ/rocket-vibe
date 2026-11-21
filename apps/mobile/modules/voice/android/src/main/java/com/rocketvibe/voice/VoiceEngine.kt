@@ -116,6 +116,9 @@ object VoiceEngine {
   private val mutedSpeechListeners = CopyOnWriteArraySet<() -> Unit>()
   fun listenMutedSpeech(listener: () -> Unit) { mutedSpeechListeners.add(listener) }
   fun unlistenMutedSpeech(listener: () -> Unit) { mutedSpeechListeners.remove(listener) }
+  private val videoDeclinedListeners = CopyOnWriteArraySet<() -> Unit>()
+  fun listenVideoDeclined(listener: () -> Unit) { videoDeclinedListeners.add(listener) }
+  fun unlistenVideoDeclined(listener: () -> Unit) { videoDeclinedListeners.remove(listener) }
   private val mainThread = android.os.Handler(android.os.Looper.getMainLooper())
   private val mutedMonitor = MutedMonitor { mainThread.post { mutedSpeechListeners.forEach { it() } } }
 
@@ -574,7 +577,7 @@ object VoiceEngine {
 
   var onLocalOffer: ((String) -> Unit)? = null
 
-  /** A call whose audio the app's WhatsApp engine carries (its socket at `address`), audio only. */
+  /** A call the app's WhatsApp engine carries (its socket at `address`): its audio, and its video beside it. */
   fun connectPcm(callId: String, address: String, title: String): Boolean =
     connectNative(callId, title) { it.startPcm(address) }
 
@@ -602,6 +605,14 @@ object VoiceEngine {
     session.onScreenStopped = {
       if (jitsi === session && sharing) {
         unproject()
+        changed()
+      }
+    }
+    session.onVideoRefused = {
+      if (jitsi === session) {
+        camera = false
+        unproject()
+        videoDeclinedListeners.forEach { it() }
         changed()
       }
     }

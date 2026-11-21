@@ -53,7 +53,10 @@ type Bridge={
    */
   /** `answering`: the other side offers first ([`remoteOffer`]), no local offer. */
   connectExternal(callId:string,identity:string,title:string,answering:boolean):Promise<boolean>;
-  /** A call whose audio the app's WhatsApp engine carries (its socket at `address`, `host:port#token`), audio only. False when this build cannot. */
+  /**
+   * A call the app's WhatsApp engine carries (its socket at `address`, `host:port#token`): its audio,
+   * and its camera or screen both ways when the engine takes a video connection. False when this build cannot.
+   */
   connectPcm(callId:string,address:string,title:string):Promise<boolean>;
   remoteAnswer(sdp:string):Promise<void>;
   /** Answers an offer from the other side of such a call (a hold, a resume): the local answer, null when it cannot. */
@@ -100,6 +103,8 @@ type Bridge={
   addListener(event:'mutedSpeech',listener:()=>void):{remove:()=>void};
   /** The microphone's level, 0 to 1, about ten times a second while connected. */
   addListener(event:'level',listener:(event:{level:number})=>void):{remove:()=>void};
+  /** The other side of a WhatsApp call refused, or let lapse, the switch to video this side asked for: camera and screen are off. */
+  addListener(event:'videoDeclined',listener:()=>void):{remove:()=>void};
 };
 /**
  * LiveKit audio in a microphone foreground service (Android). Absent from a

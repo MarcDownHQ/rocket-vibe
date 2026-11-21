@@ -150,13 +150,18 @@ internal class JitsiSession(
 
   /** A call carried as raw PCM by the app's WhatsApp engine: its socket, while it runs. */
   @Volatile private var pcm: java.net.Socket? = null
+  /** That call's video connection, when the engine takes one. */
+  @Volatile private var pcmVideo: PcmVideo? = null
+  /** The peer refused the video this side asked for: the captures are already off. */
+  var onVideoRefused: (() -> Unit)? = null
 
   /**
    * A call whose audio another part of the app carries (a WhatsApp call, the
    * engine's socket at `address`, `host:port#token`): 16 kHz mono in 60 ms
    * frames of 960 little-endian samples both ways, recorded and played here
    * with the phone's echo canceller. Who is in it comes with [remoteRoster];
-   * the socket closing ends it.
+   * the socket closing ends it. A second connection carries the camera or
+   * screen both ways ([PcmVideo]).
    */
   fun startPcm(address: String): Boolean {
     val hostPort = address.substringBefore('#')
@@ -180,6 +185,7 @@ internal class JitsiSession(
     val output = socket.getOutputStream()
     val input = java.io.DataInputStream(socket.getInputStream())
     runCatching { output.write("$token\n".toByteArray()); output.flush() }
+    openPcmVideo(host, port, token)
     val inBuffer = maxOf(android.media.AudioRecord.getMinBufferSize(rate, android.media.AudioFormat.CHANNEL_IN_MONO, android.media.AudioFormat.ENCODING_PCM_16BIT), samples * 2 * 2)
     val record = runCatching {
       android.media.AudioRecord(android.media.MediaRecorder.AudioSource.VOICE_COMMUNICATION, rate,
@@ -246,11 +252,34 @@ internal class JitsiSession(
       player.write(frame, 0, samples)
     }
     runCatching { socket.close() }
+    pcmVideo?.close()
     sender.join(1_000)
     record.stop(); record.release(); echo?.release(); noise?.release()
     player.stop(); player.release()
     pcm = null
     main.post { if (!closed) onEnd("remote_ended") }
+  }
+
+  private fun openPcmVideo(host: String, port: Int, token: String) {
+    // The encoder's and the views' buffers live in WebRTC's native library.
+    runCatching { PeerConnectionFactory.initialize(PeerConnectionFactory.InitializationOptions.builder(app).createInitializationOptions()) }
+      .onFailure { return }
+    val video = PcmVideo.open(host, port, token, onChange = { main.post { if (!closed) onChange() } }, onRefused = {
+      main.post {
+        if (closed || (captures[CAMERA] == null && captures[SCREEN] == null)) return@post
+        captures.remove(CAMERA)?.stop()
+        captures.remove(SCREEN)?.stop()
+        syncVideo()
+        onVideoRefused?.invoke()
+      }
+    }) ?: return
+    main.post {
+      if (closed) return@post video.close()
+      pcmVideo = video
+      canCamera = true
+      canScreen = true
+      onChange()
+    }
   }
 
   /** Joins on a thread of its own; false at once when the library is missing. */
@@ -546,6 +575,10 @@ internal class JitsiSession(
 
   /** This side's video on the peer connection, then the provider told what is sent. */
   private fun syncVideo() {
+    pcmVideo?.let { video ->
+      video.send(captures[SCREEN] ?: captures[CAMERA], captures[SCREEN] != null)
+      return onChange()
+    }
     if (pc == null) return onChange()
     attachVideo()
     val now = (localTracks[CAMERA] != null) to (localTracks[SCREEN] != null)
@@ -606,6 +639,9 @@ internal class JitsiSession(
   fun videoFeed(identity: String, screen: Boolean): VideoFeed? {
     val kind = if (screen) SCREEN else CAMERA
     if (identity == localId) return captures[kind]
+    pcmVideo?.let { video ->
+      return if (!screen && video.showing && identity == roster.keys.firstOrNull()) video.feed else null
+    }
     val id = shown().entries.firstOrNull { it.value.member == identity && it.value.kind == kind }?.key ?: return null
     return remoteVideos[id]?.second?.let { RtcFeed(it) }
   }
@@ -783,6 +819,7 @@ internal class JitsiSession(
       "camera" to (captures[CAMERA] != null), "screen" to (captures[SCREEN] != null),
     )
     val sent = shown().values
+    val peerPicture = pcmVideo?.showing == true
     return listOf(local) + roster.map { (id, value) ->
       // One mixed stream and one person: its loudness is theirs.
       val source = if (roster.size == 1 && heard[id] == null && levels[id] == null) mixed ?: id else id
@@ -790,7 +827,7 @@ internal class JitsiSession(
         "identity" to id, "name" to value.first, "muted" to value.second, "deafened" to false,
         "speaking" to (!value.second && (heard[source]?.let { now - it < HANGOVER_MS } ?: false)),
         "level" to (levels[source] ?: 0.0), "local" to false,
-        "camera" to sent.any { it.member == id && it.kind == CAMERA }, "screen" to sent.any { it.member == id && it.kind == SCREEN },
+        "camera" to (peerPicture || sent.any { it.member == id && it.kind == CAMERA }), "screen" to sent.any { it.member == id && it.kind == SCREEN },
       )
     }
   }
@@ -810,6 +847,7 @@ internal class JitsiSession(
     if (closed) return
     closed = true
     runCatching { pcm?.close() }
+    pcmVideo?.close()
     dropMedia()
     captures.values.forEach { it.stop() }
     captures.clear()
