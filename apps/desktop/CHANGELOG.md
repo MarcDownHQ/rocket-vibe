@@ -11,6 +11,7 @@ section here.
 
 - Calls inside the app (Rocket.Chat's Jitsi, kChat's kMeet, Mattermost's Calls plugin) show the others' cameras and shared screens: a camera fills its person's tile, a shared screen takes the window's stage with the people below it. Your camera (Linux, Windows) and your screen go out too, where the server takes them (Mattermost: a screen, and a camera when the plugin enables video).
 - The call window opens the chat of the call's room beside the call, from a button in its header (GTK, macOS).
+- WhatsApp (experimental): video in 1:1 calls inside the app. A video call is answered there too, your camera off until you turn it on; the other person's camera shows, and your camera or your screen goes out, asking them to switch to video first in a voice call. Group calls stay on the phone.
 
 ## [0.31.0] - 2026-11-18
 

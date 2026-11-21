@@ -62,9 +62,12 @@ A call started in a chat, and any call of a channel or a meeting chat (the one r
 The native call window (GTK `native_call.rs`, SwiftUI `NativeCallWindow.swift`) shows the others'
 cameras in their tiles and a shared screen on a stage, and sends this side's camera (not on macOS:
 the sidecar captures none there) and screen where the provider takes them: Jitsi and kMeet both,
-Mattermost's Calls plugin a screen, and a camera where the plugin enables video. Huddles, Teams and
-WhatsApp stay audio only. A header button opens the chat of the call's room beside the call. Android
-owes both. Mechanism: [native calls](../architecture/native-calls.md#video-in-native-calls-2026-11-12).
+Mattermost's Calls plugin a screen, and a camera where the plugin enables video. A WhatsApp call
+(GTK) shows the peer's camera and sends this side's camera or screen as its one picture, the camera off
+until turned on; a video call is answered in the app. Huddles and Teams stay audio only. A header
+button opens the chat of the call's room beside the call. Android owes both. Mechanism:
+[native calls](../architecture/native-calls.md#video-in-native-calls-2026-11-12), and for WhatsApp
+[its video](../architecture/native-calls.md#whatsapp-11-calls-video-2026-11-21).
 
 ## Mattermost (Calls plugin)
 

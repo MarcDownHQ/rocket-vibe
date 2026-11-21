@@ -622,8 +622,8 @@ then run on the bench. kChat has no such plugin: its calls stay kMeet's.
   (`native_call::Opened::chat`); SwiftUI the room's `MessageList` and `Composer` on a `RoomModel` of
   its own (`AppModel::callChat`).
 - **Owed**: Android (video and the chat button); Chime (video subscription, the screen-share socket),
-  Teams (video m-lines, the `x-data` subscriptions, screen-share renegotiation captured but not built),
-  WhatsApp (its video codec); the plugin's `MediaMap`.
+  Teams (video m-lines, the `x-data` subscriptions, screen-share renegotiation captured but not built);
+  the plugin's `MediaMap`. WhatsApp's video has its own path, below.
 
 ### WhatsApp 1:1 calls, audio (2026-11-11)
 
@@ -655,7 +655,39 @@ so a peer's standard Opus or CELT escape frames are not decoded). Its audio is P
   `WhatsAppChat.answerCall` / `startCall`), shown in `NativeCallWindow`; background accounts ring
   through `background.rs` `rings`, whose `phone_only` keeps "Answer on the phone".
 - **Not run**: a call with a phone, either way, on any app.
-  Group and video calls (built in the library) are not offered.
+  Group calls (built in the library) are not offered.
+
+### WhatsApp 1:1 calls, video (2026-11-21)
+
+whatsapp-rust carries video as H.264 access units (Annex-B, Constrained Baseline, RFC 6184 packets,
+FEC, PLI) and leaves the codec to its consumer (`src/voip/video.rs`). In a 1:1 call there is one
+picture each way: the library's screen-share signalling is for group calls only, so a shared screen
+goes out as this side's video.
+
+- **The engine** (`engine/src/call_video.rs`): the call's socket takes a second connection,
+  `<token> video` as its first line (the audio one stays the bare token), then messages of a kind byte,
+  a little-endian `u32` length and a payload. From the app: a picture (`u32` 90 kHz timestamp, one
+  access unit), sending on or off, a keyframe request. To the app: the peer's picture (keyframe and
+  orientation bytes, timestamp, access unit), the peer sending on or off, a keyframe request, a refused
+  switch. A video call is answered with the library's video endpoints, then this side's direction is
+  stopped; the peer's switch to video (`UpgradeRequestV2`) is accepted the same way, so their picture
+  shows while the camera stays off. Sending on resumes this side's direction (`resume_video`) or asks the
+  peer to switch (`start_video`, state 11); a refusal or a lapse (`UpgradeReject`, `RejectByTimeout`)
+  comes back as refused. The call frames and rv-core are unchanged: the app knows the socket already.
+- **Desktop** (`voice/src/pcm_video.rs`, `h264.rs`): `run_pcm` opens the video connection and says
+  `CallVideo {camera, screen}`; the captures of `video.rs` hand their pictures to a tap (`Capture::tap`),
+  the screen's while shared, else the camera's, encoded at up to 1280x720 and 15 a second (0.8 Mb/s a
+  camera, 1.2 a screen, a keyframe every 3 s and on request). The codecs are libwebrtc's own: its
+  static library links OpenH264 2.6's encoder and FFmpeg's H.264 decoder on Linux, Windows and macOS
+  (not Android's), called directly with their structs laid out from the shipped headers (sizes checked at
+  compile time). The peer's pictures are decoded, turned by their orientation (quarter turns, clockwise)
+  and shown as their camera; a failing decoder asks for a keyframe at most once a second.
+  `video_declined` turns the captures off and rv-core's camera and screen wishes with them.
+- **Checked** (2026-11-21): the encoder's output decoded back at its size (`h264` tests); the real
+  sidecar against a stand-in engine echoing its pictures as the peer's (`~/.cache/rvtest/pcm-harness.py`,
+  outside the repo): about 15 pictures a second out, sending on then off, the echo decoded, turned and
+  shown under the peer's id. **Not run with a phone**: the orientation's direction, and what a phone
+  makes of the stream, are unverified.
 
 ## Order
 
