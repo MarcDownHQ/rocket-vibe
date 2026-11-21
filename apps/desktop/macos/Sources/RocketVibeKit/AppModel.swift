@@ -656,7 +656,7 @@ public final class AppModel {
         call.callerName ?? rooms.first { $0.rid == call.rid }?.name ?? ""
     }
 
-    /// A WhatsApp call this app cannot carry (video, group) is answered on the phone.
+    /// A WhatsApp call this app cannot carry (a group's) is answered on the phone.
     public func answeredOnPhone(_ call: RingingCall) -> Bool {
         whatsapp.map { !$0.callAnswerable(callId: call.callId) } ?? false
     }

@@ -59,7 +59,7 @@ pub struct BackgroundCall {
     pub voice: bool,
     /// The account is in do not disturb: the prompt shows without the ringtone.
     pub quiet: bool,
-    /// A WhatsApp call this app cannot carry (video, group): answered on the phone.
+    /// A WhatsApp call this app cannot carry (a group's): answered on the phone.
     pub phone_only: bool,
 }
 
@@ -276,7 +276,7 @@ mod rings {
                         account: account.clone(),
                         server: supervisor::server_label(&info),
                         rid: if call.group.is_empty() { call.from.clone() } else { call.group.clone() },
-                        phone_only: !rv_core::voice::available() || call.video || !call.group.is_empty(),
+                        phone_only: !rv_core::voice::available() || !call.group.is_empty(),
                         id: call.id,
                         caller,
                         voice: false,
