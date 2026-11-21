@@ -2151,7 +2151,7 @@ impl AppWindow {
                     let Some(this) = weak.upgrade() else { break };
                     match notice {
                         Notice::Ring(call, name) => {
-                            let carried = rv_core::voice::available() && !call.video && call.group.is_empty();
+                            let carried = rv_core::voice::available() && call.group.is_empty();
                             let answer = Answer::WhatsApp(session.clone(), carried.then(|| name.clone()));
                             this.ring_background(&info, call.id, &call.from, &name, answer, false);
                         }
