@@ -52,7 +52,7 @@ pub enum Command {
         e2ee_key: Option<String>,
     },
     /// Join a Jitsi Meet conference natively (Rocket.Chat's Jitsi provider, kChat's
-    /// kMeet): the sidecar speaks its signalling itself (rv-call). Audio only.
+    /// kMeet): the sidecar speaks its signalling itself (rv-call), audio and video.
     ConnectJitsi {
         /// `wss://host/xmpp-websocket`, without its query.
         websocket: String,
@@ -128,7 +128,8 @@ pub enum Command {
     /// WhatsApp engine): its 16 kHz mono PCM, 60 ms frames of 960 little-endian
     /// i16, both ways over TCP at `address` (`host:port#token`, the token sent
     /// first as a line). Who is in it comes with `RemoteRoster`, its end with
-    /// `RemoteEnded`. Audio only.
+    /// `RemoteEnded`. Its video is H.264 on a second connection to the same
+    /// address, `<token> video` as its first line.
     ConnectPcm {
         address: String,
     },
@@ -405,7 +406,8 @@ pub enum Event {
     /// A command failed; the session goes on unless a `Disconnected` follows.
     /// Video: `camera_unavailable`, `screen_unavailable`, `screen_cancelled`
     /// (the picker was closed), `screen_ended` (stopped from outside, or another
-    /// participant's share replaced this one), `camera_ended`.
+    /// participant's share replaced this one), `camera_ended`, `video_declined`
+    /// (the other side of a call carried as PCM would not switch to video).
     Error {
         code: String,
     },

@@ -9,6 +9,8 @@
 //! of the camera and the screen, for headless tests.
 mod audio;
 mod call;
+mod h264;
+mod pcm_video;
 mod screen_audio;
 mod video;
 
@@ -158,7 +160,7 @@ async fn run() {
                         error("already_connected");
                         continue;
                     }
-                    return call::run_pcm(address, voice.fake, &mut commands).await;
+                    return call::run_pcm(address, voice.fake, voice.video_out(), &mut commands).await;
                 }
                 Some(Ok(Command::ConnectExternal { identity, answering })) => {
                     if voice.room.is_some() {

@@ -25,6 +25,7 @@ use rv_voice_protocol::frames::Source;
 use rv_voice_protocol::{Command, ConnectionState as State, Event, Participant, ScreenQuality};
 use tokio::sync::mpsc;
 
+use crate::pcm_video::{self, PcmVideo};
 use crate::video::{self, Capture, Frames, Internal};
 use crate::{audio, diagnose, emit, error, level, report};
 
@@ -755,6 +756,8 @@ struct Call {
     last: Option<Vec<Participant>>,
     /// The call's video, where the app shows any (not a call carried as PCM).
     video: Option<Videos>,
+    /// A call carried as PCM: what its video shows.
+    pcm_video: Option<Arc<pcm_video::Flags>>,
 }
 
 impl Call {
@@ -781,6 +784,7 @@ impl Call {
             input_level: 0.0,
             last: None,
             video: None,
+            pcm_video: None,
         }
     }
 
@@ -882,6 +886,10 @@ impl Call {
         self.publish(me);
     }
 
+    fn pcm_flag(&self, flag: impl Fn(&pcm_video::Flags) -> &std::sync::atomic::AtomicBool) -> bool {
+        self.pcm_video.as_ref().is_some_and(|f| flag(f).load(std::sync::atomic::Ordering::SeqCst))
+    }
+
     fn publish(&mut self, me: &str) {
         let (speaking, loud) = self.mix.activity("", true);
         let muted = !self.microphone || self.deafened;
@@ -892,8 +900,8 @@ impl Call {
             deafened: self.deafened,
             speaking: speaking && !muted,
             level: if muted { 0.0 } else { level(loud) },
-            camera: self.video.as_ref().is_some_and(|v| v.told.camera),
-            screen: self.video.as_ref().is_some_and(|v| v.told.screen),
+            camera: self.video.as_ref().is_some_and(|v| v.told.camera) || self.pcm_flag(|f| &f.camera),
+            screen: self.video.as_ref().is_some_and(|v| v.told.screen) || self.pcm_flag(|f| &f.screen),
             name: None,
         }];
         for m in &self.roster {
@@ -914,7 +922,8 @@ impl Call {
                 deafened: false,
                 speaking,
                 level: level(loud),
-                camera: self.video.as_ref().is_some_and(|v| v.shows(&m.id, Source::Camera)),
+                camera: self.video.as_ref().is_some_and(|v| v.shows(&m.id, Source::Camera))
+                    || self.pcm_flag(|f| &f.peer),
                 screen: self.video.as_ref().is_some_and(|v| v.shows(&m.id, Source::Screen)),
                 name: Some(m.name.clone()).filter(|n| !n.is_empty()),
             });
@@ -1223,8 +1232,14 @@ mod tests {
 /// A call carried as raw PCM by another process (`Command::ConnectPcm`, a WhatsApp
 /// call): 16 kHz mono in 60 ms frames over TCP, resampled from and to this side's
 /// 48 kHz processing, so the echo canceller, the noise remover, the devices and who
-/// speaks all work as in any call. It ends when the app says so, or the socket closes.
-pub async fn run_pcm(address: String, fake: bool, commands: &mut mpsc::UnboundedReceiver<Result<Command, ()>>) {
+/// speaks all work as in any call. Its video goes on a second connection
+/// (pcm_video.rs). It ends when the app says so, or the socket closes.
+pub async fn run_pcm(
+    address: String,
+    fake: bool,
+    video_out: VideoOut,
+    commands: &mut mpsc::UnboundedReceiver<Result<Command, ()>>,
+) {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     emit(Event::State { state: State::Connecting });
     let Some((host, token)) = address.split_once('#') else {
@@ -1254,6 +1269,14 @@ pub async fn run_pcm(address: String, fake: bool, commands: &mut mpsc::Unbounded
     let (_factory, microphone) = media(&sound);
     let mut call = Call::new(mix.clone());
     call.apply(&microphone);
+    let (internal, mut captures) = mpsc::unbounded_channel();
+    let (news_tx, mut news) = mpsc::unbounded_channel();
+    let flags = Arc::new(pcm_video::Flags::default());
+    let mut video = PcmVideo::connect(host, token, video_out, internal, news_tx, flags.clone());
+    if video.is_some() {
+        call.pcm_video = Some(flags);
+    }
+    emit(Event::CallVideo { camera: video.is_some(), screen: video.is_some() });
     let (tap, mut tapped) = mpsc::unbounded_channel::<Vec<i16>>();
     mix.set_tap(Some(tap));
     // The far side's frames, played 10 ms at a time on this side's clock.
@@ -1286,10 +1309,28 @@ pub async fn run_pcm(address: String, fake: bool, commands: &mut mpsc::Unbounded
                 Some(Ok(Command::RemoteEnded { reason })) => break reason,
                 Some(Ok(Command::RemoteRoster { members })) => {
                     call.roster = members.into_iter().map(|m| CallMember { id: m.id, name: m.name, muted: m.muted }).collect();
+                    if let (Some(video), Some(first)) = (&video, call.roster.first()) {
+                        video.set_peer(&first.id);
+                    }
                     call.publish("me");
+                }
+                Some(Ok(command @ (Command::SetCamera { .. } | Command::StartScreenShare { .. } | Command::StopScreenShare | Command::ListScreens))) if video.is_some() => {
+                    if let Some(video) = &mut video {
+                        video.command(command);
+                    }
                 }
                 Some(command) => local(command, &mut call, &microphone, &mut sound),
             },
+            Some(capture) = captures.recv() => {
+                if let Some(video) = &mut video {
+                    video.news(capture);
+                }
+            }
+            Some(pcm_video::News::Refused) = news.recv() => {
+                if let Some(video) = &mut video {
+                    video.refused();
+                }
+            }
             frame = heard.recv() => {
                 let Some(frame) = frame else { break "remote_ended".to_owned() };
                 queue.extend(upsampled(&frame));
@@ -1325,6 +1366,7 @@ pub async fn run_pcm(address: String, fake: bool, commands: &mut mpsc::Unbounded
         }
     };
     reader.abort();
+    drop(video);
     mix.set_tap(None);
     drop(sound);
     diagnose(&format!("call: ended ({reason})"));

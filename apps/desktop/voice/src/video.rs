@@ -36,6 +36,9 @@ const PUBLISH_FIT: (u32, u32) = (1920, 1080);
 /// A share picker's thumbnail.
 const THUMBNAIL_FIT: (u32, u32) = (320, 180);
 
+/// Where a capture also hands its pictures, for a call that encodes them itself.
+pub type Tap = Arc<Mutex<Option<std::sync::mpsc::SyncSender<(Source, I420Buffer)>>>>;
+
 /// A capture thread's news for the main loop.
 pub enum Internal {
     /// The camera delivers frames: publish its track.
@@ -124,7 +127,7 @@ impl Frames {
     }
 
     /// A frame for the app, scaled to fit what it shows, at most every `FRAME_INTERVAL`.
-    fn show(&self, source: Source, identity: &str, buffer: &I420Buffer) {
+    pub fn show(&self, source: Source, identity: &str, buffer: &I420Buffer) {
         self.show_within(source, identity, buffer, if source == Source::Camera { CAMERA_FIT } else { SCREEN_FIT });
     }
 
@@ -148,7 +151,7 @@ impl Frames {
 }
 
 /// The largest even size within `fit` with the frame's proportions, never larger than the frame.
-fn fitted(width: u32, height: u32, fit: (u32, u32)) -> (u32, u32) {
+pub fn fitted(width: u32, height: u32, fit: (u32, u32)) -> (u32, u32) {
     let (width, height) = (width.max(2), height.max(2));
     let scale = (fit.0 as f64 / width as f64).min(fit.1 as f64 / height as f64).min(1.0);
     let even = |v: f64| ((v as u32) & !1).max(2);
@@ -211,6 +214,14 @@ pub async fn watch_rtc(track: RtcVideoTrack, source: Source, identity: String, f
 pub struct Capture {
     stop: Arc<AtomicBool>,
     pub source: NativeVideoSource,
+    tap: Tap,
+}
+
+impl Capture {
+    /// Its pictures to `to` too, at most every `FRAME_INTERVAL`.
+    pub fn tap(&self, to: std::sync::mpsc::SyncSender<(Source, I420Buffer)>) {
+        *self.tap.lock().unwrap_or_else(|e| e.into_inner()) = Some(to);
+    }
 }
 
 impl Drop for Capture {
@@ -228,6 +239,8 @@ struct Sink {
     kind: Source,
     internal: UnboundedSender<Internal>,
     shown: Option<Instant>,
+    tap: Tap,
+    tapped: Option<Instant>,
     /// What is published at most, and how often a screen is captured.
     fit: (u32, u32),
     interval: Duration,
@@ -244,6 +257,12 @@ impl Sink {
         {
             self.shown = Some(Instant::now());
             frames.show(self.kind, &self.identity, &buffer);
+        }
+        if self.tapped.is_none_or(|at| at.elapsed() >= FRAME_INTERVAL)
+            && let Some(tap) = self.tap.lock().unwrap_or_else(|e| e.into_inner()).as_ref()
+            && tap.try_send((self.kind, copy_i420(&buffer))).is_ok()
+        {
+            self.tapped = Some(Instant::now());
         }
         self.source.capture_frame(&VideoFrame::new(VideoRotation::VideoRotation0, buffer));
     }
@@ -284,6 +303,7 @@ fn start(
         ),
     };
     let source = NativeVideoSource::new(resolution, screencast);
+    let tap = Tap::default();
     let sink = Sink {
         stop: stop.clone(),
         source: source.clone(),
@@ -292,6 +312,8 @@ fn start(
         kind,
         internal,
         shown: None,
+        tap: tap.clone(),
+        tapped: None,
         fit,
         interval,
     };
@@ -300,7 +322,7 @@ fn start(
         (Source::Camera, false) => camera::run(sink),
         (Source::Screen, false) => desktop(sink, chosen),
     });
-    Capture { stop, source }
+    Capture { stop, source, tap }
 }
 
 pub fn camera(
