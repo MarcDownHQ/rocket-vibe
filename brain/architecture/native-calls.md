@@ -683,6 +683,10 @@ goes out as this side's video.
   compile time). The peer's pictures are decoded, turned by their orientation (quarter turns, clockwise)
   and shown as their camera; a failing decoder asks for a keyframe at most once a second.
   `video_declined` turns the captures off and rv-core's camera and screen wishes with them.
+- **SwiftUI**: the same sidecar through rv-ffi's `JitsiCallSession`, shown in `NativeCallWindow` (the
+  peer's camera in their tile, the screen button); `WhatsAppChat::call_answerable` and `background.rs`
+  `phone_only` send only a group's call to the phone. No camera goes out: the sidecar captures none on
+  macOS. Checked by the macOS CI build only.
 - **Checked** (2026-11-21): the encoder's output decoded back at its size (`h264` tests); the real
   sidecar against a stand-in engine echoing its pictures as the peer's (`~/.cache/rvtest/pcm-harness.py`,
   outside the repo): about 15 pictures a second out, sending on then off, the echo decoded, turned and
