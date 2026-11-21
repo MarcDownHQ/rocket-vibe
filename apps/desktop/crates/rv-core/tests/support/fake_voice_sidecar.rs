@@ -3,6 +3,7 @@
 //! Connect URLs: `fake://crash` exits without a word, `fake://refused` fails to
 //! connect, `fake://moved` is taken over by another device right after joining.
 //! `fake://no-screen` cancels every screen share as a closed picker would.
+//! `fake://declined` has the other side refuse every switch to video.
 //! The token is used as the local identity, followed by `#<key>` in an
 //! encrypted session (the key `SetKey` replaces), so tests see what it got.
 //! Video: once connected, a 4 by 2 frame of `peer`'s camera; the camera and the
@@ -158,6 +159,9 @@ fn main() {
                 if let Some(stream) = &mut video {
                     let _ = stream.write_all(&frames::handshake(&token));
                 }
+            }
+            Command::SetCamera { enabled: true } if url == "fake://declined" => {
+                emit(Event::Error { code: "video_declined".into() });
             }
             Command::SetCamera { enabled } => {
                 me.camera = enabled;

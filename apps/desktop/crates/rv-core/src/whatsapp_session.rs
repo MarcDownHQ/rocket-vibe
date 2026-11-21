@@ -329,7 +329,7 @@ impl WaSession {
             local.available = available;
         }
     }
-    /// Carries a WhatsApp call on `voice`, audio only: answers the call ringing
+    /// Carries a WhatsApp call on `voice` (the sidecar opens its video itself): answers the call ringing
     /// as `call` (`Incoming`) or calls a person (`Outgoing`), then runs it until it
     /// ends or the voice session is left. `Ok` once the engine opened its audio.
     pub async fn carry_call(

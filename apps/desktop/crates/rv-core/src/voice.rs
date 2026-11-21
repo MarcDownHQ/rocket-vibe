@@ -1000,6 +1000,10 @@ impl Inner {
                     match code.as_str() {
                         "camera_unavailable" | "camera_ended" => s.snapshot.camera = false,
                         "screen_unavailable" | "screen_cancelled" | "screen_ended" => s.snapshot.sharing = false,
+                        "video_declined" => {
+                            s.snapshot.camera = false;
+                            s.snapshot.sharing = false;
+                        }
                         _ => {}
                     }
                     s.snapshot.error = Some(code);

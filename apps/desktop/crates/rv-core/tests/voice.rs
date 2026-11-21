@@ -261,6 +261,11 @@ async fn video_frames_reach_the_app_and_end_with_their_track() {
     voice.start_screen_share(None, None).await;
     let snapshot = until(&voice, |s| s.error.as_deref() == Some("screen_cancelled")).await;
     assert!(!snapshot.sharing);
+    // A peer who will not switch to video takes the camera wish back.
+    voice.connect(&grant("r3", "fake://declined"), None, None).await.unwrap();
+    voice.set_camera(true).await;
+    let snapshot = until(&voice, |s| s.error.as_deref() == Some("video_declined")).await;
+    assert!(!snapshot.camera && !snapshot.sharing);
     voice.disconnect().await;
     assert!(voice.frame("peer", VideoSource::Camera).is_none());
 }
