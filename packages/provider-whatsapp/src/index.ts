@@ -30,10 +30,10 @@ export const WHATSAPP_CAPABILITIES: Capabilities = {
 /** The `DdpEvent` collection a call frame is emitted on. */
 export const WHATSAPP_CALL = 'whatsapp-call';
 
-/** What a call frame means to the ring: a 1:1 call ringing, or one no longer ringing. */
+/** What a call frame means to the ring: a 1:1 call ringing, audio or video, or one no longer ringing. */
 export function whatsappCallSignal(call: WaCall, callerName: string | null): CallSignal | null {
   if (call.state === 'ringing') {
-    if (call.video || (call.group ?? '') !== '') return null;
+    if ((call.group ?? '') !== '') return null;
     return { kind: 'ring', rid: call.from, messageId: call.id, callId: call.id, callerId: call.from, callerName };
   }
   return call.state === 'ended' ? { kind: 'rung-over' } : null;
