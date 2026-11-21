@@ -812,11 +812,28 @@ goes out as this side's video.
   peer's camera in their tile, the screen button); `WhatsAppChat::call_answerable` and `background.rs`
   `phone_only` send only a group's call to the phone. No camera goes out: the sidecar captures none on
   macOS. Checked by the macOS CI build only.
+- **Android** (`modules/voice/android/.../PcmVideo.kt`, `JitsiCall.kt`): `JitsiSession.runPcm` opens the
+  video connection beside the audio (`PcmVideo.open`, WebRTC's native library loaded first for its
+  buffers) and only then says the call takes camera and screen (`canCamera`, `canScreen`), so the call
+  screen shows its buttons and tiles as for any native call. The captures of `NativeVideo.kt` are tapped
+  (the screen while shared, else the camera): one picture every 66 ms, cropped and scaled within
+  1280x720 (720x1280 standing) in whole macroblocks, turned upright (`YuvHelper.I420Rotate`), then
+  `MediaCodec`'s H.264 encoder (`H264Encoder`: `COLOR_FormatYUV420Flexible` through `getInputImage`,
+  Constrained Baseline where the codec lists it else Baseline, level 3.1, 0.8 Mb/s a camera, 1.2 a
+  screen, 15 a second, a keyframe every 3 s and on `PARAMETER_KEY_REQUEST_SYNC_FRAME`); its
+  `BUFFER_FLAG_CODEC_CONFIG` output (SPS and PPS, Annex-B) is put before each keyframe that lacks them
+  (`PcmVideoWire.accessUnit`). The peer's units go from the first keyframe to `MediaCodec`'s decoder
+  (`H264Decoder`, low latency from Android 11) rendering onto a `SurfaceTextureHelper`'s surface, its
+  orientation as the frames' rotation (`setFrameRotation`), the frames shown under the peer's roster id
+  as their camera (`DecodedFeed`); a lost unit or a codec error asks for a keyframe at most once a
+  second. A refusal stops both captures and emits `videoDeclined`, which the call screen shows as a
+  notice. The framing, parameter sets, fit and clock are unit-tested (`PcmVideoWireTest`).
 - **Checked** (2026-11-21): the encoder's output decoded back at its size (`h264` tests); the real
   sidecar against a stand-in engine echoing its pictures as the peer's (`~/.cache/rvtest/pcm-harness.py`,
   outside the repo): about 15 pictures a second out, sending on then off, the echo decoded, turned and
   shown under the peer's id. **Not run with a phone**: the orientation's direction, and what a phone
-  makes of the stream, are unverified.
+  makes of the stream, are unverified. Android: checked by compiling (Kotlin, an x86_64 debug build) and
+  the framing's unit tests; not run on a device, against an engine or with a phone.
 
 ### Teams call video (2026-11-23)
 
@@ -999,6 +1016,9 @@ Teams meetings and video last.
   apps/desktop/macos/Sources/RocketVibe/NativeCallWindow.swift
 - apps/mobile/modules/voice/android/src/main/java/com/rocketvibe/voice/NativeVideo.kt,
   apps/mobile/app/call/[callId].tsx, crates/rv-voice-mobile/src/call.rs
+- apps/mobile/modules/voice/android/src/main/java/com/rocketvibe/voice/PcmVideo.kt,
+  apps/mobile/modules/voice/android/src/test/java/com/rocketvibe/voice/PcmVideoWireTest.kt,
+  crates/rv-whatsapp/engine/src/call_video.rs
 - crates/rv-call/src/mattermost, apps/desktop/crates/rv-core/src/mattermost/calls.rs,
   apps/mobile/providers/mattermost/pluginCalls.ts
 - The Calls plugin 1.12.3 (`mattermost-plugin-calls-v1.12.3-linux-amd64.tar.gz`, its webapp

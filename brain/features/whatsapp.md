@@ -41,6 +41,7 @@ Partial, Android only; designed in [the Android design](../../docs/WHATSAPP_ANDR
 - **Owed**: nothing of the desktop's feature set; live-checked: the service and its notification on the emulator, not yet a message notified with the app closed.
 
 - **Calls** (2026-11-11). The engine's call frames reach the ring as `whatsapp-call` events (`packages/provider-whatsapp/src/index.ts`, `whatsappCallSignal`): a 1:1 audio call rings with the app's prompt, Decline rejects it; Accept and a person's chat's call button open the call screen, where `carryWhatsAppCall` sends the engine's call commands and the voice module's PCM mode (`JitsiSession.startPcm`, `AudioRecord` with the phone's echo canceller and noise suppressor, `AudioTrack` for voice) carries the audio on the engine's socket. Not yet run on a device or against a phone.
+- **Call video** (2026-11-21). A 1:1 video call rings like an audio one (group calls stay on the phone) and is answered with the camera off. The voice module opens the engine's video connection beside the audio (`PcmVideo.kt`): the call screen then offers camera and screen sharing as for any native call, this side's picture going out through `MediaCodec`'s H.264 encoder and the peer's coming back through its decoder into their tile. A peer refusing the switch to video turns camera and screen off with a notice (`call.videoDeclined`). Checked by compiling and unit tests only, never run on a device nor with a phone. See [native-calls](../architecture/native-calls.md#whatsapp-11-calls-video-2026-11-21).
 
 ## Web
 
