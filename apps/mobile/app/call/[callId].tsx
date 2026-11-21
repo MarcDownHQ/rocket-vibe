@@ -533,6 +533,10 @@ function NativeCall({ c, client, snapshot, onClose }: { c: Colors; client: RestC
   }, [client, unnamed]);
   const t = useT();
   const [area, setArea] = useState({ width: 0, height: 0 });
+  useEffect(() => {
+    const subscription = VoiceNative?.addListener('videoDeclined', () => notify(t('call.videoDeclined')));
+    return () => subscription?.remove();
+  }, [t]);
   if (snapshot === null || snapshot.state === 'connecting' || snapshot.state === 'idle') {
     return (
       <View style={styles.center}>
