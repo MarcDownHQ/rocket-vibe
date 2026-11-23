@@ -19,6 +19,8 @@ use livekit::webrtc::peer_connection_factory::{IceServer, IceTransportsType, Pee
 use livekit::webrtc::rtp_sender::RtpSender;
 use livekit::webrtc::session_description::{SdpType, SessionDescription};
 use livekit::webrtc::stats::RtcStats;
+use livekit::webrtc::video_source::VideoResolution;
+use livekit::webrtc::video_source::native::NativeVideoSource;
 use livekit::webrtc::video_track::RtcVideoTrack;
 use rv_call::{CallSignaling, Candidate, Event as CallEvent, LocalVideo, Member as CallMember, RemoteVideo, VideoKind};
 use rv_voice_protocol::frames::Source;
@@ -1190,7 +1192,10 @@ impl Videos {
                     }
                 }
                 (Some((sender, live)), None) if *live => {
-                    let _ = sender.set_track(None);
+                    // webrtc-sys dereferences the track it is given: None would crash.
+                    let idle =
+                        NativeVideoSource::new(VideoResolution { width: 16, height: 16 }, source == Source::Screen);
+                    let _ = sender.set_track(Some(MediaStreamTrack::Video(factory.create_video_track(label, idle))));
                     *live = false;
                 }
                 (None, Some(track)) => match add_video(pc, track, streams(kind_of(source)), reuse(kind_of(source))) {
