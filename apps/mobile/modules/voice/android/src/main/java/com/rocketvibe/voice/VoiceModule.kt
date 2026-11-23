@@ -79,8 +79,8 @@ class VoiceModule : Module() {
     AsyncFunction("connectMattermost") { callId: String, server: String, token: String, channelId: String, userId: String, iceServers: String, title: String, sends: MattermostSends ->
       VoiceEngine.connectMattermost(callId, MattermostCall(server, token, channelId, userId, iceServers, sends.screen, sends.camera), title)
     }.runOnQueue(Queues.MAIN)
-    AsyncFunction("connectExternal") { callId: String, identity: String, title: String, answering: Boolean ->
-      VoiceEngine.connectExternal(callId, identity, title, answering)
+    AsyncFunction("connectExternal") { callId: String, identity: String, title: String, answering: Boolean, video: Boolean ->
+      VoiceEngine.connectExternal(callId, identity, title, answering, video)
     }.runOnQueue(Queues.MAIN)
     AsyncFunction("connectPcm") { callId: String, address: String, title: String ->
       VoiceEngine.connectPcm(callId, address, title)
@@ -90,6 +90,11 @@ class VoiceModule : Module() {
     AsyncFunction("remoteRoster") { members: List<Map<String, Any?>> ->
       VoiceEngine.remoteRoster(members.map { m ->
         Triple(m["id"] as? String ?: "", m["name"] as? String ?: "", m["muted"] as? Boolean ?: false)
+      })
+    }.runOnQueue(Queues.MAIN)
+    AsyncFunction("remoteVideos") { videos: List<Map<String, Any?>> ->
+      VoiceEngine.remoteVideos(videos.map { v ->
+        RemoteVideo(v["stream"] as? String ?: "", v["member"] as? String ?: "", if (v["screen"] == true) "screen" else "camera")
       })
     }.runOnQueue(Queues.MAIN)
     AsyncFunction("remoteEnded") { reason: String -> VoiceEngine.remoteEnded(reason) }.runOnQueue(Queues.MAIN)

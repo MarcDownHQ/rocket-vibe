@@ -565,13 +565,14 @@ object VoiceEngine {
     connectNative(callId, title) { it.startChime(credentials) }
 
   /**
-   * A call whose signalling the app speaks itself (Teams), audio only: the offer
-   * arrives through [onLocalOffer], the rest through the `remote*` functions.
+   * A call whose signalling the app speaks itself (Teams), with `video` its camera
+   * and screen too: each offer arrives through [onLocalOffer], the rest through
+   * the `remote*` functions.
    */
-  fun connectExternal(callId: String, identity: String, title: String, answering: Boolean): Boolean =
+  fun connectExternal(callId: String, identity: String, title: String, answering: Boolean, video: Boolean): Boolean =
     connectNative(callId, title) { session ->
       session.onLocalOffer = { sdp -> onLocalOffer?.invoke(sdp) }
-      session.startExternal(identity, answering)
+      session.startExternal(identity, answering, video)
       true
     }
 
@@ -586,6 +587,8 @@ object VoiceEngine {
   fun remoteOffer(sdp: String, done: (String?) -> Unit) { jitsi?.remoteOffer(sdp, done) ?: done(null) }
 
   fun remoteRoster(members: List<Triple<String, String, Boolean>>) { jitsi?.remoteRoster(members) }
+
+  internal fun remoteVideos(videos: List<RemoteVideo>) { jitsi?.listRemoteVideos(videos) }
 
   /** The other side ended an external call. */
   fun remoteEnded(why: String) { if (jitsi != null) teardown(why, cue = state == "connected") }

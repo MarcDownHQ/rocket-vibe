@@ -110,8 +110,8 @@ internal class JitsiSession(
   var canCamera = false; private set
   var canScreen = false; private set
   private val streams = HashMap<String, String>()
-  /** The provider's offers carry this side's sections (Jitsi): a local track goes on the first unused one. */
-  private var offersLocalSections = false
+  /** The kinds whose local track goes on the first unused section, the provider's offers carrying this side's (Jitsi), else on a section of its own. */
+  private var reused = emptySet<String>()
   /** This side's captures, kept across media sessions; their tracks and senders, for the current peer connection. */
   private val captures = HashMap<String, LocalCapture>()
   private val localTracks = HashMap<String, Pair<VideoSource, VideoTrack>>()
@@ -120,6 +120,9 @@ internal class JitsiSession(
   private var told = false to false
   /** Answers refused in a row, each answered by offering again. */
   private var reoffers = 0
+  /** An offer of this side's being made, and one wanted while the last one waited for its answer. */
+  private var making = false
+  private var deferred = false
   /** Remote video tracks by id, with their stream; the provider's list of them, and those named by their own ids. */
   private val remoteVideos = HashMap<String, Pair<String, VideoTrack>>()
   private var listed = false
@@ -145,6 +148,8 @@ internal class JitsiSession(
   private var offering = false
   /** The app signals this call: the offer goes to [onLocalOffer], and a loss ends it. */
   private var external = false
+  /** That call takes this side's camera and screen, each start or stop offered anew. */
+  private var externalVideo = false
   var onLocalOffer: ((String) -> Unit)? = null
   private var relayOnly = false
 
@@ -294,42 +299,91 @@ internal class JitsiSession(
 
   /**
    * A call whose signalling the app speaks itself: this side offers through
-   * [onLocalOffer] and takes the answer with [remoteAnswer]. Needs no library:
-   * nothing here crosses JNI. Called on the main thread.
+   * [onLocalOffer] and takes the answer with [remoteAnswer], or answers the
+   * other side's first offer ([remoteOffer]) when `answering`. With `video` it
+   * sends the camera, on the first unused video section, and the screen, on a
+   * section of its own, their streams `<identity>-camera` and `<identity>-screen`,
+   * and offers anew after each start or stop once the last offer was answered.
+   * Needs no library: nothing here crosses JNI. Called on the main thread.
    */
-  fun startExternal(identity: String, answering: Boolean) {
+  fun startExternal(identity: String, answering: Boolean, video: Boolean) {
     external = true
+    externalVideo = video
     localId = identity
+    canCamera = video
+    canScreen = video
+    streams[CAMERA] = "$identity-$CAMERA"
+    streams[SCREEN] = "$identity-$SCREEN"
+    reused = setOf(CAMERA)
     if (answering) return
     // After the engine set this session's microphone state, which the track reads.
     main.post { if (!closed) localOffer() }
   }
 
+  /** The other side's answer to this side's offer; one that cannot be set ends a call not yet connected, and leaves a running one as it was. */
   fun remoteAnswer(sdp: String) {
-    pc?.setRemoteDescription(Sdp(), SessionDescription(SessionDescription.Type.ANSWER, sdp))
+    val p = pc ?: return
+    p.setRemoteDescription(object : Sdp() {
+      override fun onSetSuccess() { main.post { if (!closed && pc === p) { syncVideo(); offerDeferred() } } }
+      override fun onSetFailure(error: String?) {
+        super.onSetFailure(error)
+        main.post {
+          if (closed || pc !== p) return@post
+          if (!connected) onEnd("connect_failed") else offerDeferred()
+        }
+      }
+    }, SessionDescription(SessionDescription.Type.ANSWER, sdp))
   }
 
-  /** Answers an offer from the other side of an external call (a hold, a resume); null when it cannot. */
+  /**
+   * Answers an offer from the other side of an external call (its camera, its
+   * screen, a hold); null when it cannot. An offer of this side's waiting for its
+   * answer is rolled back first, and made again once this one is answered.
+   */
   fun remoteOffer(sdp: String, done: (String?) -> Unit) {
     val p = pc ?: peer() ?: return done(null)
+    val yielded = p.signalingState() == PeerConnection.SignalingState.HAVE_LOCAL_OFFER
     val failed = object : Sdp() {
       override fun onCreateFailure(error: String?) { super.onCreateFailure(error); main.post { done(null) } }
       override fun onSetFailure(error: String?) { super.onSetFailure(error); main.post { done(null) } }
     }
-    p.setRemoteDescription(object : Sdp() {
-      override fun onSetSuccess() {
-        p.createAnswer(object : Sdp() {
-          override fun onCreateSuccess(answer: SessionDescription) {
-            p.setLocalDescription(object : Sdp() {
-              override fun onSetSuccess() { main.post { done(p.localDescription?.description ?: answer.description) } }
-              override fun onSetFailure(error: String?) { failed.onSetFailure(error) }
-            }, answer)
-          }
-          override fun onCreateFailure(error: String?) { failed.onCreateFailure(error) }
-        }, MediaConstraints())
-      }
-      override fun onSetFailure(error: String?) { failed.onSetFailure(error) }
-    }, SessionDescription(SessionDescription.Type.OFFER, sdp))
+    val answer = {
+      p.setRemoteDescription(object : Sdp() {
+        override fun onSetSuccess() {
+          p.createAnswer(object : Sdp() {
+            override fun onCreateSuccess(answer: SessionDescription) {
+              p.setLocalDescription(object : Sdp() {
+                override fun onSetSuccess() {
+                  main.post {
+                    done(p.localDescription?.description ?: answer.description)
+                    if (closed || pc !== p) return@post
+                    if (yielded) deferred = true
+                    syncVideo()
+                    offerDeferred()
+                  }
+                }
+                override fun onSetFailure(error: String?) { failed.onSetFailure(error) }
+              }, answer)
+            }
+            override fun onCreateFailure(error: String?) { failed.onCreateFailure(error) }
+          }, MediaConstraints())
+        }
+        override fun onSetFailure(error: String?) { failed.onSetFailure(error) }
+      }, SessionDescription(SessionDescription.Type.OFFER, sdp))
+    }
+    if (!yielded) return answer()
+    offering = false
+    p.setLocalDescription(object : Sdp() {
+      override fun onSetSuccess() { main.post { if (pc === p) answer() else done(null) } }
+      override fun onSetFailure(error: String?) { super.onSetFailure(error); main.post { if (pc === p) answer() else done(null) } }
+    }, SessionDescription(SessionDescription.Type.ROLLBACK, ""))
+  }
+
+  /** Names the other side's videos of an external call by their stream: whose, and what. */
+  fun listRemoteVideos(list: List<RemoteVideo>) {
+    videos = list
+    listed = true
+    onChange()
   }
 
   fun remoteRoster(members: List<Triple<String, String, Boolean>>) {
@@ -419,7 +473,7 @@ internal class JitsiSession(
         canScreen = event.optBoolean("canScreen")
         streams[CAMERA] = event.optString("cameraStream", localId)
         streams[SCREEN] = event.optString("screenStream", localId)
-        offersLocalSections = event.optBoolean("offersLocalSections")
+        reused = if (event.optBoolean("offersLocalSections")) setOf(CAMERA, SCREEN) else emptySet()
         // A capture the provider does not take ends (a rejoin keeps what it still takes).
         if (!canCamera) captures.remove(CAMERA)?.stop()
         if (!canScreen) captures.remove(SCREEN)?.let { it.stop(); onScreenStopped?.invoke() }
@@ -536,8 +590,8 @@ internal class JitsiSession(
 
   /**
    * Each capture on its sender of the current peer connection, each stopped one
-   * off it: on the first unused section where the provider's offers carry this
-   * side's, else on a section of its own, never one opened for another's track.
+   * off it: on the first unused section for a kind [reused] names, else on a
+   * section of its own, never one opened for another's track.
    */
   private fun attachVideo() {
     val p = pc ?: return
@@ -552,7 +606,7 @@ internal class JitsiSession(
         val attached = if (sender != null) sender.setTrack(track, false) else {
           val stream = streams[kind] ?: localId
           runCatching {
-            if (offersLocalSections) p.addTrack(track, listOf(stream))
+            if (kind in reused) p.addTrack(track, listOf(stream))
             else p.addTransceiver(track, RtpTransceiver.RtpTransceiverInit(RtpTransceiver.RtpTransceiverDirection.SEND_ONLY, listOf(stream))).sender
           }.getOrNull()?.also { senders[kind] = it } != null
         }
@@ -585,8 +639,23 @@ internal class JitsiSession(
     if (now != told) {
       told = now
       if (handle != 0L) JitsiCall.video(handle, now.first, now.second)
+      else if (external && externalVideo) offerInTurn()
     }
     onChange()
+  }
+
+  /** An external call's new offer, now if the last one was answered, else once it is. */
+  private fun offerInTurn() {
+    val p = pc ?: return
+    if (making || p.signalingState() != PeerConnection.SignalingState.STABLE) { deferred = true; return }
+    localOffer()
+  }
+
+  /** The offer wanted while the last one waited, once the connection is stable again. */
+  private fun offerDeferred() {
+    if (!deferred || making || pc?.signalingState() != PeerConnection.SignalingState.STABLE) return
+    deferred = false
+    localOffer()
   }
 
   /** Called when the screen's capture ends without being asked (Android ended the projection, the provider refused it). */
@@ -716,11 +785,15 @@ internal class JitsiSession(
   /** The local offer made and set; it goes out once gathering completed, or after a moment. */
   private fun localOffer() {
     val p = peer() ?: return onEnd("connect_failed")
+    making = true
+    val failed = { main.post { if (pc === p) { making = false; deferred = external } } }
     p.createOffer(object : Sdp() {
       override fun onCreateSuccess(offer: SessionDescription) {
         p.setLocalDescription(object : Sdp() {
+          override fun onSetFailure(error: String?) { super.onSetFailure(error); failed() }
           override fun onSetSuccess() {
             main.post {
+              if (pc === p) making = false
               offering = true
               // A renegotiation gathers nothing new: waiting would only leave room for the provider's own offer to cross it.
               if (connected) return@post sendOffer()
@@ -730,8 +803,11 @@ internal class JitsiSession(
           }
         }, offer)
       }
+      override fun onCreateFailure(error: String?) { super.onCreateFailure(error); failed() }
     }, MediaConstraints().apply {
       mandatory.add(MediaConstraints.KeyValuePair("OfferToReceiveAudio", "true"))
+      // Absent, libwebrtc leaves video sections as they are; "false" would strip receiving from every one.
+      if (external && externalVideo) mandatory.add(MediaConstraints.KeyValuePair("OfferToReceiveVideo", "true"))
     })
   }
 
@@ -860,7 +936,7 @@ internal class JitsiSession(
     captures.values.forEach { it.target = null }
     pc?.close(); pc?.dispose(); pc = null
     localTracks.values.forEach { (source, track) -> track.dispose(); source.dispose() }
-    localTracks.clear(); senders.clear(); told = false to false; reoffers = 0
+    localTracks.clear(); senders.clear(); told = false to false; reoffers = 0; making = false; deferred = false
     remoteVideos.clear(); videos = emptyList(); named.clear(); listed = false
     microphone = null
     factory?.dispose(); factory = null
