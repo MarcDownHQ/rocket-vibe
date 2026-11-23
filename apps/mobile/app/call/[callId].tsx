@@ -225,7 +225,7 @@ function Call({
         });
         const engine: ExternalCallEngine = {
           start: async (identity) => {
-            if (!await voice.connectExternal(callId, identity, title, false)) throw new Error('voice_unavailable');
+            if (!await voice.connectExternal(callId, identity, title, false, true)) throw new Error('voice_unavailable');
           },
           offer: () => offered,
           answer: (sdp) => voice.remoteAnswer(sdp),
@@ -237,6 +237,7 @@ function Call({
               if (next.state === 'disconnected') { sub.remove(); resolve(); }
             });
           }),
+          ...externalVideo(voice),
         };
         return await placeNative(client, rid, engine);
       } catch {
@@ -296,7 +297,7 @@ function Call({
         await requestMicrophone();
         const engine: ExternalCallEngine = {
           start: async (identity) => {
-            if (!await voice.connectExternal(callId, identity, title, true)) throw new Error('voice_unavailable');
+            if (!await voice.connectExternal(callId, identity, title, true, true)) throw new Error('voice_unavailable');
           },
           offer: () => Promise.reject(new Error('answering')),
           answer: (sdp) => voice.remoteAnswer(sdp),
@@ -308,6 +309,7 @@ function Call({
               if (next.state === 'disconnected') { sub.remove(); resolve(); }
             });
           }),
+          ...externalVideo(voice),
         };
         return await answerNative(client, room, engine);
       } catch {
@@ -506,6 +508,21 @@ async function toggleCamera(on: boolean, t: T): Promise<void> {
     return;
   }
   await VoiceNative?.setCamera(true);
+}
+
+/** The voice engine's video, for a call whose signalling the app speaks (Teams): its later offers, what this side sends, and whose the other side's videos are. */
+function externalVideo(voice: NonNullable<typeof VoiceNative>): Pick<ExternalCallEngine, 'offers' | 'sending' | 'videos'> {
+  return {
+    offers: (listener) => {
+      const sub = voice.addListener('localOffer', ({ sdp }) => listener(sdp));
+      return () => sub.remove();
+    },
+    sending: () => {
+      const now = voice.snapshot();
+      return { camera: now.camera === true, screen: now.sharing === true };
+    },
+    videos: (videos) => voice.remoteVideos(videos),
+  };
 }
 
 /**

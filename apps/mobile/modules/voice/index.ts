@@ -48,20 +48,23 @@ type Bridge={
    */
   connectMattermost(callId:string,server:string,token:string,channelId:string,userId:string,iceServers:string,title:string,sends:{screen:boolean;camera:boolean}):Promise<boolean>;
   /**
-   * A call whose signalling the app speaks itself (Teams), audio only: the offer
-   * arrives on `localOffer`, the rest goes through the `remote*` functions.
+   * A call whose signalling the app speaks itself (Teams): each offer arrives on `localOffer`,
+   * the rest goes through the `remote*` functions. `answering`: the other side offers first
+   * ([`remoteOffer`]), no local offer. `video`: it takes this side's camera and screen, each
+   * start or stop offered anew (streams `<identity>-camera`, `<identity>-screen`).
    */
-  /** `answering`: the other side offers first ([`remoteOffer`]), no local offer. */
-  connectExternal(callId:string,identity:string,title:string,answering:boolean):Promise<boolean>;
+  connectExternal(callId:string,identity:string,title:string,answering:boolean,video:boolean):Promise<boolean>;
   /**
    * A call the app's WhatsApp engine carries (its socket at `address`, `host:port#token`): its audio,
    * and its camera or screen both ways when the engine takes a video connection. False when this build cannot.
    */
   connectPcm(callId:string,address:string,title:string):Promise<boolean>;
   remoteAnswer(sdp:string):Promise<void>;
-  /** Answers an offer from the other side of such a call (a hold, a resume): the local answer, null when it cannot. */
+  /** Answers an offer from the other side of such a call (its camera or screen, a hold): the local answer, null when it cannot. */
   remoteOffer(sdp:string):Promise<string|null>;
   remoteRoster(members:{id:string;name:string;muted:boolean}[]):Promise<void>;
+  /** Every video the other side of such a call sends now, by the stream id its section carries: whose, and whether a shared screen. */
+  remoteVideos(videos:{stream:string;member:string;screen:boolean}[]):Promise<void>;
   remoteEnded(reason:string):Promise<void>;
   /** A Slack canvas's `load-data` answer (base64) as JSON `{markdown, version, thread, document, title}`; null when unreadable. */
   canvasRead(load:string):string|null;
