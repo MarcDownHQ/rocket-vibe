@@ -4,7 +4,7 @@ The goal: calls on Teams, Rocket.Chat (Jitsi), kChat (kMeet) and Slack (huddles)
 by the apps themselves, with no web page, no WebView and no browser: our own signalling
 client per provider, our own WebRTC media, the existing call UI. This page records what the
 research and the captures established, the architecture chosen, what is built ("Implementation
-status": Jitsi and kMeet, Slack huddles, Teams calls placed from a chat, Mattermost's Calls plugin, WhatsApp 1:1 calls, video), the order, and the captures still owed.
+status": Jitsi and kMeet, Slack huddles, Teams calls placed from a chat, Mattermost's Calls plugin, WhatsApp 1:1 calls, video, Teams' video), the order, and the captures still owed.
 The fallback (a call window on the provider's web page, Teams' one-time Microsoft sign-in) is in
 [../features/calls.md](../features/calls.md); the decision is in [../decisions.md](../decisions.md).
 
@@ -621,9 +621,8 @@ then run on the bench. kChat has no such plugin: its calls stay kMeet's.
   redrawn on its changes, and a composer posting through the outbox) behind a header button
   (`native_call::Opened::chat`); SwiftUI the room's `MessageList` and `Composer` on a `RoomModel` of
   its own (`AppModel::callChat`).
-- **Owed**: Android (video and the chat button); Chime (video subscription, the screen-share socket),
-  Teams (video m-lines, the `x-data` subscriptions, screen-share renegotiation captured but not built);
-  the plugin's `MediaMap`. WhatsApp's video has its own path, below.
+- **Owed**: Android (video and the chat button); Chime (video subscription, the screen-share socket);
+  the plugin's `MediaMap`. WhatsApp's video has its own path, below; Teams' is after it.
 
 ### WhatsApp 1:1 calls, audio (2026-11-11)
 
@@ -693,6 +692,53 @@ goes out as this side's video.
   shown under the peer's id. **Not run with a phone**: the orientation's direction, and what a phone
   makes of the stream, are unverified.
 
+### Teams call video (2026-11-23)
+
+- **What Teams does** (the 2026-11-02 HARs, and Teams' web calling bundle `calling-pluginless-*.js` the
+  main HAR holds): a call's offer has `main-audio`, `main-video` (the cameras), `applicationsharing-video`
+  (a shared screen) and the `data` (`m=x-data`, SCTP) sections, named by `a=label`. Teams' web client
+  rebuilds its browser's SDP by label and renumbers the `a=mid`s between offers (its share went from mid 2
+  to 4, the other side's to 5). In a 1:1 call (not `multiParty`), a camera or a screen starting is a
+  renegotiation: the side starting it posts `renegotiate {mediaNegotiation {callModalities, sender, links
+  {mediaAnswer, rejection}, mediaContent {blob, mediaLegId}}}`, Teams answers on the `mediaAnswer` callback,
+  and the answer is acknowledged on its `links.acknowledgement`; the other side's renegotiation comes as
+  `mediaNegotiation` (the hold path above). The `renegotiate` link is `links.mediaRenegotiation` of a
+  pushed `callAcceptance` on a placed call, and `callAcceptanceAcknowledgement.links.mediaRenegotiation`
+  of the acceptance's own answer on a call answered here (`call_in` HAR). A call through Teams' media
+  server (`multiParty`: group calls, meetings) sends no one's video until the client asks for a source
+  (`controlVideoStreaming {controlInfo {sourceId, streamMsid, fmtParams}}`, over the data channel or the
+  signalling), and Microslop's RTCP video source request (`PSFB` `AFB` type 1) is the native clients' form
+  of it: **neither is built**.
+- **The translation** (rv-teams `sdp.rs`): a `Layout` per call holds the plain sections libwebrtc
+  negotiated, in their order. The audio keeps its section whatever mid Teams gives it (as before); a video
+  section keeps its plain mid equal to Teams' own, since the other side's packets carry it (`sdes:mid`), so a
+  video section under a mid the call has not seen becomes a new plain section after the others and the
+  section Teams stopped listing is refused (port 0); `m=x-data` is refused, as Microslop does. Each video
+  section the other side sends gets `a=msid:teams-<mid>` (its own msid and `a=ssrc` msids dropped) and is
+  named camera or screen by its label. This side's offer is labelled by the stream ids the sidecar gives
+  its tracks (`<endpoint>-camera`, `<endpoint>-screen`); a section of its own takes the label over from one
+  that only received, and a capture stopped is told as `recvonly` or `inactive`, its track gone.
+  `modalities` fills `callModalities` (`Video`, `ScreenSharer`, `ScreenViewer`) in the accept, the answers
+  and `renegotiate`.
+- **The sidecar** (`call.rs` `External`, `ConnectExternal {video}`): it takes the camera and the screen;
+  the camera goes on the first unused video section (the one receiving the other side's camera,
+  `reuses_section`), the screen on a new send-only section, as the web client's share does. Each start or stop
+  is offered anew (`set_video` asks for `OfferWanted`), and an offer waits for the last one's answer
+  (`offers_in_turn`, `Call::deferred`). An offer of Teams' crossing this side's rolls it back, answers, then
+  offers again; a late answer to a new offer no longer ends a running call. `Command::RemoteVideos` names the
+  other side's videos by stream, whose (the one other person in the roster) and which kind.
+- **rv-core** (`teams_call.rs` `drive`): each new local offer (`VoiceController::local_offers`) goes through
+  `renegotiate` once the call is answered; a `mediaAnswer` push answers it while it waits
+  (`Layout::offering`), and an offer of Teams' meanwhile withdraws it. GTK and SwiftUI need no change: the
+  window shows the camera and screen buttons from `CallVideo`, as for Jitsi.
+- **Checked** (2026-11-23): the translation against SDP shaped like the HARs' (camera and screen received,
+  a renumbered screen section, this side's share taking the label over, a stopped camera), the external
+  signalling's offers, and the controller's new offers and `RemoteVideos` against the fake sidecar. **Not run
+  against Teams**: whether Teams takes `renegotiate` from this client, the exact `mediaAnswer` push and its
+  acknowledgement's body (the HAR's has none; `{}` is sent), whether Teams' native clients renegotiate as its
+  web client does, and the codecs the two libwebrtcs settle on (Teams offers H.264 and AV1). Android owes the
+  whole of it.
+
 ## Order
 
 Jitsi first (open protocol, a Rust reference, the server offers, two providers at once;
@@ -709,7 +755,8 @@ Teams meetings and video last.
   subscription, the `ScreenSharingUrl` socket) and a `LEAVE`. A huddle opens in its own
   window: Chrome's DevTools setting "Auto-open DevTools for popups" catches it from the start.
 - **Teams**: what `callKeepAliveInterval` wants of a call past 45 minutes; a webrtc-internals
-  dump of a Teams call (the `x-data` channel's messages); the pushes of a meeting join (the HARs of
+  dump of a Teams group call or meeting (the `x-data` channel's messages, its source requests); the
+  `mediaAnswer` push answering this side's `renegotiate`; the pushes of a meeting join (the HARs of
   2026-11-18 hold its requests, not the socket). The outgoing call's answer was read live
   (2026-11-06), the auth audience, its creating request and screen sharing captured (2026-11-02),
   a meeting join and a channel call (2026-11-18).
@@ -729,6 +776,9 @@ Teams meetings and video last.
   bundle) and https://github.com/mattermost/rtcd (`service/rtc/sfu.go`, `session.go`, `dc.go`)
 - brain/features/calls.md, brain/architecture/teams.md, brain/architecture/slack-session.md
 - crates/rv-teams/examples/teams-ic3.rs (ic3 token probe), crates/rv-teams/examples/teams-foci.rs
+- crates/rv-teams/src/sdp.rs, crates/rv-teams/src/calling.rs, apps/desktop/crates/rv-core/src/teams_call.rs
+  (Teams' video), Teams' web calling bundle `calling-pluginless-*.js` in `teams.cloud.microsoft.har`,
+  `teams.cloud.microsoft_screenshare.har`, Microslop's `crates/ost-microsoft/src/calling/rtcp.rs`
 - https://github.com/aws/amazon-chime-sdk-js/blob/main/protocol/SignalingProtocol.proto
 - https://github.com/aws/amazon-chime-sdk-js/blob/main/src/signalingclient/DefaultSignalingClient.ts
 - https://github.com/aws/amazon-chime-sdk-js/blob/main/src/sdp/ZLIBTextCompressor.ts
