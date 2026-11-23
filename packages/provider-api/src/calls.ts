@@ -34,6 +34,12 @@ export type ExternalCallEngine={
   ended:(reason:string)=>Promise<void>;
   /** Resolves when the call is hung up here. */
   left:()=>Promise<void>;
+  /** This side's later offers, made when its camera or screen starts or stops; returns its unsubscribe. */
+  offers?:(listener:(sdp:string)=>void)=>()=>void;
+  /** What this side sends now, as the call screen asked. */
+  sending?:()=>{camera:boolean;screen:boolean};
+  /** Every video the other side sends now, by the stream id its section carries: whose, and whether a shared screen. */
+  videos?:(videos:{stream:string;member:string;screen:boolean}[])=>Promise<void>;
 };
 
 export type NativeCalls={

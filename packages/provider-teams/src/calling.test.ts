@@ -1,7 +1,22 @@
 import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
 
-import { acceptBody, acknowledgeBody, answerExternalCall, attachBody, attachedLinks, audioMid, callPushEvent, isCallCallback, joinMessage, joinThreadCall, meetingJoin, nextSubscription, placeCallBody, placeExternalCall, renegotiationOffer, teamsAnswer, teamsOffer, webrtcAnswer, type Caller } from './calling.ts';
+import { acceptBody, acknowledgeBody, answerExternalCall, attachBody, attachedLinks, callPushEvent, isCallCallback, joinMessage, joinThreadCall, Layout, meetingJoin, NOT_SENDING, nextSubscription, placeCallBody, placeExternalCall, plainAnswer, plainOffer, teamsAnswer, teamsOffer, type Caller } from './calling.ts';
+
+const sectionsOf = (sdp: string) => {
+  const out: string[][] = [];
+  for (const line of sdp.split('\r\n')) {
+    if (line.startsWith('m=')) out.push([line]);
+    else if (out.length > 0 && line !== '') out.at(-1)!.push(line);
+  }
+  return out;
+};
+const midIn = (section: string[]) => section.find((l) => l.startsWith('a=mid:'))?.slice('a=mid:'.length) ?? null;
+const audioMid = (sdp: string) => {
+  const audio = sectionsOf(sdp).find((s) => s[0]!.startsWith('m=audio '));
+  return audio === undefined ? null : midIn(audio);
+};
+const settle = async () => { for (let i = 0; i < 10; i++) await new Promise((resolve) => setImmediate(resolve)); };
 
 const OFFER = 'v=0\r\no=- 1 2 IN IP4 127.0.0.1\r\ns=-\r\nt=0 0\r\na=group:BUNDLE 0\r\n'
   + 'm=audio 9 UDP/TLS/RTP/SAVPF 111\r\nc=IN IP4 0.0.0.0\r\n'
@@ -23,7 +38,8 @@ const ANSWER = 'v=0\r\no=- 455788 0 IN IP4 127.0.0.1\r\ns=session\r\nc=IN IP4 52
 
 describe('Teams calling', () => {
   test('an offer speaks the dialect, with a real address', () => {
-    const offer = teamsOffer(OFFER);
+    const layout = new Layout();
+    const offer = teamsOffer(OFFER, NOT_SENDING, layout);
     assert.ok(offer.includes('m=audio 222 RTP/SAVP 111\r\n'), offer);
     assert.ok(offer.includes('c=IN IP4 192.168.1.5\r\n'));
     assert.ok(offer.includes('a=rtcp:222\r\n'));
@@ -33,19 +49,25 @@ describe('Teams calling', () => {
     assert.ok(offer.includes('a=x-ssrc-range:42-42\r\n'));
     assert.ok(!offer.includes('tcptype'));
     assert.ok(!offer.includes('rtcp-rsize'));
+    assert.ok(layout.offering());
   });
   test('an answer keeps only plain WebRTC audio', () => {
-    const answer = webrtcAnswer(ANSWER)!;
+    const layout = new Layout();
+    assert.equal(plainAnswer(ANSWER, layout), null, 'no offer waits');
+    teamsOffer(OFFER, NOT_SENDING, layout);
+    const answer = plainAnswer(ANSWER, layout)!;
+    assert.ok(!layout.offering());
     assert.ok(answer.includes('a=group:BUNDLE 0\r\n'), answer);
     assert.ok(answer.includes('m=audio 3480 UDP/TLS/RTP/SAVPF 120 111\r\n'));
     assert.ok(answer.includes('a=candidate:1 1 UDP 54001663 52.1.2.3 3480 typ relay raddr 10.0.0.1 rport 3480\r\n'));
     for (const gone of ['MTURNID', 'tcp-pass', 'm=video', 'x-data', 'a=x-', 'a=label']) assert.ok(!answer.includes(gone), gone);
     assert.ok(answer.includes('a=extmap:2 http://www.webrtc.org/experiments/rtp-hdrext/abs-send-time\r\n'), answer);
-    assert.equal(webrtcAnswer('v=0\r\nm=video 0 RTP/SAVP 1\r\n'), null);
+    teamsOffer(OFFER, NOT_SENDING, layout);
+    assert.equal(plainAnswer('v=0\r\nm=video 0 RTP/SAVP 1\r\n', layout), null);
   });
   test('pushes say what happened', () => {
     const accepted = { url: 'https://x/callAgent/e/r/call/acceptance/', body: JSON.stringify({ callAcceptance: { links: { acknowledgement: 'https://cc/ack' }, mediaContent: { blob: 'v=0' } } }) };
-    assert.deepEqual(callPushEvent(accepted), { kind: 'accepted', sdp: 'v=0', acknowledge: 'https://cc/ack', callLeg: null });
+    assert.deepEqual(callPushEvent(accepted), { kind: 'accepted', sdp: 'v=0', acknowledge: 'https://cc/ack', callLeg: null, renegotiation: null });
     assert.ok(isCallCallback(accepted, 'e'));
     assert.ok(!isCallCallback(accepted, 'other'));
     assert.deepEqual(callPushEvent({ body: { callEnd: { phrase: 'Busy' } } }), { kind: 'ended' });
@@ -93,12 +115,14 @@ describe('Teams calling', () => {
     push({ url: 'https://t/callAgent/someone-else/r/call/acceptance/', body: { callAcceptance: { mediaContent: { blob: ANSWER } } } });
     assert.equal(said.length, 1, 'another call\'s push is not this call\'s');
     push({ url: url('call/acceptance/'), body: { callAcceptance: { links: { acknowledgement: 'https://cc/ack' }, mediaContent: { blob: ANSWER } } } });
+    await settle();
     assert.deepEqual(said[1], ['answer', true]);
     assert.ok(posted.includes('https://cc/ack'));
     push({ url: url('conversation/rosterUpdate/'), body: { participants: {
       '8:orgid:me': { details: { displayName: 'Me' }, endpoints: { e: {} } },
       '8:orgid:x': { details: { displayName: 'Xo' }, endpoints: { y: {} } },
     } } });
+    await settle();
     assert.deepEqual(said[2], ['roster', [{ id: '8:orgid:x', name: 'Xo', muted: false }]]);
     leftHere();
     await new Promise((resolve) => setImmediate(resolve));
@@ -127,12 +151,14 @@ describe('Teams calling', () => {
     assert.ok(!posted.includes('https://conv/leave'));
   });
   test('a new offer keeps the call\'s mid, its answer the offer\'s sections', () => {
-    const offer = 'v=0\r\ns=-\r\nt=0 0\r\na=group:BUNDLE 7 8\r\nm=audio 5 RTP/SAVP 111\r\nc=IN IP4 1.2.3.4\r\na=inactive\r\na=mid:7\r\nm=video 5 RTP/SAVP 34\r\na=mid:8\r\n';
-    const plain = renegotiationOffer(offer, 'v=0\r\ns=-\r\nt=0 0\r\nm=audio 9 UDP/TLS/RTP/SAVPF 111\r\na=mid:0\r\n')!;
+    const offer = 'v=0\r\ns=-\r\nt=0 0\r\na=group:BUNDLE 7 8\r\nm=audio 5 RTP/SAVP 111\r\nc=IN IP4 1.2.3.4\r\na=inactive\r\na=mid:7\r\nm=video 0 RTP/SAVP 34\r\na=mid:8\r\n';
+    const layout = new Layout();
+    layout.remote = 'v=0\r\ns=-\r\nt=0 0\r\nm=audio 9 UDP/TLS/RTP/SAVPF 111\r\na=mid:0\r\n';
+    const plain = plainOffer(offer, layout)!;
     assert.equal(audioMid(plain), '0');
     assert.ok(plain.includes('a=group:BUNDLE 0\r\n') && plain.includes('a=inactive') && !plain.includes('m=video'));
     const local = 'v=0\r\ns=-\r\nt=0 0\r\na=group:BUNDLE 0\r\nm=audio 9 UDP/TLS/RTP/SAVPF 111\r\nc=IN IP4 0.0.0.0\r\na=inactive\r\na=mid:0\r\n';
-    const answer = teamsAnswer(local, offer);
+    const answer = teamsAnswer(local, offer, NOT_SENDING, layout);
     assert.equal(audioMid(answer), '7');
     assert.ok(answer.includes('a=group:BUNDLE 7\r\n') && answer.includes('m=video 0 ') && answer.includes('a=mid:8'));
     assert.equal(nextSubscription({ nextSubscribeUrl: 'https://b/next' }), 'https://b/next');
@@ -147,12 +173,14 @@ describe('Teams calling', () => {
       + 'a=extmap:3 http:\\\\skype.com\\experiments\\rtp-hdrext\\fast_bandwidth_feedback#version_3\r\n'
       + 'a=extmap:5 http://www.ietf.org/id/draft-holmer-rmcat-transport-wide-cc-extensions-01\r\n'
       + 'a=extmap:6 urn:ietf:params:rtp-hdrext:sdes:mid\r\n';
-    const plain = renegotiationOffer(offer, negotiated)!;
+    const layout = new Layout();
+    layout.remote = negotiated;
+    const plain = plainOffer(offer, layout)!;
     assert.equal(audioMid(plain), '0');
     assert.ok(plain.includes('a=extmap:1 urn:ietf:params:rtp-hdrext:ssrc-audio-level\r\n'));
     assert.ok(plain.includes('a=extmap:6 urn:ietf:params:rtp-hdrext:sdes:mid\r\n'));
     assert.ok(!plain.includes('a=extmap:3 ') && !plain.includes('a=extmap:5 '), plain);
-    assert.equal(renegotiationOffer(offer, null)!.split('a=extmap:').length - 1, 4);
+    assert.equal(plainOffer(offer, new Layout())!.split('a=extmap:').length - 1, 4);
   });
   test('a running call holds its lease, registers its leg and answers a hold', async () => {
     let push: (envelope: Record<string, unknown>) => void = () => {};
@@ -236,7 +264,7 @@ describe('Teams calling', () => {
     leftHere();
     assert.equal(attachedLinks({}), null);
     assert.equal(attachBody({ mri: 'm', name: 'n', endpoint: 'e', participant: 'p', surl: 'https://t/', random: 'r' }, 'https://c').attach !== undefined, true);
-    assert.equal((acceptBody({ mri: 'm', name: 'n', endpoint: 'e', participant: 'p', surl: 'https://t/', random: 'r' }, 'v=0', null).callAcceptance as { acceptedCallModalities: string[] }).acceptedCallModalities[0], 'Audio');
+    assert.equal((acceptBody({ mri: 'm', name: 'n', endpoint: 'e', participant: 'p', surl: 'https://t/', random: 'r' }, 'v=0', null, ['Audio']).callAcceptance as { acceptedCallModalities: string[] }).acceptedCallModalities[0], 'Audio');
   });
 });
 
