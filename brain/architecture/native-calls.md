@@ -724,7 +724,11 @@ goes out as this side's video.
   the camera goes on the first unused video section (the one receiving the other side's camera,
   `reuses_section`), the screen on a new send-only section, as the web client's share does. Each start or stop
   is offered anew (`set_video` asks for `OfferWanted`), and an offer waits for the last one's answer
-  (`offers_in_turn`, `Call::deferred`). An offer of Teams' crossing this side's rolls it back, answers, then
+  (`offers_in_turn`, `Call::deferred`). Its offers receive video (`offers_to_receive_video`): LiveKit's
+  binding passes libwebrtc's legacy `offer_to_receive_video` as 0 unless told, which takes receiving out
+  of every video section offered (the camera's section went send-only and the other side's camera
+  stopped); with it, a placed call's first offer also carries a receive-only camera section, as the web
+  client's does. An offer of Teams' crossing this side's rolls it back, answers, then
   offers again; a late answer to a new offer no longer ends a running call. `Command::RemoteVideos` names the
   other side's videos by stream, whose (the one other person in the roster) and which kind.
 - **rv-core** (`teams_call.rs` `drive`): each new local offer (`VoiceController::local_offers`) goes through
@@ -733,7 +737,14 @@ goes out as this side's video.
   window shows the camera and screen buttons from `CallVideo`, as for Jitsi.
 - **Checked** (2026-11-23): the translation against SDP shaped like the HARs' (camera and screen received,
   a renumbered screen section, this side's share taking the label over, a stopped camera), the external
-  signalling's offers, and the controller's new offers and `RemoteVideos` against the fake sidecar. **Not run
+  signalling's offers, and the controller's new offers and `RemoteVideos` against the fake sidecar. The real
+  sidecar (`RV_VOICE_FAKE_VIDEO=pattern`) driven with Teams' web offer from `_call_out` made plain, the other
+  side's camera turned on, through a script outside the repo: libwebrtc took every translated offer and
+  answer, the other side's camera track came up under its stream and was shown on its member, the camera
+  went out `sendrecv` on `main-video`, the screen on a new `applicationsharing-video` section, and each
+  stop was offered anew as `inactive`. That run also found that taking a stopped capture off its sender
+  crashed the sidecar in every native call (webrtc-sys dereferences the track it is given): the sender now
+  gets a track that sends nothing. **Not run
   against Teams**: whether Teams takes `renegotiate` from this client, the exact `mediaAnswer` push and its
   acknowledgement's body (the HAR's has none; `{}` is sent), whether Teams' native clients renegotiate as its
   web client does, and the codecs the two libwebrtcs settle on (Teams offers H.264 and AV1). Android owes the
