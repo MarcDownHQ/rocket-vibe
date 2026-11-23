@@ -170,6 +170,18 @@ pub trait CallSignaling {
     fn offers_local_sections(&self) -> bool {
         false
     }
+    /// Whether this kind of local track goes on the first unused section (as
+    /// [`CallSignaling::offers_local_sections`] says for every kind) rather than
+    /// on one of its own: Teams sends the camera on the section that receives
+    /// the other side's, a shared screen on a section of its own.
+    fn reuses_section(&self, _kind: VideoKind) -> bool {
+        self.offers_local_sections()
+    }
+    /// Whether an offer waits for the previous one's answer: the app carries
+    /// this provider's signalling and answers one offer at a time (Teams).
+    fn offers_in_turn(&self) -> bool {
+        false
+    }
     /// The stream id a local video track carries; the microphone's by default.
     fn video_stream(&self, _kind: VideoKind) -> String {
         self.local_id().to_owned()

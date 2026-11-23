@@ -565,12 +565,12 @@ impl VoiceController {
         self.start(label.to_owned(), true, None, None, connect).await
     }
 
-    /// Starts a call whose signalling the app speaks itself (Teams), audio only:
-    /// the offer comes from [`Self::local_offer`], the rest goes through the
-    /// `remote_*` methods.
+    /// Starts a call whose signalling the app speaks itself (Teams), camera and
+    /// screen included: the offer comes from [`Self::local_offer`], each later one
+    /// through [`Self::local_offers`], the rest goes through the `remote_*` methods.
     pub async fn connect_external(&self, label: &str, identity: &str) -> Result<(), VoiceError> {
         self.inner.local_offer.send_replace(None);
-        let connect = Command::ConnectExternal { identity: identity.to_owned(), answering: false };
+        let connect = Command::ConnectExternal { identity: identity.to_owned(), answering: false, video: true };
         self.start(label.to_owned(), true, None, None, connect).await
     }
 
@@ -578,7 +578,7 @@ impl VoiceController {
     /// first (an incoming Teams call): no local offer, [`Self::answer_remote_offer`] answers.
     pub async fn connect_external_answering(&self, label: &str, identity: &str) -> Result<(), VoiceError> {
         self.inner.local_offer.send_replace(None);
-        let connect = Command::ConnectExternal { identity: identity.to_owned(), answering: true };
+        let connect = Command::ConnectExternal { identity: identity.to_owned(), answering: true, video: true };
         self.start(label.to_owned(), true, None, None, connect).await
     }
 
@@ -598,8 +598,19 @@ impl VoiceController {
         tokio::time::timeout(Duration::from_secs(15), answers.recv()).await.ok()?.ok()
     }
 
+    /// The external call's offers from now on: the sidecar offers again when this
+    /// side's camera or screen starts or stops.
+    pub fn local_offers(&self) -> tokio::sync::watch::Receiver<Option<String>> {
+        self.inner.local_offer.subscribe()
+    }
+
     pub async fn remote_answer(&self, sdp: &str) {
         self.command(Command::RemoteAnswer { sdp: sdp.to_owned() }).await;
+    }
+
+    /// The videos the other side of an external call sends now.
+    pub async fn remote_videos(&self, videos: Vec<rv_voice_protocol::RemoteVideo>) {
+        self.command(Command::RemoteVideos { videos }).await;
     }
 
     /// Starts a call whose audio another process carries as raw PCM (a WhatsApp

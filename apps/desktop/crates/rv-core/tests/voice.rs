@@ -90,6 +90,29 @@ async fn a_jitsi_call_runs_in_the_same_controller() {
 }
 
 #[tokio::test]
+async fn an_external_call_offers_again_for_its_camera_and_shows_the_videos_it_is_told_of() {
+    let voice = fake(&[]);
+    voice.connect_external("Teams", "ep").await.unwrap();
+    assert_eq!(voice.local_offer().await.as_deref(), Some("offer 1"));
+    let snapshot = until(&voice, |s| s.call_video.is_some()).await;
+    assert_eq!(snapshot.call_video, Some((true, true)), "a Teams call takes the camera and the screen");
+    let mut offers = voice.local_offers();
+    voice.set_camera(true).await;
+    tokio::time::timeout(Duration::from_secs(10), offers.changed()).await.unwrap().unwrap();
+    assert_eq!(offers.borrow_and_update().as_deref(), Some("offer 2"));
+    voice
+        .remote_videos(vec![rv_voice_protocol::RemoteVideo {
+            stream: "teams-1".into(),
+            member: "peer".into(),
+            screen: true,
+        }])
+        .await;
+    let snapshot = until(&voice, |s| s.participants.iter().any(|p| p.identity == "peer" && p.screen)).await;
+    assert!(snapshot.participants.iter().any(|p| p.identity == "peer" && !p.camera));
+    voice.disconnect().await;
+}
+
+#[tokio::test]
 async fn a_chime_call_joins_through_the_sidecar() {
     let voice = fake(&[]);
     let call = NativeCall::Chime(ChimeCall {

@@ -29,6 +29,17 @@ pub struct RemoteMember {
     pub muted: bool,
 }
 
+/// A video someone else sends in an external call: the stream id its section
+/// carries (`a=msid`), whose it is ([`RemoteMember::id`]), and whether it is a
+/// shared screen rather than a camera.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RemoteVideo {
+    pub stream: String,
+    pub member: String,
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub screen: bool,
+}
+
 /// A STUN or TURN server for a call the sidecar signals itself.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct IceServerSpec {
@@ -81,12 +92,16 @@ pub enum Command {
     },
     /// A call whose signalling the app speaks itself (Teams, over its own tokens
     /// and socket): the sidecar offers ([`Event::LocalOffer`]) and carries the media.
-    /// Audio only.
     ConnectExternal {
         identity: String,
         /// The remote side offers first ([`Command::RemoteOffer`]): no local offer.
         #[serde(default)]
         answering: bool,
+        /// The other side takes this side's camera and screen: the sidecar offers
+        /// anew when either starts or stops, the camera's section carrying
+        /// `<identity>-camera` as its stream id, the screen's `<identity>-screen`.
+        #[serde(default, skip_serializing_if = "is_false")]
+        video: bool,
     },
     /// An offer from the other side of an external call, in plain WebRTC SDP:
     /// answered with [`Event::LocalAnswer`].
@@ -100,6 +115,11 @@ pub enum Command {
     /// Who else is in an external call.
     RemoteRoster {
         members: Vec<RemoteMember>,
+    },
+    /// Every video the other side of an external call sends now, the whole list
+    /// each time: a stream missing from it is no longer shown.
+    RemoteVideos {
+        videos: Vec<RemoteVideo>,
     },
     /// The other side ended an external call.
     RemoteEnded {
@@ -229,6 +249,7 @@ impl std::fmt::Debug for Command {
             Self::RemoteOffer { .. } => f.write_str("RemoteOffer"),
             Self::RemoteAnswer { .. } => f.write_str("RemoteAnswer"),
             Self::RemoteRoster { members } => f.debug_struct("RemoteRoster").field("members", &members.len()).finish(),
+            Self::RemoteVideos { videos } => f.debug_struct("RemoteVideos").field("videos", &videos.len()).finish(),
             Self::RemoteEnded { reason } => f.debug_struct("RemoteEnded").field("reason", reason).finish(),
             Self::ConnectMattermost { server, channel_id, .. } => f
                 .debug_struct("ConnectMattermost")
@@ -586,6 +607,20 @@ mod tests {
                 json!({"type":"start_screen_share","with_call":true,"source":"w:42","quality":{"height":720,"fps":30}}),
             ),
             (Command::ListScreens, json!({"type":"list_screens"})),
+            (
+                Command::ConnectExternal { identity: "e".into(), answering: false, video: true },
+                json!({"type":"connect_external","identity":"e","answering":false,"video":true}),
+            ),
+            (
+                Command::RemoteVideos {
+                    videos: vec![
+                        RemoteVideo { stream: "s1".into(), member: "8:orgid:a".into(), screen: false },
+                        RemoteVideo { stream: "s2".into(), member: "8:orgid:a".into(), screen: true },
+                    ],
+                },
+                json!({"type":"remote_videos","videos":[{"stream":"s1","member":"8:orgid:a"},
+                    {"stream":"s2","member":"8:orgid:a","screen":true}]}),
+            ),
             (
                 Command::SetParticipantVolume { identity: "u2".into(), volume: 0.5, muted: false },
                 json!({"type":"set_participant_volume","identity":"u2","volume":0.5}),

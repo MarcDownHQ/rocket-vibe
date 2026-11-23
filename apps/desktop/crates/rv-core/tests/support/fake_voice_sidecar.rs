@@ -4,6 +4,8 @@
 //! connect, `fake://moved` is taken over by another device right after joining.
 //! `fake://no-screen` cancels every screen share as a closed picker would.
 //! `fake://declined` has the other side refuse every switch to video.
+//! An external call offers once connected and again each time its camera
+//! changes; the videos named by `RemoteVideos` show on `peer`.
 //! The token is used as the local identity, followed by `#<key>` in an
 //! encrypted session (the key `SetKey` replaces), so tests see what it got.
 //! Video: once connected, a 4 by 2 frame of `peer`'s camera; the camera and the
@@ -53,7 +55,7 @@ fn main() {
         screen: false,
         name: None,
     };
-    let peer = Participant {
+    let mut peer = Participant {
         identity: "peer".into(),
         local: false,
         muted: false,
@@ -67,7 +69,10 @@ fn main() {
     let mut connected = false;
     let mut url = String::new();
     let mut video: Option<TcpStream> = None;
-    let publish = |me: &Participant| emit(Event::Participants { participants: vec![me.clone(), peer.clone()] });
+    let mut offers = 0;
+    let publish = |me: &Participant, peer: &Participant| {
+        emit(Event::Participants { participants: vec![me.clone(), peer.clone()] })
+    };
     for line in std::io::stdin().lock().lines() {
         let Ok(line) = line else { break };
         let Ok(command) = serde_json::from_str::<Command>(&line) else {
@@ -89,7 +94,7 @@ fn main() {
                 emit(Event::State { state: ConnectionState::Connecting });
                 emit(Event::State { state: ConnectionState::Connected });
                 connected = true;
-                publish(&me);
+                publish(&me, &peer);
                 frame(&mut video, Source::Camera, "peer", 4, 2);
                 if url == "fake://moved" {
                     return ended("duplicate_identity");
@@ -101,10 +106,25 @@ fn main() {
                 emit(Event::State { state: ConnectionState::Connecting });
                 emit(Event::State { state: ConnectionState::Connected });
                 connected = true;
-                publish(&me);
+                publish(&me, &peer);
             }
-            Command::ConnectExternal { .. }
-            | Command::ConnectPcm { .. }
+            Command::ConnectExternal { identity, video, .. } => {
+                url = "external".to_owned();
+                me.identity = identity;
+                emit(Event::State { state: ConnectionState::Connecting });
+                emit(Event::State { state: ConnectionState::Connected });
+                emit(Event::CallVideo { camera: video, screen: video });
+                connected = true;
+                publish(&me, &peer);
+                offers += 1;
+                emit(Event::LocalOffer { sdp: format!("offer {offers}") });
+            }
+            Command::RemoteVideos { videos } => {
+                let of = |screen: bool| videos.iter().any(|v| v.member == peer.identity && v.screen == screen);
+                (peer.camera, peer.screen) = (of(false), of(true));
+                publish(&me, &peer);
+            }
+            Command::ConnectPcm { .. }
             | Command::RemoteOffer { .. }
             | Command::RemoteAnswer { .. }
             | Command::RemoteRoster { .. }
@@ -115,7 +135,7 @@ fn main() {
                 emit(Event::State { state: ConnectionState::Connecting });
                 emit(Event::State { state: ConnectionState::Connected });
                 connected = true;
-                publish(&me);
+                publish(&me, &peer);
             }
             Command::ConnectChime { signaling_url, attendee_id, .. } => {
                 url = signaling_url;
@@ -123,18 +143,18 @@ fn main() {
                 emit(Event::State { state: ConnectionState::Connecting });
                 emit(Event::State { state: ConnectionState::Connected });
                 connected = true;
-                publish(&me);
+                publish(&me, &peer);
             }
             Command::SetMicrophone { enabled } => {
                 me.muted = !enabled;
                 if connected {
-                    publish(&me);
+                    publish(&me, &peer);
                 }
             }
             Command::SetDeafened { deafened } => {
                 me.deafened = deafened;
                 if connected {
-                    publish(&me);
+                    publish(&me, &peer);
                 }
             }
             Command::ListDevices => emit(Event::Devices {
@@ -152,7 +172,7 @@ fn main() {
                     continue;
                 };
                 me.identity = format!("{token}#{key}");
-                publish(&me);
+                publish(&me, &peer);
             }
             Command::Video { address, token } => {
                 video = TcpStream::connect(address).ok();
@@ -171,7 +191,11 @@ fn main() {
                 } else {
                     frame(&mut video, Source::Camera, &identity, 0, 0)
                 }
-                publish(&me);
+                publish(&me, &peer);
+                if url == "external" {
+                    offers += 1;
+                    emit(Event::LocalOffer { sdp: format!("offer {offers}") });
+                }
             }
             // The preview's width tells the test whether the call's voices were
             // asked for, its height the chosen quality's lines by 360.
@@ -184,7 +208,7 @@ fn main() {
                 let identity = me.identity.clone();
                 let height = quality.map_or(2, |q| q.height / 360);
                 frame(&mut video, Source::Screen, &identity, if with_call { 4 } else { 2 }, height);
-                publish(&me);
+                publish(&me, &peer);
             }
             Command::ListScreens => {
                 emit(Event::Screens {
@@ -203,7 +227,7 @@ fn main() {
                 me.screen = false;
                 let identity = me.identity.clone();
                 frame(&mut video, Source::Screen, &identity, 0, 0);
-                publish(&me);
+                publish(&me, &peer);
             }
             Command::Disconnect => return ended("client_initiated"),
         }

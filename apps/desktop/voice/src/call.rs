@@ -223,6 +223,7 @@ fn local(
                 video.want(Source::Screen, false, None, None);
             }
         }
+        Ok(Command::RemoteVideos { .. }) => {}
         Ok(_) => error("unsupported"),
     }
 }
@@ -271,6 +272,7 @@ async fn joined<S: CallSignaling>(
                         return Stop::Over("connect_failed".to_owned());
                     }
                     let Some(pc) = &call.pc else { continue };
+                    let yielded = pc.signaling_state() == SignalingState::HaveLocalOffer;
                     match negotiate(pc, &sdp).await {
                         Ok(answer) => {
                             call.answering = Some((answer, tokio::time::Instant::now()));
@@ -278,7 +280,15 @@ async fn joined<S: CallSignaling>(
                             if call.connected || pc.ice_gathering_state() == IceGatheringState::Complete {
                                 send_answer(call);
                             }
+                            if yielded {
+                                debug("offers crossed: this side's goes again");
+                                call.offering = None;
+                                call.deferred = true;
+                            }
                             sync_video(session, factory, call).await;
+                            if offer_deferred(session, call).await.is_err() {
+                                return Stop::Lost("other".to_owned());
+                            }
                         }
                         Err(e) => {
                             diagnose(&format!("call: remote offer: {e}"));
@@ -292,10 +302,31 @@ async fn joined<S: CallSignaling>(
                 Some(Ok(Command::RemoteAnswer { sdp })) => {
                     if let Err(e) = set_answer(call, &sdp).await {
                         diagnose(&format!("call: answer: {e}"));
-                        session.leave().await;
-                        return Stop::Over("connect_failed".to_owned());
+                        // A late answer to a new offer leaves the running call as it was.
+                        if !call.connected {
+                            session.leave().await;
+                            return Stop::Over("connect_failed".to_owned());
+                        }
                     }
                     sync_video(session, factory, call).await;
+                    if offer_deferred(session, call).await.is_err() {
+                        return Stop::Lost("other".to_owned());
+                    }
+                }
+                Some(Ok(Command::RemoteVideos { videos })) => {
+                    if let Some(video) = &mut call.video {
+                        video.remote = videos
+                            .into_iter()
+                            .map(|v| RemoteVideo {
+                                track: v.stream,
+                                member: v.member,
+                                kind: if v.screen { VideoKind::Screen } else { VideoKind::Camera },
+                            })
+                            .collect();
+                        video.listed = true;
+                        video.show();
+                    }
+                    call.publish(session.local_id());
                 }
                 Some(Ok(Command::RemoteRoster { members })) => {
                     call.roster = members
@@ -327,6 +358,10 @@ async fn joined<S: CallSignaling>(
                         return Stop::Lost("connect_failed".to_owned());
                     }
                     let Some(pc) = &call.pc else { continue };
+                    if session.offers_in_turn() && pc.signaling_state() != SignalingState::Stable {
+                        call.deferred = true;
+                        continue;
+                    }
                     match offer(pc).await {
                         Ok(sdp) => {
                             call.offering = Some((sdp, tokio::time::Instant::now()));
@@ -545,17 +580,22 @@ async fn set_answer(call: &Call, sdp: &str) -> Result<(), String> {
     pc.set_remote_description(answer).await.map_err(|e| format!("{e:?}"))
 }
 
-/// The signalling of a call the app speaks itself: this side only offers, and the
-/// app answers through the window's commands. It cannot be joined again from here.
+/// The signalling of a call the app speaks itself: this side offers, and the
+/// app answers through the window's commands, or the app's offer comes first
+/// (`answering`). With `video` the other side takes this side's camera and
+/// screen, and each start or stop is offered anew. It cannot be joined again
+/// from here.
 pub struct External {
     identity: String,
     answering: bool,
+    video: bool,
     started: u8,
+    offer_wanted: bool,
 }
 
 impl External {
-    pub fn new(identity: String, answering: bool) -> Self {
-        External { identity, answering, started: 0 }
+    pub fn new(identity: String, answering: bool, video: bool) -> Self {
+        External { identity, answering, video, started: 0, offer_wanted: false }
     }
 }
 
@@ -570,6 +610,10 @@ impl CallSignaling for External {
             }
             1 if !self.answering => {
                 self.started = 2;
+                Some(CallEvent::OfferWanted { relay_only: false })
+            }
+            _ if self.offer_wanted => {
+                self.offer_wanted = false;
                 Some(CallEvent::OfferWanted { relay_only: false })
             }
             _ => std::future::pending().await,
@@ -602,6 +646,40 @@ impl CallSignaling for External {
     fn rejoinable(&self) -> bool {
         false
     }
+
+    fn can_send(&self, _kind: VideoKind) -> bool {
+        self.video
+    }
+
+    fn video_stream(&self, kind: VideoKind) -> String {
+        match kind {
+            VideoKind::Camera => format!("{}-camera", self.identity),
+            VideoKind::Screen => format!("{}-screen", self.identity),
+        }
+    }
+
+    fn reuses_section(&self, kind: VideoKind) -> bool {
+        kind == VideoKind::Camera
+    }
+
+    fn offers_in_turn(&self) -> bool {
+        true
+    }
+
+    async fn set_video(&mut self, _video: LocalVideo) -> Result<(), rv_call::Error> {
+        self.offer_wanted = self.video;
+        Ok(())
+    }
+}
+
+/// The offer the provider wanted while the last one waited, once the
+/// connection is stable again.
+async fn offer_deferred<S: CallSignaling>(session: &mut S, call: &mut Call) -> Result<(), rv_call::Error> {
+    if !call.deferred || call.pc.as_ref().is_none_or(|pc| pc.signaling_state() != SignalingState::Stable) {
+        return Ok(());
+    }
+    call.deferred = false;
+    reoffer(session, call).await
 }
 
 /// The answer waiting for gathering, with the candidates found so far.
@@ -742,6 +820,8 @@ struct Call {
     outbox: Vec<String>,
     /// An offer set, waiting for gathering to complete before it goes out, and since when.
     offering: Option<(String, tokio::time::Instant)>,
+    /// An offer the provider wanted while the last one waited for its answer.
+    deferred: bool,
     /// The same for an answer to an offer from the app.
     answering: Option<(String, tokio::time::Instant)>,
     /// The local candidates so far, which an offer that waited carries.
@@ -774,6 +854,7 @@ impl Call {
             channel: None,
             outbox: Vec::new(),
             offering: None,
+            deferred: false,
             answering: None,
             gathered: Vec::new(),
             relay_only: false,
@@ -811,6 +892,7 @@ impl Call {
         self.channel = None;
         self.outbox.clear();
         self.offering = None;
+        self.deferred = false;
         self.answering = None;
         self.gathered.clear();
     }
@@ -834,7 +916,8 @@ impl Call {
                     error("publish_failed");
                 }
                 if let Some(video) = &mut self.video {
-                    video.attach(&pc, factory, &|kind| session.video_stream(kind), session.offers_local_sections());
+                    video
+                        .attach(&pc, factory, &|kind| session.video_stream(kind), &|kind| session.reuses_section(kind));
                 }
                 if let Some(label) = session.data_channel() {
                     let init = livekit::webrtc::data_channel::DataChannelInit {
@@ -959,7 +1042,7 @@ fn add_video(
 async fn sync_video<S: CallSignaling>(session: &mut S, factory: &PeerConnectionFactory, call: &mut Call) {
     let Call { video: Some(video), pc, .. } = call else { return };
     let Some(pc) = pc.as_ref() else { return };
-    video.attach(pc, factory, &|kind| session.video_stream(kind), session.offers_local_sections());
+    video.attach(pc, factory, &|kind| session.video_stream(kind), &|kind| session.reuses_section(kind));
     let now = video.sending();
     if now != video.told {
         video.told = now;
@@ -1086,7 +1169,7 @@ impl Videos {
         pc: &PeerConnection,
         factory: &PeerConnectionFactory,
         streams: &dyn Fn(VideoKind) -> String,
-        reuse: bool,
+        reuse: &dyn Fn(VideoKind) -> bool,
     ) {
         for source in [Source::Camera, Source::Screen] {
             let label = if source == Source::Camera { "camera" } else { "screen" };
@@ -1110,7 +1193,7 @@ impl Videos {
                     let _ = sender.set_track(None);
                     *live = false;
                 }
-                (None, Some(track)) => match add_video(pc, track, streams(kind_of(source)), reuse) {
+                (None, Some(track)) => match add_video(pc, track, streams(kind_of(source)), reuse(kind_of(source))) {
                     Ok(sender) => {
                         self.senders.insert(source, (sender, true));
                     }
@@ -1211,7 +1294,7 @@ mod tests {
 
     #[tokio::test]
     async fn an_external_call_offers_once_however_often_it_is_asked() {
-        let mut session = External::new("me".into(), false);
+        let mut session = External::new("me".into(), false, false);
         assert!(matches!(next(&mut session).await, Some(Some(CallEvent::IceServers(_)))));
         assert!(matches!(next(&mut session).await, Some(Some(CallEvent::OfferWanted { .. }))));
         for _ in 0..1000 {
@@ -1221,11 +1304,30 @@ mod tests {
 
     #[tokio::test]
     async fn an_answering_call_never_offers() {
-        let mut session = External::new("me".into(), true);
+        let mut session = External::new("me".into(), true, false);
         assert!(matches!(next(&mut session).await, Some(Some(CallEvent::IceServers(_)))));
         for _ in 0..1000 {
             assert!(next(&mut session).await.is_none());
         }
+    }
+
+    #[tokio::test]
+    async fn a_video_call_offers_again_for_each_change_of_what_it_sends() {
+        let mut session = External::new("me".into(), true, true);
+        assert!(matches!(next(&mut session).await, Some(Some(CallEvent::IceServers(_)))));
+        assert!(next(&mut session).await.is_none());
+        assert!(session.can_send(VideoKind::Camera) && session.can_send(VideoKind::Screen));
+        assert!(session.reuses_section(VideoKind::Camera) && !session.reuses_section(VideoKind::Screen));
+        assert_eq!(session.video_stream(VideoKind::Screen), "me-screen");
+        session.set_video(LocalVideo { camera: true, screen: false }).await.unwrap();
+        assert!(matches!(next(&mut session).await, Some(Some(CallEvent::OfferWanted { relay_only: false }))));
+        assert!(next(&mut session).await.is_none(), "once per change");
+        let mut audio = External::new("me".into(), false, false);
+        audio.set_video(LocalVideo { camera: true, screen: false }).await.unwrap();
+        assert!(!audio.can_send(VideoKind::Camera));
+        assert!(matches!(next(&mut audio).await, Some(Some(CallEvent::IceServers(_)))));
+        assert!(matches!(next(&mut audio).await, Some(Some(CallEvent::OfferWanted { .. }))));
+        assert!(next(&mut audio).await.is_none(), "an audio call never offers again");
     }
 }
 
