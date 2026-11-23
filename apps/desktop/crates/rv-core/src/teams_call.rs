@@ -12,6 +12,7 @@ use serde_json::Value;
 use crate::session::Session;
 use crate::sync::Backend;
 use crate::teams::calling::{self, CallEvent, Caller};
+use crate::teams::sdp;
 use crate::voice::VoiceController;
 use rv_provider::rest::RestError;
 
@@ -110,7 +111,7 @@ impl Session {
             &identity.caller(),
             &to,
             thread.as_deref(),
-            &calling::teams_offer(&offer),
+            &sdp::teams_offer(&offer),
             &calling::random_id(),
         );
         let created = match teams.service.calling_post(calling::EPCONV, &chain, &body).await {
@@ -164,7 +165,7 @@ impl Session {
             voice.disconnect().await;
             return Err(RestError::incomplete("call: no offer"));
         };
-        let (chain, caller, offer) = (identity.chain.as_str(), identity.caller(), calling::teams_offer(&offer));
+        let (chain, caller, offer) = (identity.chain.as_str(), identity.caller(), sdp::teams_offer(&offer));
         let mut pushes = self.teams_call_pushes.subscribe();
         let created = match &join {
             Some(join) => {
@@ -273,7 +274,7 @@ impl Session {
             .and_then(Value::as_str)
             .ok_or_else(|| RestError::incomplete("call: no acceptance link"))?
             .to_owned();
-        let Some(plain) = calling::webrtc_answer(&answer.offer) else {
+        let Some(plain) = sdp::webrtc_answer(&answer.offer) else {
             return Err(RestError::incomplete("call: an offer without audio"));
         };
         voice
@@ -286,7 +287,7 @@ impl Session {
         };
         let body = calling::accept_call(
             &identity.caller(),
-            &calling::teams_answer(&local, &answer.offer),
+            &sdp::teams_answer(&local, &answer.offer),
             answer.media_leg.as_deref(),
         );
         if let Err(e) = teams.service.calling_post(&acceptance, &chain, &body).await {
@@ -447,9 +448,9 @@ async fn drive(
                     CallEvent::Negotiation { sdp, answer_link, media_leg } => {
                         let debugging = std::env::var("RV_CALL_DEBUG").as_deref() == Ok("1");
                         if debugging {
-                            eprintln!("teams call: new offer {}", calling::sdp_sections(&sdp));
+                            eprintln!("teams call: new offer {}", sdp::sdp_sections(&sdp));
                         }
-                        let Some(plain) = calling::renegotiation_offer(&sdp, negotiated.as_deref()) else {
+                        let Some(plain) = sdp::renegotiation_offer(&sdp, negotiated.as_deref()) else {
                             eprintln!("Teams call: a new offer without audio");
                             continue;
                         };
@@ -458,15 +459,15 @@ async fn drive(
                             continue;
                         };
                         negotiated = Some(plain);
-                        let answer = calling::teams_answer(&answer, &sdp);
+                        let answer = sdp::teams_answer(&answer, &sdp);
                         if debugging {
-                            eprintln!("teams call: answering {}", calling::sdp_sections(&answer));
+                            eprintln!("teams call: answering {}", sdp::sdp_sections(&answer));
                         }
                         let body = calling::answer_negotiation(&answer, media_leg.as_deref());
                         report("new offer's answer", teams.service.calling_post(&answer_link, chain, &body).await.map(|_| ()));
                     }
                     CallEvent::Accepted { sdp, acknowledge, call_leg, .. } if !answered => {
-                        let Some(answer) = calling::webrtc_answer(&sdp) else {
+                        let Some(answer) = sdp::webrtc_answer(&sdp) else {
                             voice.remote_ended("connect_failed").await;
                             break true;
                         };

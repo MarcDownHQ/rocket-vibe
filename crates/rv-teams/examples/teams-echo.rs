@@ -15,6 +15,7 @@ use futures_util::{SinkExt, StreamExt};
 use rv_teams::auth::{Tokens, from_secret};
 use rv_teams::calling::{self, CLIENT, CallEvent, Caller, EPCONV};
 use rv_teams::frames::{self, Frame};
+use rv_teams::sdp;
 use serde_json::{Value, json};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio_tungstenite::tungstenite::Message;
@@ -151,7 +152,7 @@ async fn main() {
     };
     println!("sidecar offered {} bytes", offer.len());
     if let Ok(path) = std::env::var("TEAMS_PROBE_OFFER") {
-        std::fs::write(path, calling::teams_offer(&offer)).unwrap();
+        std::fs::write(path, sdp::teams_offer(&offer)).unwrap();
     }
 
     let chain = uuid();
@@ -167,7 +168,7 @@ async fn main() {
             .json(&body)
             .send()
     };
-    let payload = calling::place_call(&caller, &[], None, &calling::teams_offer(&offer), &uuid());
+    let payload = calling::place_call(&caller, &[], None, &sdp::teams_offer(&offer), &uuid());
     let response = post(EPCONV.to_owned(), payload).await.unwrap();
     let status = response.status();
     let body = response.text().await.unwrap_or_default();
@@ -224,7 +225,7 @@ async fn main() {
                         });
                         match event {
                             CallEvent::Accepted { sdp, acknowledge, .. } => {
-                                let Some(answer) = calling::webrtc_answer(&sdp) else {
+                                let Some(answer) = sdp::webrtc_answer(&sdp) else {
                                     println!("no audio in the answer");
                                     break;
                                 };

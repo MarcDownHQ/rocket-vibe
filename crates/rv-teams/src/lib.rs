@@ -6,6 +6,7 @@ pub mod client;
 pub mod frames;
 pub mod live;
 pub mod notes;
+pub mod sdp;
 pub mod service;
 pub mod translate;
 
