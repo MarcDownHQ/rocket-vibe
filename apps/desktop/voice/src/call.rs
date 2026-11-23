@@ -364,7 +364,7 @@ async fn joined<S: CallSignaling>(
                         call.deferred = true;
                         continue;
                     }
-                    match offer(pc).await {
+                    match offer(pc, session.offers_to_receive_video()).await {
                         Ok(sdp) => {
                             call.offering = Some((sdp, tokio::time::Instant::now()));
                             // A renegotiation gathers nothing new: waiting would only
@@ -563,7 +563,7 @@ async fn reoffer<S: CallSignaling>(session: &mut S, call: &mut Call) -> Result<(
     {
         let _ = pc.set_local_description(rollback).await;
     }
-    match offer(pc).await {
+    match offer(pc, session.offers_to_receive_video()).await {
         Ok(sdp) => {
             call.offering = Some((sdp, tokio::time::Instant::now()));
             send_offer(session, call).await
@@ -666,6 +666,10 @@ impl CallSignaling for External {
 
     fn offers_in_turn(&self) -> bool {
         true
+    }
+
+    fn offers_to_receive_video(&self) -> bool {
+        self.video
     }
 
     async fn set_video(&mut self, _video: LocalVideo) -> Result<(), rv_call::Error> {
@@ -771,8 +775,9 @@ fn open(
 }
 
 /// The local offer made and set: its SDP, which goes out once gathering completed.
-async fn offer(pc: &PeerConnection) -> Result<String, String> {
-    let options = OfferOptions { offer_to_receive_audio: true, ..OfferOptions::default() };
+async fn offer(pc: &PeerConnection, video: bool) -> Result<String, String> {
+    let options =
+        OfferOptions { offer_to_receive_audio: true, offer_to_receive_video: video, ..OfferOptions::default() };
     let offer = pc.create_offer(options).await.map_err(|e| format!("create: {e:?}"))?;
     let sdp = offer.to_string();
     pc.set_local_description(offer).await.map_err(|e| format!("local: {e:?}"))?;
@@ -1323,13 +1328,14 @@ mod tests {
         assert!(next(&mut session).await.is_none());
         assert!(session.can_send(VideoKind::Camera) && session.can_send(VideoKind::Screen));
         assert!(session.reuses_section(VideoKind::Camera) && !session.reuses_section(VideoKind::Screen));
+        assert!(session.offers_in_turn() && session.offers_to_receive_video());
         assert_eq!(session.video_stream(VideoKind::Screen), "me-screen");
         session.set_video(LocalVideo { camera: true, screen: false }).await.unwrap();
         assert!(matches!(next(&mut session).await, Some(Some(CallEvent::OfferWanted { relay_only: false }))));
         assert!(next(&mut session).await.is_none(), "once per change");
         let mut audio = External::new("me".into(), false, false);
         audio.set_video(LocalVideo { camera: true, screen: false }).await.unwrap();
-        assert!(!audio.can_send(VideoKind::Camera));
+        assert!(!audio.can_send(VideoKind::Camera) && !audio.offers_to_receive_video());
         assert!(matches!(next(&mut audio).await, Some(Some(CallEvent::IceServers(_)))));
         assert!(matches!(next(&mut audio).await, Some(Some(CallEvent::OfferWanted { .. }))));
         assert!(next(&mut audio).await.is_none(), "an audio call never offers again");

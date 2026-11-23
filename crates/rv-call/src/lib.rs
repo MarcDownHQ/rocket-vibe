@@ -182,6 +182,13 @@ pub trait CallSignaling {
     fn offers_in_turn(&self) -> bool {
         false
     }
+    /// Whether this side's offers receive video: its video sections keep
+    /// receiving, and an offer with none asks for one (Teams' camera section
+    /// both sends and receives). Otherwise libwebrtc's legacy offer options
+    /// leave receiving out of every video section this side offers.
+    fn offers_to_receive_video(&self) -> bool {
+        false
+    }
     /// The stream id a local video track carries; the microphone's by default.
     fn video_stream(&self, _kind: VideoKind) -> String {
         self.local_id().to_owned()
