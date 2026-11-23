@@ -981,8 +981,21 @@ goes out as this side's video.
   where the web client reserves 100, and the made-up `sequence-number` 1 of the camera's capabilities; a
   group chat's call (placed by `epconv` with its people) still goes the 1:1 way, no data channel; whether Teams takes `renegotiate` from this client, whether it minds a stopped share
   told as `inactive` on its mid where its web client goes back to the placeholder, whether Teams' native
-  clients renegotiate as its web client does, and the codec the two sides settle on. Android owes the
-  whole of it.
+  clients renegotiate as its web client does, and the codec the two sides settle on.
+- **Android** (2026-11-23): `packages/provider-teams/src/calling.ts` ports `sdp.rs` (`Layout`, `teamsOffer`,
+  `plainAnswer`, `plainOffer`, `teamsAnswer`, `remoteVideos`, `modalities`, with its unit tests in
+  `calling.test.ts`) and `drive` (`runCall`: one push or offer at a time, an offer made before Teams took a
+  placed call waiting for its acceptance); `ExternalCallEngine` (`packages/provider-api/src/calls.ts`) gains
+  `offers`, `sending` and `videos`. The Kotlin call (`JitsiCall.kt` `startExternal(identity, answering, video)`)
+  is the sidecar's `External`: camera on the first unused video section (`reused`), screen on a send-only
+  transceiver of its own, streams `<identity>-camera` / `<identity>-screen`, a new offer per start or stop
+  only from a stable connection (`offerInTurn`, `deferred`), Teams' offer crossing this side's rolling it back
+  (`remoteOffer`), a refused first answer ending the call and a late one ignored (`remoteAnswer`), and
+  `remoteVideos` feeding the naming the Jitsi path uses (`shown`). Its offers carry `OfferToReceiveVideo`
+  (org.webrtc leaves video sections alone without it, where LiveKit's Rust binding defaulted to stripping
+  their receiving), so a placed call offers a camera section from the start. The call screen
+  (`app/call/[callId].tsx` `externalVideo`) opens the call with video and so shows the camera and screen
+  buttons. **Checked**: compiled and unit-tested only, not run on a device nor against Teams.
 
 ## Order
 
@@ -1028,9 +1041,9 @@ Teams meetings and video last.
 - crates/rv-teams/src/sdp.rs, crates/rv-teams/src/calling.rs, apps/desktop/crates/rv-core/src/teams_call.rs
   (Teams' video), Teams' web calling bundle `calling-pluginless-*.js` in `teams.cloud.microsoft.har`,
   `teams.cloud.microsoft_screenshare.har`, Microslop's `crates/ost-microsoft/src/calling/rtcp.rs`
-- crates/rv-teams/src/datachannel.rs, crates/rv-call/src/lib.rs (`video_up_front`), captures 2026-11-23/24
-  `teams.cloud.microsoft_video2.har`, `teams.cloud.microsoft_video3.har`, `teams-datachannel.json`
-  (a group call's and a meeting's own camera and share)
+- packages/provider-teams/src/calling.ts, packages/provider-teams/src/calling.test.ts,
+  packages/provider-api/src/calls.ts, apps/mobile/modules/voice/android/src/main/java/com/rocketvibe/voice/JitsiCall.kt
+  (Teams' video on Android)
 - https://github.com/aws/amazon-chime-sdk-js/blob/main/protocol/SignalingProtocol.proto
 - https://github.com/aws/amazon-chime-sdk-js/blob/main/src/signalingclient/DefaultSignalingClient.ts
 - https://github.com/aws/amazon-chime-sdk-js/blob/main/src/sdp/ZLIBTextCompressor.ts

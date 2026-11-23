@@ -65,10 +65,11 @@ the sidecar captures none there) and screen where the provider takes them: Jitsi
 Mattermost's Calls plugin a screen, and a camera where the plugin enables video. A WhatsApp call
 (GTK) shows the peer's camera and sends this side's camera or screen as its one picture, the camera off
 until turned on; a video call is answered in the app. A Teams call carried natively shows the other
-person's camera and shared screen, and sends this side's camera and screen; in a channel's or meeting's call, up to four people's
-cameras and a shared screen, asked of Teams' media server (GTK and SwiftUI, not yet run against Teams). A Slack huddle shows the others' cameras and screens and sends this side's camera, not its screen (GTK and SwiftUI). A header button opens the chat of the call's room beside the
+person's camera and shared screen, and sends this side's camera and screen (GTK, SwiftUI and Android, not
+yet run against Teams); in a channel's or meeting's call, up to four people's cameras and a shared
+screen, asked of Teams' media server (GTK and SwiftUI). A Slack huddle shows the others' cameras and screens and sends this side's camera, not its screen (GTK and SwiftUI; Android owes it). A header button opens the chat of the call's room beside the
 call. Android's call screen (`app/call/[callId].tsx`) does the same with its stage and strip, and its chat
-button opens the call's room over the call while it goes on; it owes Teams' video and huddles' video. Mechanism:
+button opens the call's room over the call while it goes on. Mechanism:
 [native calls](../architecture/native-calls.md#video-in-native-calls-2026-11-12), for WhatsApp
 [its video](../architecture/native-calls.md#whatsapp-11-calls-video-2026-11-21), for Teams
 [its video](../architecture/native-calls.md#teams-call-video-2026-11-23).
