@@ -17,15 +17,42 @@ pub const EPCONV: &str = "https://api.flightproxy.teams.microsoft.com/api/v2/epc
 pub const CLIENT: &str = "SkypeSpaces/1415/26100212018/os=linux; osVer=undefined; deviceType=computer; browser=chrome";
 
 /// `mediaAnswer`'s body answering a [`CallEvent::Negotiation`].
-pub fn answer_negotiation(answer: &str, media_leg: Option<&str>) -> Value {
+pub fn answer_negotiation(answer: &str, media_leg: Option<&str>, modalities: &[&str]) -> Value {
     json!({"mediaAnswer": {
-        "callModalities": ["Audio"],
+        "callModalities": modalities,
         "mediaContent": {
             "blob": answer,
             "contentType": "application/sdp-ngc-1.0",
             "mediaLegId": media_leg,
             "escalationOccurring": false,
             "newOffer": false,
+        },
+    }})
+}
+
+/// Where this side's own new offers go: the link a pushed acceptance names, or
+/// the one the acceptance of a call answered here comes back with.
+pub fn renegotiation_link(answer: &Value) -> Option<String> {
+    ["/links/mediaRenegotiation", "/callAcceptanceAcknowledgement/links/mediaRenegotiation"]
+        .iter()
+        .find_map(|path| answer.pointer(path).and_then(Value::as_str))
+        .filter(|u| u.starts_with("https://"))
+        .map(str::to_owned)
+}
+
+/// `renegotiate`'s body: this side's new offer, as Teams' web client sends one
+/// to share its screen. Teams' answer comes to the `mediaAnswer` callback.
+pub fn renegotiate(caller: &Caller, offer: &str, media_leg: Option<&str>, modalities: &[&str]) -> Value {
+    let cb = |path: &str| caller.callback(path);
+    json!({"mediaNegotiation": {
+        "callModalities": modalities,
+        "sender": caller.from(),
+        "links": {"mediaAnswer": cb("call/mediaAnswer/"), "rejection": cb("call/rejection/")},
+        "mediaContent": {
+            "blob": offer,
+            "contentType": "application/sdp-ngc-1.0",
+            "requiredFeatures": "nonByPass",
+            "mediaLegId": media_leg,
         },
     }})
 }
@@ -38,6 +65,8 @@ pub enum CallEvent {
         sdp: String,
         acknowledge: Option<String>,
         call_leg: Option<String>,
+        /// Where this side's own new offers go (`renegotiate`).
+        renegotiation: Option<String>,
         keep_alive_seconds: Option<u64>,
     },
     /// The call is over, with Teams' own wording when it gives one.
@@ -123,6 +152,7 @@ pub fn call_event(envelope: &Value) -> CallEvent {
             sdp: sdp.to_owned(),
             acknowledge: accepted.pointer("/links/acknowledgement").and_then(Value::as_str).map(str::to_owned),
             call_leg: accepted.pointer("/links/callLeg").and_then(Value::as_str).map(str::to_owned),
+            renegotiation: renegotiation_link(accepted),
             keep_alive_seconds: accepted.get("callKeepAliveInterval").and_then(Value::as_u64),
         };
     }
@@ -501,11 +531,11 @@ pub fn attached(answer: &Value) -> Option<Value> {
 }
 
 /// `acceptance`'s body: the answer in Teams' dialect, under the offer's media leg.
-pub fn accept_call(caller: &Caller, answer: &str, media_leg: Option<&str>) -> Value {
+pub fn accept_call(caller: &Caller, answer: &str, media_leg: Option<&str>, modalities: &[&str]) -> Value {
     let cb = |path: &str| caller.callback(path);
     json!({"callAcceptance": {
         "acceptedBy": caller.from(),
-        "acceptedCallModalities": ["Audio"],
+        "acceptedCallModalities": modalities,
         "capabilities": null,
         "endpointCapabilities": 73463,
         "clientEndpointCapabilities": 114259690,
@@ -565,7 +595,15 @@ mod tests {
         assert_eq!(links["links"]["leave"], "https://conv/leave", "the conversation's own leave");
         assert_eq!(links["conversationController"], "https://conv/c1");
         assert_eq!(attached(&json!({})), None);
-        let accept = accept_call(&caller, "v=0", Some("LEG"));
+        let accept = accept_call(&caller, "v=0", Some("LEG"), &["Audio", "Video"]);
+        let renegotiate = renegotiate(&caller, "v=1", Some("LEG"), &["Audio", "ScreenSharer"]);
+        assert_eq!(
+            renegotiate["mediaNegotiation"]["links"]["mediaAnswer"],
+            "https://t/callAgent/ep/r/call/mediaAnswer/"
+        );
+        assert_eq!(renegotiate["mediaNegotiation"]["mediaContent"]["blob"], "v=1");
+        assert_eq!(renegotiate["mediaNegotiation"]["callModalities"], json!(["Audio", "ScreenSharer"]));
+        assert_eq!(accept["callAcceptance"]["acceptedCallModalities"], json!(["Audio", "Video"]));
         assert_eq!(accept["callAcceptance"]["mediaContent"]["mediaLegId"], "LEG");
         assert_eq!(accept["callAcceptance"]["acceptedBy"]["endpointId"], "ep");
     }
@@ -606,7 +644,7 @@ mod tests {
     fn pushes_say_what_happened() {
         let accepted = json!({"url": "https://x/callAgent/e/r/call/acceptance/", "body": json!({"callAcceptance": {
             "callKeepAliveInterval": 2700,
-            "links": {"acknowledgement": "https://cc/ack"},
+            "links": {"acknowledgement": "https://cc/ack", "mediaRenegotiation": "https://cc/active/1/renegotiate"},
             "mediaContent": {"blob": "v=0"}}}).to_string()});
         assert_eq!(
             call_event(&accepted),
@@ -614,9 +652,13 @@ mod tests {
                 sdp: "v=0".into(),
                 acknowledge: Some("https://cc/ack".into()),
                 call_leg: None,
+                renegotiation: Some("https://cc/active/1/renegotiate".into()),
                 keep_alive_seconds: Some(2700),
             }
         );
+        let acknowledged = json!({"callAcceptanceAcknowledgement": {"links": {"mediaRenegotiation": "https://cc/r"}}});
+        assert_eq!(renegotiation_link(&acknowledged).as_deref(), Some("https://cc/r"));
+        assert_eq!(renegotiation_link(&json!({"links": {"mediaRenegotiation": "wss://x"}})), None);
         assert!(is_call_callback(&accepted, "e"));
         assert!(!is_call_callback(&accepted, "other"));
         let ended = json!({"body": {"callEnd": {"phrase": "Busy"}}});

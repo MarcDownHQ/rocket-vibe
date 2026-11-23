@@ -1,13 +1,13 @@
 //! A Teams call the app carries itself (brain/architecture/native-calls.md): this
 //! side speaks Teams' signalling over the account's tokens and socket, the voice
-//! sidecar offers and carries the media. Audio only.
+//! sidecar offers and carries the media, the cameras and shared screens included.
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::time::Duration;
 
-use rv_voice_protocol::RemoteMember;
-use serde_json::Value;
+use rv_voice_protocol::{RemoteMember, RemoteVideo};
+use serde_json::{Value, json};
 
 use crate::session::Session;
 use crate::sync::Backend;
@@ -33,6 +33,28 @@ pub enum Target {
     TestCall,
     /// The call ringing in this chat, answered here.
     Incoming(String),
+}
+
+/// What a call's media negotiated so far, as [`drive`] takes it over.
+struct Media {
+    layout: sdp::Layout,
+    /// Whether the other side took the call already: one answered here.
+    answered: bool,
+    /// Where this side's own new offers go, once Teams said.
+    renegotiation: Option<String>,
+    media_leg: Option<String>,
+}
+
+impl Media {
+    fn new(layout: sdp::Layout) -> Self {
+        Media { layout, answered: false, renegotiation: None, media_leg: None }
+    }
+}
+
+/// What this side sends now, as the window asked.
+fn sending(voice: &VoiceController) -> sdp::Sending {
+    let snapshot = voice.snapshot();
+    sdp::Sending { camera: snapshot.camera, screen: snapshot.sharing }
 }
 
 struct Identity {
@@ -107,11 +129,12 @@ impl Session {
         };
         let chain = identity.chain.clone();
         let mut pushes = self.teams_call_pushes.subscribe();
+        let mut layout = sdp::Layout::default();
         let body = calling::place_call(
             &identity.caller(),
             &to,
             thread.as_deref(),
-            &sdp::teams_offer(&offer),
+            &sdp::teams_offer(&offer, sending(voice), &mut layout),
             &calling::random_id(),
         );
         let created = match teams.service.calling_post(calling::EPCONV, &chain, &body).await {
@@ -125,7 +148,7 @@ impl Session {
         let voice = voice.clone();
         tokio::spawn(async move {
             let test = target == Target::TestCall;
-            drive(&session, &voice, &identity, &created, test, None, &mut pushes).await;
+            drive(&session, &voice, &identity, &created, test, Media::new(layout), &mut pushes).await;
         });
         Ok(())
     }
@@ -165,7 +188,9 @@ impl Session {
             voice.disconnect().await;
             return Err(RestError::incomplete("call: no offer"));
         };
-        let (chain, caller, offer) = (identity.chain.as_str(), identity.caller(), sdp::teams_offer(&offer));
+        let mut layout = sdp::Layout::default();
+        let offer = sdp::teams_offer(&offer, sending(voice), &mut layout);
+        let (chain, caller) = (identity.chain.as_str(), identity.caller());
         let mut pushes = self.teams_call_pushes.subscribe();
         let created = match &join {
             Some(join) => {
@@ -202,7 +227,7 @@ impl Session {
         let session = self.clone();
         let voice = voice.clone();
         tokio::spawn(async move {
-            drive(&session, &voice, &identity, &created, false, None, &mut pushes).await;
+            drive(&session, &voice, &identity, &created, false, Media::new(layout), &mut pushes).await;
         });
         Ok(())
     }
@@ -274,7 +299,8 @@ impl Session {
             .and_then(Value::as_str)
             .ok_or_else(|| RestError::incomplete("call: no acceptance link"))?
             .to_owned();
-        let Some(plain) = sdp::webrtc_answer(&answer.offer) else {
+        let mut layout = sdp::Layout::default();
+        let Some(plain) = sdp::plain_offer(&answer.offer, &mut layout) else {
             return Err(RestError::incomplete("call: an offer without audio"));
         };
         voice
@@ -285,15 +311,26 @@ impl Session {
             voice.disconnect().await;
             return Err(RestError::incomplete("call: no answer"));
         };
+        let sending = sending(voice);
         let body = calling::accept_call(
             &identity.caller(),
-            &sdp::teams_answer(&local, &answer.offer),
+            &sdp::teams_answer(&local, &answer.offer, sending, &layout),
             answer.media_leg.as_deref(),
+            &sdp::modalities(&layout, sending),
         );
-        if let Err(e) = teams.service.calling_post(&acceptance, &chain, &body).await {
-            voice.disconnect().await;
-            return Err(e);
-        }
+        let acknowledged = match teams.service.calling_post(&acceptance, &chain, &body).await {
+            Ok(acknowledged) => acknowledged,
+            Err(e) => {
+                voice.disconnect().await;
+                return Err(e);
+            }
+        };
+        let media = Media {
+            layout,
+            answered: true,
+            renegotiation: calling::renegotiation_link(&acknowledged),
+            media_leg: answer.media_leg.clone(),
+        };
         if std::env::var("RV_CALL_DEBUG").as_deref() == Ok("1") {
             eprintln!("teams call: answered {call_id}");
         }
@@ -301,7 +338,7 @@ impl Session {
         let session = self.clone();
         let voice = voice.clone();
         tokio::spawn(async move {
-            drive(&session, &voice, &identity, &created, false, Some(plain), &mut pushes).await;
+            drive(&session, &voice, &identity, &created, false, media, &mut pushes).await;
         });
         Ok(())
     }
@@ -381,14 +418,34 @@ fn debug(envelope: &Value, event: &CallEvent) {
     eprintln!("teams call: push {path} -> {kind} {keys:?}");
 }
 
+/// The other side's videos to the sidecar, when they changed: whose they are is
+/// the one other person a call with one has.
+async fn show_videos(
+    voice: &VoiceController,
+    layout: &sdp::Layout,
+    roster: &BTreeMap<String, String>,
+    shown: &mut Vec<RemoteVideo>,
+) {
+    let member = if roster.len() == 1 { roster.keys().next().cloned() } else { None };
+    let videos: Vec<RemoteVideo> = sdp::remote_videos(layout)
+        .into_iter()
+        .filter_map(|(stream, label)| {
+            Some(RemoteVideo { stream, member: member.clone()?, screen: label == sdp::Label::Screen })
+        })
+        .collect();
+    if videos != *shown {
+        *shown = videos.clone();
+        voice.remote_videos(videos).await;
+    }
+}
+
 async fn drive(
     session: &Arc<Session>,
     voice: &VoiceController,
     identity: &Identity,
     created: &Value,
     test: bool,
-    // The plain offer of a call answered here, accepted already.
-    accepted: Option<String>,
+    media: Media,
     pushes: &mut tokio::sync::broadcast::Receiver<Value>,
 ) {
     let Backend::Teams(teams) = session.backend() else { return };
@@ -396,11 +453,12 @@ async fn drive(
     let links = created.get("links").unwrap_or(&Value::Null);
     let conversation = created.get("conversationController").and_then(Value::as_str).unwrap_or("");
     let mut changes = voice.changes();
+    let mut offers = voice.local_offers();
     let mut roster: BTreeMap<String, String> = BTreeMap::new();
-    let mut answered = accepted.is_some();
+    let mut shown: Vec<RemoteVideo> = Vec::new();
+    let Media { mut layout, mut answered, mut renegotiation, mut media_leg } = media;
     let mut answered_at = answered.then(tokio::time::Instant::now);
-    // What the call negotiated last, in plain WebRTC: a new offer must fit it.
-    let mut negotiated: Option<String> = accepted;
+    let debugging = std::env::var("RV_CALL_DEBUG").as_deref() == Ok("1");
     // Teams' conversation holds this client through this long poll's 30 s lease.
     let broker = links.get("subscribe").and_then(Value::as_str).map(|first| {
         let (session, chain, first) = (session.clone(), chain.to_owned(), first.to_owned());
@@ -425,6 +483,25 @@ async fn drive(
                     break true;
                 }
             }
+            Ok(()) = offers.changed(), if answered => {
+                let Some(offer) = offers.borrow_and_update().clone() else { continue };
+                let Some(link) = renegotiation.clone() else {
+                    eprintln!("Teams call: no link to offer anew on");
+                    continue;
+                };
+                let sending = sending(voice);
+                let offer = sdp::teams_offer(&offer, sending, &mut layout);
+                if debugging {
+                    eprintln!("teams call: offering {}", sdp::sdp_sections(&offer));
+                }
+                let modalities = sdp::modalities(&layout, sending);
+                let body = calling::renegotiate(&identity.caller(), &offer, media_leg.as_deref(), &modalities);
+                let sent = teams.service.calling_post(&link, chain, &body).await.map(|_| ());
+                if sent.is_err() {
+                    layout.withdraw();
+                }
+                report("new offer", sent);
+            }
             push = pushes.recv() => {
                 let envelope = match push {
                     Ok(envelope) => envelope,
@@ -445,12 +522,15 @@ async fn drive(
                 let event = calling::call_event(&envelope);
                 debug(&envelope, &event);
                 match event {
-                    CallEvent::Negotiation { sdp, answer_link, media_leg } => {
-                        let debugging = std::env::var("RV_CALL_DEBUG").as_deref() == Ok("1");
+                    CallEvent::Negotiation { sdp, answer_link, media_leg: leg } => {
                         if debugging {
                             eprintln!("teams call: new offer {}", sdp::sdp_sections(&sdp));
                         }
-                        let Some(plain) = sdp::renegotiation_offer(&sdp, negotiated.as_deref()) else {
+                        layout.withdraw();
+                        if leg.is_some() {
+                            media_leg = leg;
+                        }
+                        let Some(plain) = sdp::plain_offer(&sdp, &mut layout) else {
                             eprintln!("Teams call: a new offer without audio");
                             continue;
                         };
@@ -458,27 +538,48 @@ async fn drive(
                             eprintln!("Teams call: a new offer went unanswered");
                             continue;
                         };
-                        negotiated = Some(plain);
-                        let answer = sdp::teams_answer(&answer, &sdp);
+                        let sending = sending(voice);
+                        let answer = sdp::teams_answer(&answer, &sdp, sending, &layout);
                         if debugging {
                             eprintln!("teams call: answering {}", sdp::sdp_sections(&answer));
                         }
-                        let body = calling::answer_negotiation(&answer, media_leg.as_deref());
+                        let modalities = sdp::modalities(&layout, sending);
+                        let body = calling::answer_negotiation(&answer, media_leg.as_deref(), &modalities);
                         report("new offer's answer", teams.service.calling_post(&answer_link, chain, &body).await.map(|_| ()));
+                        show_videos(voice, &layout, &roster, &mut shown).await;
                     }
-                    CallEvent::Accepted { sdp, acknowledge, call_leg, .. } if !answered => {
-                        let Some(answer) = sdp::webrtc_answer(&sdp) else {
+                    CallEvent::Accepted { sdp, acknowledge, .. } if answered && layout.offering() => {
+                        let Some(answer) = sdp::plain_answer(&sdp, &mut layout) else {
+                            eprintln!("Teams call: an answer without audio");
+                            continue;
+                        };
+                        voice.remote_answer(&answer).await;
+                        if let Some(link) = acknowledge {
+                            report("answer's acknowledgement", teams.service.calling_post(&link, chain, &json!({})).await.map(|_| ()));
+                        }
+                        show_videos(voice, &layout, &roster, &mut shown).await;
+                    }
+                    CallEvent::Accepted { sdp, acknowledge, call_leg, renegotiation: link, .. } if !answered => {
+                        let Some(answer) = sdp::plain_answer(&sdp, &mut layout) else {
                             voice.remote_ended("connect_failed").await;
                             break true;
                         };
                         answered = true;
                         answered_at = Some(tokio::time::Instant::now());
+                        renegotiation = link;
                         voice.remote_answer(&answer).await;
-                        negotiated = Some(answer);
                         if let Some(link) = acknowledge {
                             let body = calling::acknowledge_acceptance(&identity.caller());
-                            report("acknowledgement", teams.service.calling_post(&link, chain, &body).await.map(|_| ()));
+                            let acknowledged = teams.service.calling_post(&link, chain, &body).await;
+                            if renegotiation.is_none() {
+                                renegotiation = acknowledged.as_ref().ok().and_then(calling::renegotiation_link);
+                            }
+                            report("acknowledgement", acknowledged.map(|_| ()));
                         }
+                        if debugging && renegotiation.is_none() {
+                            eprintln!("teams call: no renegotiation link");
+                        }
+                        show_videos(voice, &layout, &roster, &mut shown).await;
                         if let Some(link) = call_leg {
                             let body = calling::register_on_leg(&identity.caller());
                             report("call leg", teams.service.calling_post(&link, chain, &body).await.map(|_| ()));
@@ -505,6 +606,7 @@ async fn drive(
                             .map(|(id, name)| RemoteMember { id: id.clone(), name: name.clone(), muted: false })
                             .collect();
                         voice.remote_roster(members).await;
+                        show_videos(voice, &layout, &roster, &mut shown).await;
                     }
                     CallEvent::Ended { .. } => {
                         voice.remote_ended("remote_ended").await;
