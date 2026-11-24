@@ -92,7 +92,7 @@ async fn a_jitsi_call_runs_in_the_same_controller() {
 #[tokio::test]
 async fn an_external_call_offers_again_for_its_camera_and_shows_the_videos_it_is_told_of() {
     let voice = fake(&[]);
-    voice.connect_external("Teams", "ep").await.unwrap();
+    voice.connect_external("Teams", "ep", None, 0).await.unwrap();
     assert_eq!(voice.local_offer().await.as_deref(), Some("offer 1"));
     let snapshot = until(&voice, |s| s.call_video.is_some()).await;
     assert_eq!(snapshot.call_video, Some((true, true)), "a Teams call takes the camera and the screen");

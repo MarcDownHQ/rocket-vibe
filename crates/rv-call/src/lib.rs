@@ -146,8 +146,13 @@ pub trait CallSignaling {
     }
     /// A data channel the offer must open, by its label (Mattermost's SFU sends no
     /// one's media until it is open).
-    fn data_channel(&self) -> Option<&'static str> {
+    fn data_channel(&self) -> Option<&str> {
         None
+    }
+    /// Whether what arrives on that data channel goes to the app (Teams' is
+    /// spoken by the app).
+    fn forwards_data(&self) -> bool {
+        false
     }
     /// That data channel's subprotocol.
     fn data_protocol(&self) -> &'static str {

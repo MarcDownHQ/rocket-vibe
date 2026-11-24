@@ -356,6 +356,8 @@ struct Inner {
     local_offer: tokio::sync::watch::Sender<Option<String>>,
     /// Its local answers to the offers given to it, in order.
     local_answers: broadcast::Sender<String>,
+    /// What arrives on an external call's data channel.
+    data: broadcast::Sender<Vec<u8>>,
 }
 
 /// A Jitsi Meet call to carry natively: where its conference is and as whom.
@@ -490,6 +492,7 @@ impl VoiceController {
                 input_level: AtomicU32::new(0),
                 local_offer: tokio::sync::watch::channel(None).0,
                 local_answers: broadcast::channel(8).0,
+                data: broadcast::channel(64).0,
             }),
         }
     }
@@ -569,9 +572,24 @@ impl VoiceController {
     /// Starts a call whose signalling the app speaks itself (Teams), camera and
     /// screen included: the offer comes from [`Self::local_offer`], each later one
     /// through [`Self::local_offers`], the rest goes through the `remote_*` methods.
-    pub async fn connect_external(&self, label: &str, identity: &str) -> Result<(), VoiceError> {
+    /// `data_channel` names a data channel the offer opens, spoken through
+    /// [`Self::send_data`] and [`Self::data`]; `receive_videos` receive-only
+    /// video sections come with the camera's.
+    pub async fn connect_external(
+        &self,
+        label: &str,
+        identity: &str,
+        data_channel: Option<&str>,
+        receive_videos: usize,
+    ) -> Result<(), VoiceError> {
         self.inner.local_offer.send_replace(None);
-        let connect = Command::ConnectExternal { identity: identity.to_owned(), answering: false, video: true };
+        let connect = Command::ConnectExternal {
+            identity: identity.to_owned(),
+            answering: false,
+            video: true,
+            data_channel: data_channel.map(str::to_owned),
+            receive_videos,
+        };
         self.start(label.to_owned(), true, None, None, connect).await
     }
 
@@ -579,7 +597,13 @@ impl VoiceController {
     /// first (an incoming Teams call): no local offer, [`Self::answer_remote_offer`] answers.
     pub async fn connect_external_answering(&self, label: &str, identity: &str) -> Result<(), VoiceError> {
         self.inner.local_offer.send_replace(None);
-        let connect = Command::ConnectExternal { identity: identity.to_owned(), answering: true, video: true };
+        let connect = Command::ConnectExternal {
+            identity: identity.to_owned(),
+            answering: true,
+            video: true,
+            data_channel: None,
+            receive_videos: 0,
+        };
         self.start(label.to_owned(), true, None, None, connect).await
     }
 
@@ -607,6 +631,16 @@ impl VoiceController {
 
     pub async fn remote_answer(&self, sdp: &str) {
         self.command(Command::RemoteAnswer { sdp: sdp.to_owned() }).await;
+    }
+
+    /// A binary message on the external call's data channel, sent once it is open.
+    pub async fn send_data(&self, data: Vec<u8>) {
+        self.command(Command::SendData { data }).await;
+    }
+
+    /// What arrives on the external call's data channel from now on.
+    pub fn data(&self) -> broadcast::Receiver<Vec<u8>> {
+        self.inner.data.subscribe()
     }
 
     /// The videos the other side of an external call sends now.
@@ -1025,6 +1059,9 @@ impl Inner {
                 }
                 Event::LocalAnswer { sdp } => {
                     let _ = self.local_answers.send(sdp);
+                }
+                Event::Data { data } => {
+                    let _ = self.data.send(data);
                 }
                 Event::Hello { .. } | Event::Devices { .. } | Event::Screens { .. } | Event::InputLevel { .. } => {}
             }

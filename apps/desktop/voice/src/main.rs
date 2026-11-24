@@ -162,14 +162,14 @@ async fn run() {
                     }
                     return call::run_pcm(address, voice.fake, voice.video_out(), &mut commands).await;
                 }
-                Some(Ok(Command::ConnectExternal { identity, answering, video })) => {
+                Some(Ok(Command::ConnectExternal { identity, answering, video, data_channel, receive_videos })) => {
                     if voice.room.is_some() {
                         error("already_connected");
                         continue;
                     }
                     let join = || {
-                        let identity = identity.clone();
-                        async move { Ok::<_, rv_call::Error>(call::External::new(identity, answering, video)) }
+                        let (identity, data_channel) = (identity.clone(), data_channel.clone());
+                        async move { Ok::<_, rv_call::Error>(call::External::new(identity, answering, video, data_channel, receive_videos)) }
                     };
                     return call::run(join, voice.fake, voice.video_out(), &mut commands).await;
                 }
@@ -423,6 +423,7 @@ impl Voice {
             | Command::ConnectChime { .. }
             | Command::ConnectExternal { .. }
             | Command::ConnectPcm { .. }
+            | Command::SendData { .. }
             | Command::RemoteOffer { .. }
             | Command::RemoteAnswer { .. }
             | Command::RemoteRoster { .. }

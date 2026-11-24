@@ -125,6 +125,7 @@ fn main() {
                 publish(&me, &peer);
             }
             Command::ConnectPcm { .. }
+            | Command::SendData { .. }
             | Command::RemoteOffer { .. }
             | Command::RemoteAnswer { .. }
             | Command::RemoteRoster { .. }

@@ -225,7 +225,7 @@ fn local(
                 video.want(Source::Screen, false, None, None);
             }
         }
-        Ok(Command::RemoteVideos { .. }) => {}
+        Ok(Command::RemoteVideos { .. } | Command::SendData { .. }) => {}
         Ok(_) => error("unsupported"),
     }
 }
@@ -329,6 +329,10 @@ async fn joined<S: CallSignaling>(
                         video.show();
                     }
                     call.publish(session.local_id());
+                }
+                Some(Ok(Command::SendData { data })) => {
+                    call.outbox.push((data, true));
+                    call.flush();
                 }
                 Some(Ok(Command::RemoteRoster { members })) => {
                     call.roster = members
@@ -450,7 +454,7 @@ async fn joined<S: CallSignaling>(
                     call.publish(session.local_id());
                 }
                 Some(CallEvent::DataMessage(text)) => {
-                    call.outbox.push(text);
+                    call.outbox.push((text.into_bytes(), false));
                     call.flush();
                 }
                 Some(CallEvent::Videos(videos)) => {
@@ -595,13 +599,21 @@ pub struct External {
     identity: String,
     answering: bool,
     video: bool,
+    data_channel: Option<String>,
+    receive_videos: usize,
     started: u8,
     offer_wanted: bool,
 }
 
 impl External {
-    pub fn new(identity: String, answering: bool, video: bool) -> Self {
-        External { identity, answering, video, started: 0, offer_wanted: false }
+    pub fn new(
+        identity: String,
+        answering: bool,
+        video: bool,
+        data_channel: Option<String>,
+        receive_videos: usize,
+    ) -> Self {
+        External { identity, answering, video, data_channel, receive_videos, started: 0, offer_wanted: false }
     }
 }
 
@@ -651,6 +663,18 @@ impl CallSignaling for External {
 
     fn rejoinable(&self) -> bool {
         false
+    }
+
+    fn data_channel(&self) -> Option<&str> {
+        self.data_channel.as_deref()
+    }
+
+    fn forwards_data(&self) -> bool {
+        true
+    }
+
+    fn receive_videos(&self) -> usize {
+        self.receive_videos
     }
 
     fn can_send(&self, _kind: VideoKind) -> bool {
@@ -828,7 +852,8 @@ struct Call {
     /// The data channel the provider wants open, kept for the call's life,
     /// and the messages waiting for it to open.
     channel: Option<livekit::webrtc::data_channel::DataChannel>,
-    outbox: Vec<String>,
+    /// Each message and whether it is binary.
+    outbox: Vec<(Vec<u8>, bool)>,
     /// An offer set, waiting for gathering to complete before it goes out, and since when.
     offering: Option<(String, tokio::time::Instant)>,
     /// An offer the provider wanted while the last one waited for its answer.
@@ -957,7 +982,14 @@ impl Call {
                         ..Default::default()
                     };
                     match pc.create_data_channel(label, init) {
-                        Ok(dc) => self.channel = Some(dc),
+                        Ok(dc) => {
+                            if session.forwards_data() {
+                                dc.on_message(Some(Box::new(|message| {
+                                    emit(Event::Data { data: message.data.to_vec() });
+                                })));
+                            }
+                            self.channel = Some(dc);
+                        }
                         Err(e) => diagnose(&format!("call: data channel: {e:?}")),
                     }
                 }
@@ -984,8 +1016,8 @@ impl Call {
         if channel.state() != livekit::webrtc::data_channel::DataChannelState::Open {
             return;
         }
-        for text in self.outbox.drain(..) {
-            if let Err(e) = channel.send(text.as_bytes(), false) {
+        for (data, binary) in self.outbox.drain(..) {
+            if let Err(e) = channel.send(&data, binary) {
                 diagnose(&format!("call: data channel: {e:?}"));
             }
         }
@@ -1329,7 +1361,7 @@ mod tests {
 
     #[tokio::test]
     async fn an_external_call_offers_once_however_often_it_is_asked() {
-        let mut session = External::new("me".into(), false, false);
+        let mut session = External::new("me".into(), false, false, None, 0);
         assert!(matches!(next(&mut session).await, Some(Some(CallEvent::IceServers(_)))));
         assert!(matches!(next(&mut session).await, Some(Some(CallEvent::OfferWanted { .. }))));
         for _ in 0..1000 {
@@ -1339,7 +1371,7 @@ mod tests {
 
     #[tokio::test]
     async fn an_answering_call_never_offers() {
-        let mut session = External::new("me".into(), true, false);
+        let mut session = External::new("me".into(), true, false, None, 0);
         assert!(matches!(next(&mut session).await, Some(Some(CallEvent::IceServers(_)))));
         for _ in 0..1000 {
             assert!(next(&mut session).await.is_none());
@@ -1348,7 +1380,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_video_call_offers_again_for_each_change_of_what_it_sends() {
-        let mut session = External::new("me".into(), true, true);
+        let mut session = External::new("me".into(), true, true, None, 0);
         assert!(matches!(next(&mut session).await, Some(Some(CallEvent::IceServers(_)))));
         assert!(next(&mut session).await.is_none());
         assert!(session.can_send(VideoKind::Camera) && session.can_send(VideoKind::Screen));
@@ -1358,7 +1390,7 @@ mod tests {
         session.set_video(LocalVideo { camera: true, screen: false }).await.unwrap();
         assert!(matches!(next(&mut session).await, Some(Some(CallEvent::OfferWanted { relay_only: false }))));
         assert!(next(&mut session).await.is_none(), "once per change");
-        let mut audio = External::new("me".into(), false, false);
+        let mut audio = External::new("me".into(), false, false, None, 0);
         audio.set_video(LocalVideo { camera: true, screen: false }).await.unwrap();
         assert!(!audio.can_send(VideoKind::Camera) && !audio.offers_to_receive_video());
         assert!(matches!(next(&mut audio).await, Some(Some(CallEvent::IceServers(_)))));

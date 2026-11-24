@@ -14,6 +14,10 @@ use serde::{Deserialize, Serialize};
 /// 2: `Connect.e2ee_key`, which a version 1 sidecar would ignore and connect in clear.
 pub const VERSION: u32 = 2;
 
+fn is_zero(value: &usize) -> bool {
+    *value == 0
+}
+
 fn is_false(value: &bool) -> bool {
     !*value
 }
@@ -102,6 +106,18 @@ pub enum Command {
         /// `<identity>-camera` as its stream id, the screen's `<identity>-screen`.
         #[serde(default, skip_serializing_if = "is_false")]
         video: bool,
+        /// A data channel the offer opens, by its label: what arrives on it comes
+        /// back as [`Event::Data`], [`Command::SendData`] sends on it.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        data_channel: Option<String>,
+        /// Receive-only video sections the offer carries besides the camera's,
+        /// for a server that sends each video it is asked for on a section of its own.
+        #[serde(default, skip_serializing_if = "is_zero")]
+        receive_videos: usize,
+    },
+    /// A binary message on an external call's data channel, sent once it is open.
+    SendData {
+        data: Vec<u8>,
     },
     /// An offer from the other side of an external call, in plain WebRTC SDP:
     /// answered with [`Event::LocalAnswer`].
@@ -246,6 +262,7 @@ impl std::fmt::Debug for Command {
                 .field("attendee_id", attendee_id)
                 .finish_non_exhaustive(),
             Self::ConnectExternal { .. } => f.write_str("ConnectExternal"),
+            Self::SendData { data } => f.debug_struct("SendData").field("data", &data.len()).finish(),
             Self::RemoteOffer { .. } => f.write_str("RemoteOffer"),
             Self::RemoteAnswer { .. } => f.write_str("RemoteAnswer"),
             Self::RemoteRoster { members } => f.debug_struct("RemoteRoster").field("members", &members.len()).finish(),
@@ -386,6 +403,10 @@ pub enum Event {
     /// The answer to [`Command::RemoteOffer`], its candidates in it.
     LocalAnswer {
         sdp: String,
+    },
+    /// A message on an external call's data channel.
+    Data {
+        data: Vec<u8>,
     },
     Hello {
         version: u32,
@@ -608,9 +629,26 @@ mod tests {
             ),
             (Command::ListScreens, json!({"type":"list_screens"})),
             (
-                Command::ConnectExternal { identity: "e".into(), answering: false, video: true },
+                Command::ConnectExternal {
+                    identity: "e".into(),
+                    answering: false,
+                    video: true,
+                    data_channel: None,
+                    receive_videos: 0,
+                },
                 json!({"type":"connect_external","identity":"e","answering":false,"video":true}),
             ),
+            (
+                Command::ConnectExternal {
+                    identity: "e".into(),
+                    answering: false,
+                    video: true,
+                    data_channel: Some("main-channel".into()),
+                    receive_videos: 4,
+                },
+                json!({"type":"connect_external","identity":"e","answering":false,"video":true,"data_channel":"main-channel","receive_videos":4}),
+            ),
+            (Command::SendData { data: vec![16, 0] }, json!({"type":"send_data","data":[16,0]})),
             (
                 Command::RemoteVideos {
                     videos: vec![

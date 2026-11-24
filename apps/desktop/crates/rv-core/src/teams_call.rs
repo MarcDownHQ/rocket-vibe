@@ -120,7 +120,7 @@ impl Session {
             chain: calling::random_id(),
         };
         voice
-            .connect_external(label, &identity.endpoint)
+            .connect_external(label, &identity.endpoint, None, 0)
             .await
             .map_err(|e| RestError::incomplete(&format!("call: {e}")))?;
         let Some(offer) = voice.local_offer().await else {
@@ -181,7 +181,7 @@ impl Session {
             chain: calling::random_id(),
         };
         voice
-            .connect_external(label, &identity.endpoint)
+            .connect_external(label, &identity.endpoint, None, 0)
             .await
             .map_err(|e| RestError::incomplete(&format!("call: {e}")))?;
         let Some(offer) = voice.local_offer().await else {
