@@ -13,6 +13,8 @@ mod h264;
 mod pcm_video;
 mod screen_audio;
 mod video;
+#[cfg(target_os = "macos")]
+mod videotoolbox;
 
 use livekit::e2ee::key_provider::{KeyProvider, KeyProviderOptions};
 use livekit::e2ee::{E2eeOptions, EncryptionType};
