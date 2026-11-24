@@ -42,11 +42,11 @@ nnnoiseless = { version = "=0.5.2", default-features = false }
 [target.'cfg(target_os = "linux")'.dependencies]
 cpal = { version = "=0.18.2", features = ["pulseaudio"] }
 
-# The camera: V4L2 on Linux, Media Foundation on Windows. No `decoding` feature,
-# which would build mozjpeg's C sources: MJPEG frames go through `image`'s
-# pure-Rust JPEG decoder. macOS has no camera here (its permission belongs to an
-# app bundle the GTK build does not make).
-[target.'cfg(any(target_os = "linux", target_os = "windows"))'.dependencies]
+# The camera: V4L2 on Linux, Media Foundation on Windows, AVFoundation on macOS
+# (its permission belongs to the SwiftUI app bundle that ships this process). No
+# `decoding` feature, which would build mozjpeg's C sources: MJPEG frames go
+# through `image`'s pure-Rust JPEG decoder.
+[target.'cfg(any(target_os = "linux", target_os = "windows", target_os = "macos"))'.dependencies]
 nokhwa = { version = "0.10.11", default-features = false, features = ["input-native"] }
 image = { version = "0.25", default-features = false, features = ["jpeg"] }
 

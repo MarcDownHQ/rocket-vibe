@@ -545,18 +545,42 @@ fn desktop(mut sink: Sink, chosen: Option<String>) {
     }
 }
 
-#[cfg(any(target_os = "linux", target_os = "windows"))]
+#[cfg(any(target_os = "linux", target_os = "windows", target_os = "macos"))]
 mod camera {
     use super::*;
     use nokhwa::Camera;
     use nokhwa::pixel_format::RgbAFormat;
     use nokhwa::utils::{CameraFormat, CameraIndex, FrameFormat, RequestedFormat, RequestedFormatType, Resolution};
 
-    /// The default camera, closest to 1280 by 720 at 30 frames a second.
+    #[cfg(target_os = "macos")]
+    fn allowed() -> bool {
+        if nokhwa::nokhwa_check() {
+            return true;
+        }
+        let (granted, answer) = std::sync::mpsc::channel();
+        nokhwa::nokhwa_initialize(move |yes| {
+            let _ = granted.send(yes);
+        });
+        answer.recv_timeout(std::time::Duration::from_secs(120)).unwrap_or(false)
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    fn allowed() -> bool {
+        true
+    }
+
+    /// The default camera, closest to 1280 by 720 at 30 frames a second, in
+    /// MJPEG where it has it (USB cameras), else NV12 or YUYV (macOS's own).
     pub(super) fn run(mut sink: Sink) {
-        let wanted = CameraFormat::new(Resolution::new(1280, 720), FrameFormat::MJPEG, 30);
-        let requested = RequestedFormat::new::<RgbAFormat>(RequestedFormatType::Closest(wanted));
-        let Ok(mut camera) = Camera::new(CameraIndex::Index(0), requested) else {
+        if !allowed() {
+            return sink.fail("camera_unavailable");
+        }
+        let opened = [FrameFormat::MJPEG, FrameFormat::NV12, FrameFormat::YUYV].into_iter().find_map(|format| {
+            let wanted = CameraFormat::new(Resolution::new(1280, 720), format, 30);
+            let requested = RequestedFormat::new::<RgbAFormat>(RequestedFormatType::Closest(wanted));
+            Camera::new(CameraIndex::Index(0), requested).ok()
+        });
+        let Some(mut camera) = opened else {
             return sink.fail("camera_unavailable");
         };
         if camera.open_stream().is_err() {
@@ -592,8 +616,7 @@ mod camera {
     }
 }
 
-/// No camera without its permission in the app bundle (macOS): unavailable.
-#[cfg(not(any(target_os = "linux", target_os = "windows")))]
+#[cfg(not(any(target_os = "linux", target_os = "windows", target_os = "macos")))]
 mod camera {
     use super::*;
     pub(super) fn run(sink: Sink) {
