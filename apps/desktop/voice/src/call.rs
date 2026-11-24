@@ -1365,6 +1365,42 @@ mod tests {
         assert!(matches!(next(&mut audio).await, Some(Some(CallEvent::OfferWanted { .. }))));
         assert!(next(&mut audio).await.is_none(), "an audio call never offers again");
     }
+
+    fn receiving(sdp: &str) -> Vec<&str> {
+        let mut video = false;
+        sdp.lines()
+            .filter(|line| {
+                if let Some(media) = line.strip_prefix("m=") {
+                    video = media.starts_with("video");
+                }
+                video && matches!(*line, "a=recvonly" | "a=inactive" | "a=sendonly" | "a=sendrecv")
+            })
+            .collect()
+    }
+
+    #[tokio::test]
+    async fn offers_carry_the_receiving_sections_asked_and_keep_them() {
+        let factory = PeerConnectionFactory::default();
+        let (tx, _rx) = mpsc::unbounded_channel();
+        let mut call = Call::new(audio::Mix::new());
+        call.pc = Some(open(&factory, Vec::new(), false, tx).unwrap());
+        assert!(receiving(&offer(call.pc.as_ref().unwrap(), false).await.unwrap()).is_empty());
+
+        call.add_receivers(2);
+        assert_eq!(receiving(&offer(call.pc.as_ref().unwrap(), true).await.unwrap()), ["a=recvonly", "a=recvonly"]);
+        call.add_receivers(1);
+        assert_eq!(receiving(&offer(call.pc.as_ref().unwrap(), true).await.unwrap()), ["a=recvonly", "a=recvonly"]);
+        call.add_receivers(3);
+        assert_eq!(
+            receiving(&offer(call.pc.as_ref().unwrap(), true).await.unwrap()),
+            ["a=recvonly", "a=recvonly", "a=recvonly"]
+        );
+        assert_eq!(
+            receiving(&offer(call.pc.as_ref().unwrap(), false).await.unwrap()),
+            ["a=inactive", "a=inactive", "a=inactive"],
+            "the legacy option takes receiving away from every video section"
+        );
+    }
 }
 
 /// A call carried as raw PCM by another process (`Command::ConnectPcm`, a WhatsApp

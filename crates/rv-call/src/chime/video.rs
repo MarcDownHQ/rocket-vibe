@@ -178,3 +178,112 @@ impl Subscriptions {
             .collect()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::super::proto::Writer;
+    use super::*;
+
+    fn source(stream: u64, attendee: &str, external: &str, layer: Option<u64>) -> Writer {
+        let w = Writer::default()
+            .uint(1, stream)
+            .uint(2, 15)
+            .string(4, "AmazonChimeExpressVideo")
+            .uint(6, 2)
+            .string(8, attendee)
+            .uint(9, 2)
+            .string(10, external);
+        match layer {
+            Some(base) => w.uint(13, 0).uint(14, 0).uint(15, base),
+            None => w,
+        }
+    }
+
+    fn index(sources: Vec<Writer>) -> Vec<u8> {
+        sources.into_iter().fold(Writer::default(), |w, s| w.message(2, s)).uint(4, 3).finish()
+    }
+
+    #[test]
+    fn an_index_lists_cameras_and_screens_without_this_client_or_their_layers() {
+        let bytes = index(vec![
+            source(11, "other", "T-R-UOTHER", None),
+            source(71, "other#content", "T-R-UOTHER", Some(71)),
+            source(72, "other#content", "T-R-UOTHER", Some(71)),
+            source(131, "me#content", "T-R-UME", Some(131)),
+            Writer::default().uint(1, 1).string(8, "third").uint(9, 1),
+        ]);
+        let sources = index_sources(&Message::parse(&bytes).unwrap(), "me");
+        assert_eq!(
+            sources,
+            vec![
+                Source { attendee: "other".into(), stream: 11, member: "T-R-UOTHER".into(), kind: VideoKind::Camera },
+                Source {
+                    attendee: "other#content".into(),
+                    stream: 71,
+                    member: "T-R-UOTHER".into(),
+                    kind: VideoKind::Screen
+                },
+            ]
+        );
+        assert!(index_sources(&Message::parse(&index(vec![])).unwrap(), "me").is_empty());
+    }
+
+    fn offer(sections: &[(&str, &str)]) -> String {
+        let mut sdp = "v=0\r\nm=audio 9 UDP/TLS/RTP/SAVPF 111\r\na=mid:0\r\na=sendrecv\r\n".to_owned();
+        for (mid, direction) in sections {
+            sdp.push_str(&format!("m=video 9 UDP/TLS/RTP/SAVPF 96\r\na=mid:{mid}\r\na={direction}\r\n"));
+        }
+        sdp
+    }
+
+    fn camera(attendee: &str, stream: u32) -> Source {
+        Source { attendee: attendee.into(), stream, member: format!("T-R-{attendee}"), kind: VideoKind::Camera }
+    }
+
+    #[test]
+    fn receive_ids_follow_the_video_sections_in_order() {
+        let mut subs = Subscriptions::new(25);
+        assert_eq!(subs.place(&offer(&[])).receive, vec![0]);
+        assert_eq!(subs.index(vec![camera("a", 11)]), Some(vec![]));
+        assert_eq!(subs.index(vec![camera("a", 11)]), None);
+        assert_eq!(subs.receiving(), 1);
+
+        let placed = subs.place(&offer(&[("1", "sendonly"), ("2", "recvonly")]));
+        assert_eq!(placed.receive, vec![0, 11]);
+        assert_eq!(
+            placed.subscriptions,
+            vec![Subscription { mid: "2".into(), attendee: "a".into(), kind: VideoKind::Camera }]
+        );
+        assert_eq!(
+            subs.remote(),
+            vec![RemoteVideo { track: "v_2".into(), member: "T-R-a".into(), kind: VideoKind::Camera }]
+        );
+
+        subs.index(vec![camera("b", 21), camera("a", 11)]);
+        let placed = subs.place(&offer(&[("1", "sendonly"), ("2", "recvonly"), ("3", "recvonly")]));
+        assert_eq!(placed.receive, vec![0, 11, 21]);
+
+        assert_eq!(subs.index(vec![camera("b", 21)]), Some(vec!["2".to_owned()]));
+        let placed = subs.place(&offer(&[("1", "sendonly"), ("2", "recvonly"), ("3", "recvonly")]));
+        assert_eq!(placed.receive, vec![0, 0, 21]);
+        assert_eq!(subs.remote().len(), 1);
+    }
+
+    #[test]
+    fn videos_past_the_limit_or_the_sections_wait() {
+        let mut subs = Subscriptions::new(1);
+        subs.index(vec![camera("a", 11), camera("b", 21)]);
+        assert_eq!(subs.receiving(), 1);
+        let mut subs = Subscriptions::new(25);
+        subs.index(vec![camera("a", 11), camera("b", 21)]);
+        assert_eq!(subs.place(&offer(&[("1", "recvonly")])).receive, vec![11]);
+        assert_eq!(subs.place(&offer(&[("1", "recvonly"), ("2", "recvonly")])).receive, vec![11, 21]);
+    }
+
+    #[test]
+    fn an_offer_sends_video_from_a_sending_video_section_only() {
+        assert!(!sends_video(&offer(&[("1", "inactive"), ("2", "recvonly")])));
+        assert!(sends_video(&offer(&[("1", "sendonly")])));
+        assert!(!sends_video("v=0\r\nm=audio 9 X 111\r\na=sendrecv\r\n"));
+    }
+}

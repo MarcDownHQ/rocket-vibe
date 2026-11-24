@@ -355,6 +355,54 @@ mod tests {
         assert_eq!(stream.string(4).as_deref(), Some("AmazonChimeExpressAudio"));
         assert_eq!(stream.string(8).as_deref(), Some("me-attendee"));
         assert_eq!(stream.int(9), Some(1));
+        assert_eq!(sub.messages(2).len(), 1);
+        assert_eq!(sub.ints(3), vec![0]);
+        assert!(sub.messages(9).is_empty());
+    }
+
+    #[test]
+    fn the_subscribe_sends_the_camera_and_asks_for_the_videos_placed_as_captured() {
+        let placed = video::Placed {
+            receive: vec![0, 11, 71],
+            subscriptions: vec![
+                video::Subscription { mid: "2".into(), attendee: "other".into(), kind: VideoKind::Camera },
+                video::Subscription { mid: "3".into(), attendee: "other#content".into(), kind: VideoKind::Screen },
+            ],
+        };
+        let b = subscribe(7, &config(), b"deflated", false, true, &placed);
+        let (_, m) = proto::received(&b).unwrap();
+        let sub = m.message(frame::SUBSCRIBE).unwrap();
+        assert_eq!(sub.int(1), Some(3));
+        let streams = sub.messages(2);
+        assert_eq!(streams.len(), 2);
+        let camera = &streams[1];
+        assert_eq!(
+            (camera.int(1), camera.int(2), camera.int(3), camera.int(6), camera.int(9)),
+            (Some(2), Some(15), Some(1400), Some(2), Some(2))
+        );
+        assert_eq!(camera.string(4).as_deref(), Some("AmazonChimeExpressVideo"));
+        assert_eq!(camera.string(8).as_deref(), Some("me-attendee"));
+        assert_eq!(sub.ints(3), vec![0, 11, 71]);
+        let configs = sub.messages(9);
+        assert_eq!(configs.len(), 2);
+        assert_eq!(configs[0].string(1).as_deref(), Some("2"));
+        assert_eq!(configs[0].string(2).as_deref(), Some("other"));
+        assert_eq!(
+            (configs[0].int(4), configs[0].int(5), configs[0].int(6)),
+            (Some(4_294_967_265), Some(600), Some(2))
+        );
+        assert_eq!(
+            (configs[1].int(4), configs[1].int(5), configs[1].int(6)),
+            (Some(4_294_967_285), Some(10_000), Some(3))
+        );
+    }
+
+    #[test]
+    fn a_freed_section_is_told_removed() {
+        let b = remote_video_removed(7, &["2".to_owned(), "4".to_owned()]);
+        let (kind, m) = proto::received(&b).unwrap();
+        assert_eq!(kind, kind::REMOTE_VIDEO_UPDATE);
+        assert_eq!(m.message(frame::REMOTE_VIDEO_UPDATE).unwrap().strings(2), vec!["2".to_owned(), "4".to_owned()]);
     }
 
     #[test]
