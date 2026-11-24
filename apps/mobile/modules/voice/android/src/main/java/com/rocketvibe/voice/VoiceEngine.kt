@@ -569,14 +569,19 @@ object VoiceEngine {
    * and screen too: each offer arrives through [onLocalOffer], the rest through
    * the `remote*` functions.
    */
-  fun connectExternal(callId: String, identity: String, title: String, answering: Boolean, video: Boolean): Boolean =
+  fun connectExternal(callId: String, identity: String, title: String, answering: Boolean, video: Boolean, dataChannel: String? = null, receiveVideos: Int = 0): Boolean =
     connectNative(callId, title) { session ->
       session.onLocalOffer = { sdp -> onLocalOffer?.invoke(sdp) }
-      session.startExternal(identity, answering, video)
+      session.onData = { data -> onData?.invoke(data) }
+      session.startExternal(identity, answering, video, dataChannel, receiveVideos)
       true
     }
 
   var onLocalOffer: ((String) -> Unit)? = null
+  /** What arrives on an external call's data channel. */
+  var onData: ((ByteArray) -> Unit)? = null
+
+  fun sendData(data: ByteArray) { jitsi?.sendData(data) }
 
   /** A call the app's WhatsApp engine carries (its socket at `address`): its audio, and its video beside it. */
   fun connectPcm(callId: String, address: String, title: String): Boolean =

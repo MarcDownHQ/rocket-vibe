@@ -224,8 +224,8 @@ function Call({
           const sub = voice.addListener('localOffer', ({ sdp }) => { clearTimeout(timer); sub.remove(); resolve(sdp); });
         });
         const engine: ExternalCallEngine = {
-          start: async (identity) => {
-            if (!await voice.connectExternal(callId, identity, title, false, true)) throw new Error('voice_unavailable');
+          start: async (identity, options) => {
+            if (!await voice.connectExternal(callId, identity, title, false, true, options?.dataChannel ?? null, options?.receiveVideos ?? 0)) throw new Error('voice_unavailable');
           },
           offer: () => offered,
           answer: (sdp) => voice.remoteAnswer(sdp),
@@ -296,8 +296,8 @@ function Call({
       try {
         await requestMicrophone();
         const engine: ExternalCallEngine = {
-          start: async (identity) => {
-            if (!await voice.connectExternal(callId, identity, title, true, true)) throw new Error('voice_unavailable');
+          start: async (identity, options) => {
+            if (!await voice.connectExternal(callId, identity, title, true, true, options?.dataChannel ?? null, options?.receiveVideos ?? 0)) throw new Error('voice_unavailable');
           },
           offer: () => Promise.reject(new Error('answering')),
           answer: (sdp) => voice.remoteAnswer(sdp),
@@ -510,8 +510,8 @@ async function toggleCamera(on: boolean, t: T): Promise<void> {
   await VoiceNative?.setCamera(true);
 }
 
-/** The voice engine's video, for a call whose signalling the app speaks (Teams): its later offers, what this side sends, and whose the other side's videos are. */
-function externalVideo(voice: NonNullable<typeof VoiceNative>): Pick<ExternalCallEngine, 'offers' | 'sending' | 'videos'> {
+/** The voice engine's video, for a call whose signalling the app speaks (Teams): its later offers, what this side sends, whose the other side's videos are, and its data channel. */
+function externalVideo(voice: NonNullable<typeof VoiceNative>): Pick<ExternalCallEngine, 'offers' | 'sending' | 'videos' | 'sendData' | 'data'> {
   return {
     offers: (listener) => {
       const sub = voice.addListener('localOffer', ({ sdp }) => listener(sdp));
@@ -522,6 +522,11 @@ function externalVideo(voice: NonNullable<typeof VoiceNative>): Pick<ExternalCal
       return { camera: now.camera === true, screen: now.sharing === true };
     },
     videos: (videos) => voice.remoteVideos(videos),
+    sendData: (data) => voice.sendData(Array.from(data)),
+    data: (listener) => {
+      const sub = voice.addListener('data', ({ data }) => listener(Uint8Array.from(data)));
+      return () => sub.remove();
+    },
   };
 }
 

@@ -12,6 +12,7 @@ import livekit.org.webrtc.DefaultVideoEncoderFactory
 import livekit.org.webrtc.IceCandidate
 import livekit.org.webrtc.MediaConstraints
 import livekit.org.webrtc.MediaStream
+import livekit.org.webrtc.MediaStreamTrack
 import livekit.org.webrtc.PeerConnection
 import livekit.org.webrtc.PeerConnectionFactory
 import livekit.org.webrtc.RtpReceiver
@@ -104,8 +105,12 @@ internal class JitsiSession(
   private var channelLabel: String? = null
   private var channelProtocol = ""
   private var channel: DataChannel? = null
-  /** The provider's messages for that channel, until it opens. */
-  private val outbox = ArrayList<String>()
+  /** The provider's messages for that channel, until it opens, each with whether it is binary. */
+  private val outbox = ArrayList<Pair<ByteArray, Boolean>>()
+  /** What arrives on that channel, for an app that speaks it (Teams). */
+  var onData: ((ByteArray) -> Unit)? = null
+  /** The receive-only video sections each new peer connection offers. */
+  private var receivers = 0
   /** What the provider takes from this side, and the stream id each local video track carries. */
   var canCamera = false; private set
   var canScreen = false; private set
@@ -304,11 +309,16 @@ internal class JitsiSession(
    * sends the camera, on the first unused video section, and the screen, on a
    * section of its own, their streams `<identity>-camera` and `<identity>-screen`,
    * and offers anew after each start or stop once the last offer was answered.
-   * Needs no library: nothing here crosses JNI. Called on the main thread.
+   * `dataChannel` names a data channel the offer opens, its messages going to
+   * [onData]; `receiveVideos` receive-only video sections go in every offer, the
+   * camera taking the first. Needs no library: nothing here crosses JNI. Called on the main thread.
    */
-  fun startExternal(identity: String, answering: Boolean, video: Boolean) {
+  fun startExternal(identity: String, answering: Boolean, video: Boolean, dataChannel: String? = null, receiveVideos: Int = 0) {
     external = true
     externalVideo = video
+    channelLabel = dataChannel?.takeIf { it.isNotEmpty() }
+    channelProtocol = ""
+    receivers = receiveVideos.coerceAtLeast(0)
     localId = identity
     canCamera = video
     canScreen = video
@@ -494,7 +504,7 @@ internal class JitsiSession(
         onChange()
       }
       "data" -> {
-        outbox.add(event.getString("text"))
+        outbox.add(event.getString("text").toByteArray() to false)
         flush()
       }
       "ice" -> {
@@ -570,9 +580,17 @@ internal class JitsiSession(
         dc.registerObserver(object : DataChannel.Observer {
           override fun onBufferedAmountChange(previous: Long) {}
           override fun onStateChange() { main.post { if (!closed) flush() } }
-          override fun onMessage(buffer: DataChannel.Buffer) {}
+          override fun onMessage(buffer: DataChannel.Buffer) {
+            if (!external) return
+            val data = ByteArray(buffer.data.remaining()).also { buffer.data.get(it) }
+            main.post { if (!closed) onData?.invoke(data) }
+          }
         })
       }
+    }
+    repeat(receivers) {
+      created.addTransceiver(MediaStreamTrack.MediaType.MEDIA_TYPE_VIDEO,
+        RtpTransceiver.RtpTransceiverInit(RtpTransceiver.RtpTransceiverDirection.RECV_ONLY))
     }
     microphone = track
     pc = created
@@ -584,8 +602,14 @@ internal class JitsiSession(
   private fun flush() {
     val dc = channel ?: return
     if (dc.state() != DataChannel.State.OPEN) return
-    for (text in outbox) dc.send(DataChannel.Buffer(ByteBuffer.wrap(text.toByteArray()), false))
+    for ((data, binary) in outbox) dc.send(DataChannel.Buffer(ByteBuffer.wrap(data), binary))
     outbox.clear()
+  }
+
+  /** A binary message on the provider's data channel, sent once it is open. */
+  fun sendData(data: ByteArray) {
+    outbox.add(data to true)
+    flush()
   }
 
   /**

@@ -51,9 +51,13 @@ type Bridge={
    * A call whose signalling the app speaks itself (Teams): each offer arrives on `localOffer`,
    * the rest goes through the `remote*` functions. `answering`: the other side offers first
    * ([`remoteOffer`]), no local offer. `video`: it takes this side's camera and screen, each
-   * start or stop offered anew (streams `<identity>-camera`, `<identity>-screen`).
+   * start or stop offered anew (streams `<identity>-camera`, `<identity>-screen`). `dataChannel`:
+   * a data channel the offer opens, what arrives on it coming on `data`. `receiveVideos`: receive-only
+   * video sections every offer carries, the camera taking the first.
    */
-  connectExternal(callId:string,identity:string,title:string,answering:boolean,video:boolean):Promise<boolean>;
+  connectExternal(callId:string,identity:string,title:string,answering:boolean,video:boolean,dataChannel:string|null,receiveVideos:number):Promise<boolean>;
+  /** A binary message on such a call's data channel, sent once it opens (bytes 0 to 255). */
+  sendData(data:number[]):Promise<void>;
   /**
    * A call the app's WhatsApp engine carries (its socket at `address`, `host:port#token`): its audio,
    * and its camera or screen both ways when the engine takes a video connection. False when this build cannot.
@@ -102,6 +106,8 @@ type Bridge={
   /** The held call's notification hung up. */
   addListener(event:'hangUp',listener:()=>void):{remove:()=>void};
   addListener(event:'localOffer',listener:(event:{sdp:string})=>void):{remove:()=>void};
+  /** A binary message on an external call's data channel (bytes 0 to 255). */
+  addListener(event:'data',listener:(event:{data:number[]})=>void):{remove:()=>void};
   /** Someone spoke with the microphone off in a voice room (local only, nothing sent). */
   addListener(event:'mutedSpeech',listener:()=>void):{remove:()=>void};
   /** The microphone's level, 0 to 1, about ten times a second while connected. */
