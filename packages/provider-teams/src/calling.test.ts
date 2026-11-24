@@ -120,7 +120,8 @@ describe('Teams calling', () => {
     assert.equal(body.callInvitation.links.acceptance, 'https://t/callAgent/e/r/call/acceptance/');
     assert.equal((placeCallBody(c, ['8:orgid:x'], '19:t@thread.v2', 'v=0', 't').groupChat as { threadId: string }).threadId, '19:t@thread.v2');
     assert.ok(JSON.stringify(acknowledgeBody(c)).includes('https://t/callAgent/e/r/call/end/'));
-    const renegotiate = renegotiateBody(c, 'v=1', 'LEG', ['Audio', 'ScreenSharer']) as { mediaNegotiation: { callModalities: string[]; links: { mediaAnswer: string }; mediaContent: { blob: string; mediaLegId: string } } };
+    const renegotiate = renegotiateBody(c, 'v=1', 'LEG', ['Audio', 'ScreenSharer'], true) as { mediaNegotiation: { callModalities: string[]; links: { mediaAnswer: string }; mediaContent: { blob: string; mediaLegId: string; negotiationTag: string } } };
+    assert.equal(renegotiate.mediaNegotiation.mediaContent.negotiationTag, `${c.participant};ss_1`);
     assert.equal(renegotiate.mediaNegotiation.links.mediaAnswer, 'https://t/callAgent/e/r/call/mediaAnswer/');
     assert.equal(renegotiate.mediaNegotiation.mediaContent.blob, 'v=1');
     assert.equal(renegotiate.mediaNegotiation.mediaContent.mediaLegId, 'LEG');
@@ -199,7 +200,8 @@ describe('Teams calling', () => {
     layout.remote = 'v=0\r\ns=-\r\nt=0 0\r\nm=audio 9 UDP/TLS/RTP/SAVPF 111\r\na=mid:0\r\n';
     const plain = plainOffer(offer, layout)!;
     assert.equal(audioMid(plain), '0');
-    assert.ok(plain.includes('a=group:BUNDLE 0\r\n') && plain.includes('a=inactive') && !plain.includes('m=video'));
+    assert.ok(plain.includes('a=group:BUNDLE 0\r\n') && plain.includes('a=inactive'));
+    assert.ok(section(plain, '8').startsWith('m=video 0 '), plain);
     const local = 'v=0\r\ns=-\r\nt=0 0\r\na=group:BUNDLE 0\r\nm=audio 9 UDP/TLS/RTP/SAVPF 111\r\nc=IN IP4 0.0.0.0\r\na=inactive\r\na=mid:0\r\n';
     const answer = teamsAnswer(local, offer, NOT_SENDING, layout);
     assert.equal(audioMid(answer), '7');
@@ -323,6 +325,16 @@ describe('Teams calling', () => {
     assert.ok(answer.includes('m=x-data 0 RTP/SAVP 127\r\na=mid:3\r\n'), answer);
     assert.ok(answer.indexOf('m=audio') < answer.indexOf('m=video'));
   });
+  test('a section libwebrtc takes no media on keeps its mid out of this side\'s reach', () => {
+    const layout = new Layout();
+    const plain = plainOffer(VIDEO_OFFER, layout)!;
+    assert.equal(section(plain, '3'), 'm=application 0 UDP/DTLS/SCTP webrtc-datachannel\nc=IN IP4 0.0.0.0\na=mid:3', plain);
+    assert.ok(plain.includes('a=group:BUNDLE 0 1 2\r\n'), plain);
+    const again = plainOffer(VIDEO_OFFER, layout)!;
+    assert.equal(again.split('a=mid:3\r\n').length - 1, 1, again);
+    assert.ok(again.indexOf('m=application') > again.indexOf('a=mid:2'));
+  });
+
   test('the other side\'s camera and screen are received under streams of their own', () => {
     const layout = new Layout();
     const plain = plainOffer(VIDEO_OFFER, layout)!;
@@ -466,7 +478,7 @@ describe('Teams calling', () => {
     assert.ok(offered !== undefined, 'the new offer goes to the link the acceptance came back with');
     assert.equal(offered.mediaNegotiation.mediaContent.mediaLegId, 'LEG');
     assert.ok(section(offered.mediaNegotiation.mediaContent.blob, '6').includes('a=label:applicationsharing-video'));
-    push({ url: url('call/mediaAnswer/'), body: { mediaAnswer: { links: { acknowledgement: 'https://cc/ack2' }, mediaContent: { blob: OURS_ANSWERED } } } });
+    push({ url: url('call/mediaAnswer/'), body: { mediaAnswer: { links: { mediaAcknowledgement: 'https://cc/ack2' }, mediaContent: { blob: OURS_ANSWERED } } } });
     await settle();
     assert.equal(answers.length, 1);
     assert.ok(section(answers[0]!, '1').includes('a=msid:teams-1 teams-1'), answers[0]);

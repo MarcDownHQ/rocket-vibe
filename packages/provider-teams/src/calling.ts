@@ -229,6 +229,18 @@ function closed(section: Section): string {
   return text(out);
 }
 
+/**
+ * A section of Teams' that libwebrtc takes no media on (its data channel, a
+ * refused one), refused under its mid: libwebrtc then never gives a section of
+ * this side's a mid Teams already uses.
+ */
+function reserved(section: Section, mid: string): string {
+  const kind = kindOf(section);
+  if (kind !== 'audio' && kind !== 'video') return text(['m=application 0 UDP/DTLS/SCTP webrtc-datachannel', 'c=IN IP4 0.0.0.0', `a=mid:${mid}`]);
+  const codecs = section.slice(1).filter((l) => l.startsWith('a=rtpmap:') || l.startsWith('a=fmtp:'));
+  return text([`m=${kind} 0 UDP/TLS/RTP/SAVPF ${formats(section)}`, 'c=IN IP4 0.0.0.0', ...codecs, `a=mid:${mid}`, 'a=inactive']);
+}
+
 /** Teams' session lines in plain WebRTC, bundling `mids`. */
 function plainHead(head: readonly string[], mids: readonly string[]): string {
   const out: string[] = [];
@@ -342,7 +354,11 @@ export function plainOffer(sdp: string, layout: Layout): string | null {
   layout.mids.clear();
   for (const section of sections) {
     const theirs = midOf(section);
-    if (theirs === null || !isOpen(section)) continue;
+    if (theirs === null) continue;
+    if (!isOpen(section) || (kindOf(section) !== 'audio' && kindOf(section) !== 'video')) {
+      if (!out.some(([mid]) => mid === theirs)) out.push([theirs, reserved(section, theirs), false]);
+      continue;
+    }
     let slot: number | null;
     let mid: string;
     let label: Label;
@@ -457,7 +473,7 @@ export function callPushEvent(envelope: Doc): CallPushEvent {
   if (typeof blob === 'string') {
     const links = accepted?.links as Doc | undefined;
     const text = (v: unknown) => (typeof v === 'string' ? v : null);
-    return { kind: 'accepted', sdp: blob, acknowledge: text(links?.acknowledgement), callLeg: text(links?.callLeg), renegotiation: renegotiationLink(accepted!) };
+    return { kind: 'accepted', sdp: blob, acknowledge: text(links?.acknowledgement) ?? text(links?.mediaAcknowledgement), callLeg: text(links?.callLeg), renegotiation: renegotiationLink(accepted!) };
   }
   const negotiation = body.mediaNegotiation as Doc | undefined;
   const offered = (negotiation?.mediaContent as Doc | undefined)?.blob;
@@ -665,15 +681,19 @@ export function answerNegotiationBody(answer: string, mediaLeg: string | null, c
   return { mediaAnswer: { callModalities, mediaContent: { blob: answer, contentType: 'application/sdp-ngc-1.0', mediaLegId: mediaLeg, escalationOccurring: false, newOffer: false } } };
 }
 
-/** `renegotiate`'s body: this side's new offer, as Teams' web client sends one to share its screen. Teams' answer comes to the `mediaAnswer` callback. */
-export function renegotiateBody(c: Caller, offer: string, mediaLeg: string | null, callModalities: readonly string[]): Doc {
+/**
+ * `renegotiate`'s body: this side's new offer, as Teams' web client sends one when
+ * its camera or its shared screen starts or stops (`screen`). Teams' answer comes
+ * to the `mediaAnswer` callback.
+ */
+export function renegotiateBody(c: Caller, offer: string, mediaLeg: string | null, callModalities: readonly string[], screen: boolean): Doc {
   const cb = (path: string) => callback(c, path);
   return {
     mediaNegotiation: {
       callModalities,
       sender: fromOf(c),
       links: { mediaAnswer: cb('call/mediaAnswer/'), rejection: cb('call/rejection/') },
-      mediaContent: { blob: offer, contentType: 'application/sdp-ngc-1.0', requiredFeatures: 'nonByPass', mediaLegId: mediaLeg },
+      mediaContent: { blob: offer, contentType: 'application/sdp-ngc-1.0', requiredFeatures: 'nonByPass', negotiationTag: `${c.participant};${screen ? 'ss' : 'v'}_1`, mediaLegId: mediaLeg },
     },
   };
 }
@@ -931,12 +951,15 @@ function runCall(deps: CallDeps, engine: ExternalCallEngine, caller: Caller, cha
     await engine.videos?.(videos);
   };
   let waiting: string | null = null;
+  let sharing = false;
   const offerAnew = async (sdp: string) => {
     if (renegotiation === null) return;
     const sending = sendingOf(engine);
     const offer = teamsOffer(sdp, sending, layout);
+    const screen = sharing !== sending.screen;
+    sharing = sending.screen;
     try {
-      await deps.post(renegotiation, chain, renegotiateBody(caller, offer, mediaLeg, modalities(layout, sending)));
+      await deps.post(renegotiation, chain, renegotiateBody(caller, offer, mediaLeg, modalities(layout, sending), screen));
     } catch {
       layout.withdraw();
     }
