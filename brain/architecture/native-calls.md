@@ -793,15 +793,17 @@ goes out as this side's video.
   camera, 1.2 a screen, a keyframe every 3 s and on request). The codecs are libwebrtc's own: its
   static library links OpenH264 2.6's encoder and FFmpeg's H.264 decoder on Linux, Windows and macOS
   (not Android's), called directly with their structs laid out from the shipped headers (sizes checked at
-  compile time). The peer's pictures are decoded, turned by their orientation (quarter turns, clockwise)
+  compile time). macOS's FFmpeg has no H.264 decoder (`avcodec_find_decoder` finds none), so there
+  `h264::Decoder` is VideoToolbox's (`videotoolbox.rs`): the Annex-B unit split into NAL units, a new
+  SPS/PPS pair opening a new decompression session, the rest sent as one length-prefixed sample, decoded
+  synchronously into NV12 and copied out as I420. The peer's pictures are decoded, turned by their orientation (quarter turns, clockwise)
   and shown as their camera; a failing decoder asks for a keyframe at most once a second.
   `video_declined` turns the captures off and rv-core's camera and screen wishes with them.
 - **SwiftUI**: the same sidecar through rv-ffi's `JitsiCallSession`, shown in `NativeCallWindow` (the
   peer's camera in their tile, the screen button); `WhatsAppChat::call_answerable` and `background.rs`
   `phone_only` send only a group's call to the phone. The camera goes out since the sidecar captures one
-  on macOS (2026-11-24), but the peer's camera shows nothing there: libwebrtc's FFmpeg on macOS has no H.264
-  decoder (`avcodec_find_decoder` finds none, so `h264::Decoder::new` fails and its two tests fail on a
-  Mac; CI never runs them there). Built on a Mac, not run in a call.
+  on macOS, and the peer's camera is decoded by VideoToolbox (2026-11-24; the `h264` round trip passes on
+  a Mac, CI never runs it there). Built on a Mac, not run in a call.
 - **Checked** (2026-11-21): the encoder's output decoded back at its size (`h264` tests); the real
   sidecar against a stand-in engine echoing its pictures as the peer's (`~/.cache/rvtest/pcm-harness.py`,
   outside the repo): about 15 pictures a second out, sending on then off, the echo decoded, turned and
