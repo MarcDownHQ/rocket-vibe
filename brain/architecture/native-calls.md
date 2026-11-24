@@ -996,8 +996,15 @@ goes out as this side's video.
   their receiving), so a placed call offers a camera section from the start. The call screen
   (`app/call/[callId].tsx` `externalVideo`) opens the call with video and so shows the camera and screen
   buttons. The fixes the 2026-11-23 capture led to (the answer acknowledged on `mediaAcknowledgement`,
-  `negotiationTag`, Teams' other mids reserved) are ported. **Checked**: compiled and unit-tested only, not
-  run on a device nor against Teams.
+  `negotiationTag`, Teams' other mids reserved) are ported. Group calls (2026-11-24): `calling.ts` takes
+  `Layout.group`, the x-data translation (`teamsData` / `plainData`), `streams`, `videoSlots` and
+  `dataStream`, and `packages/provider-teams/src/datachannel.ts` ports `datachannel.rs` byte for byte (JSON
+  keys in serde_json's sorted order); `joinThreadCall` starts the engine with `{dataChannel: 'main-channel',
+  receiveVideos: 5}` and `runCall` greets, beats every second (cleared when the call ends) and routes as
+  `drive` does. The Kotlin call adds the receive-only transceivers before its first offer (the camera's
+  `addTrack` then reuses the first) and opens the channel ordered and in-band; `sendData` queues until it is
+  open and what arrives reaches JS as the `data` event (bytes as a number array). **Checked**: compiled and
+  unit-tested only, not run on a device nor against Teams.
 
 ## Order
 
@@ -1044,6 +1051,7 @@ Teams meetings and video last.
   (Teams' video), Teams' web calling bundle `calling-pluginless-*.js` in `teams.cloud.microsoft.har`,
   `teams.cloud.microsoft_screenshare.har`, Microslop's `crates/ost-microsoft/src/calling/rtcp.rs`
 - packages/provider-teams/src/calling.ts, packages/provider-teams/src/calling.test.ts,
+  packages/provider-teams/src/datachannel.ts, packages/provider-teams/src/datachannel.test.ts,
   packages/provider-api/src/calls.ts, apps/mobile/modules/voice/android/src/main/java/com/rocketvibe/voice/JitsiCall.kt
   (Teams' video on Android)
 - https://github.com/aws/amazon-chime-sdk-js/blob/main/protocol/SignalingProtocol.proto
