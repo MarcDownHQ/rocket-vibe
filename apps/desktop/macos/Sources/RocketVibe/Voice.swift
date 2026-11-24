@@ -513,7 +513,11 @@ struct VoiceControls: View {
                     help: state.deafened ? "voice_session.undeafen" : "voice_session.deafen") {
                 Task { await voice.toggleDeafen() }
             }
-            // No camera button: the sidecar captures none on macOS (voice.md); others' cameras show.
+            control(state.camera ? "video.fill" : "video.slash.fill", on: state.camera,
+                    help: state.camera ? "voice_session.camera_off" : "voice_session.camera_on") {
+                Task { await voice.toggleCamera() }
+            }
+            .disabled(!state.canPublish)
             if !compact {
                 control("rectangle.inset.filled.on.rectangle", on: state.sharing,
                         help: state.sharing ? "voice_session.stop_screen" : "voice_session.share_screen") {
