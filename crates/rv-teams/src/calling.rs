@@ -41,8 +41,9 @@ pub fn renegotiation_link(answer: &Value) -> Option<String> {
 }
 
 /// `renegotiate`'s body: this side's new offer, as Teams' web client sends one
-/// to share its screen. Teams' answer comes to the `mediaAnswer` callback.
-pub fn renegotiate(caller: &Caller, offer: &str, media_leg: Option<&str>, modalities: &[&str]) -> Value {
+/// when its camera or its shared screen starts or stops (`screen`). Teams'
+/// answer comes to the `mediaAnswer` callback.
+pub fn renegotiate(caller: &Caller, offer: &str, media_leg: Option<&str>, modalities: &[&str], screen: bool) -> Value {
     let cb = |path: &str| caller.callback(path);
     json!({"mediaNegotiation": {
         "callModalities": modalities,
@@ -52,6 +53,7 @@ pub fn renegotiate(caller: &Caller, offer: &str, media_leg: Option<&str>, modali
             "blob": offer,
             "contentType": "application/sdp-ngc-1.0",
             "requiredFeatures": "nonByPass",
+            "negotiationTag": format!("{};{}_1", caller.participant, if screen { "ss" } else { "v" }),
             "mediaLegId": media_leg,
         },
     }})
@@ -150,7 +152,10 @@ pub fn call_event(envelope: &Value) -> CallEvent {
     {
         return CallEvent::Accepted {
             sdp: sdp.to_owned(),
-            acknowledge: accepted.pointer("/links/acknowledgement").and_then(Value::as_str).map(str::to_owned),
+            acknowledge: ["/links/acknowledgement", "/links/mediaAcknowledgement"]
+                .iter()
+                .find_map(|path| accepted.pointer(path).and_then(Value::as_str))
+                .map(str::to_owned),
             call_leg: accepted.pointer("/links/callLeg").and_then(Value::as_str).map(str::to_owned),
             renegotiation: renegotiation_link(accepted),
             keep_alive_seconds: accepted.get("callKeepAliveInterval").and_then(Value::as_u64),
@@ -596,13 +601,17 @@ mod tests {
         assert_eq!(links["conversationController"], "https://conv/c1");
         assert_eq!(attached(&json!({})), None);
         let accept = accept_call(&caller, "v=0", Some("LEG"), &["Audio", "Video"]);
-        let renegotiate = renegotiate(&caller, "v=1", Some("LEG"), &["Audio", "ScreenSharer"]);
+        let renegotiate = renegotiate(&caller, "v=1", Some("LEG"), &["Audio", "ScreenSharer"], true);
         assert_eq!(
             renegotiate["mediaNegotiation"]["links"]["mediaAnswer"],
             "https://t/callAgent/ep/r/call/mediaAnswer/"
         );
         assert_eq!(renegotiate["mediaNegotiation"]["mediaContent"]["blob"], "v=1");
         assert_eq!(renegotiate["mediaNegotiation"]["callModalities"], json!(["Audio", "ScreenSharer"]));
+        assert_eq!(
+            renegotiate["mediaNegotiation"]["mediaContent"]["negotiationTag"],
+            format!("{};ss_1", caller.participant)
+        );
         assert_eq!(accept["callAcceptance"]["acceptedCallModalities"], json!(["Audio", "Video"]));
         assert_eq!(accept["callAcceptance"]["mediaContent"]["mediaLegId"], "LEG");
         assert_eq!(accept["callAcceptance"]["acceptedBy"]["endpointId"], "ep");
@@ -638,6 +647,16 @@ mod tests {
                 media_leg: Some("LEG".into()),
             }
         );
+    }
+
+    #[test]
+    fn an_answer_to_this_sides_offer_is_acknowledged_on_its_own_link() {
+        let push = json!({"body": {"mediaAnswer": {
+            "links": {"mediaAcknowledgement": "https://cc/mediaAnswers/1/acknowledge"},
+            "mediaContent": {"blob": "v=0"},
+        }}});
+        let CallEvent::Accepted { acknowledge, .. } = call_event(&push) else { panic!("not an answer") };
+        assert_eq!(acknowledge.as_deref(), Some("https://cc/mediaAnswers/1/acknowledge"));
     }
 
     #[test]

@@ -338,6 +338,24 @@ fn closed(section: &Section) -> String {
     out
 }
 
+/// A section of Teams' that libwebrtc takes no media on (its data channel, a
+/// refused one), refused under its mid: libwebrtc then never gives a section of
+/// this side's a mid Teams already uses.
+fn reserved(section: &Section, mid: &str) -> String {
+    if !matches!(section.kind(), "audio" | "video") {
+        return format!("m=application 0 UDP/DTLS/SCTP webrtc-datachannel\r\nc=IN IP4 0.0.0.0\r\na=mid:{mid}\r\n");
+    }
+    let mut out = format!("m={} 0 UDP/TLS/RTP/SAVPF {}\r\nc=IN IP4 0.0.0.0\r\n", section.kind(), section.formats());
+    for line in &section.lines[1..] {
+        if line.starts_with("a=rtpmap:") || line.starts_with("a=fmtp:") {
+            out.push_str(line);
+            out.push_str("\r\n");
+        }
+    }
+    out.push_str(&format!("a=mid:{mid}\r\na=inactive\r\n"));
+    out
+}
+
 /// Teams' session lines in plain WebRTC, bundling `mids`.
 fn plain_head(head: &[&str], mids: &[String]) -> String {
     let mut out = String::new();
@@ -473,7 +491,10 @@ pub fn plain_offer(sdp: &str, layout: &mut Layout) -> Option<String> {
     layout.mids.clear();
     for section in &sections {
         let Some(theirs) = section.mid() else { continue };
-        if !section.open() {
+        if !section.open() || !matches!(section.kind(), "audio" | "video") {
+            if !out.iter().any(|(mid, _, _)| mid == theirs) {
+                out.push((theirs.to_owned(), reserved(section, theirs), false));
+            }
             continue;
         }
         let (slot, mid, label) = match section.kind() {
@@ -705,7 +726,8 @@ mod tests {
         };
         let plain = plain_offer(offer, &mut layout).unwrap();
         assert_eq!(audio_mid(&plain), Some("0"));
-        assert!(plain.contains("a=group:BUNDLE 0\r\n") && plain.contains("a=inactive") && !plain.contains("m=video"));
+        assert!(plain.contains("a=group:BUNDLE 0\r\n") && plain.contains("a=inactive"));
+        assert!(section(&plain, "8").starts_with("m=video 0 "), "{plain}");
         let local = "v=0\r\ns=-\r\nt=0 0\r\na=group:BUNDLE 0\r\nm=audio 9 UDP/TLS/RTP/SAVPF 111\r\nc=IN IP4 0.0.0.0\r\n\
             a=inactive\r\na=mid:0\r\n";
         let answer = teams_answer(local, offer, Sending::default(), &layout);
@@ -748,6 +770,21 @@ mod tests {
         assert!(answer.contains("m=video 0 RTP/SAVP 102\r\na=mid:1\r\n"), "{answer}");
         assert!(answer.contains("m=x-data 0 RTP/SAVP 127\r\na=mid:3\r\n"), "{answer}");
         assert!(answer.find("m=audio").unwrap() < answer.find("m=video").unwrap());
+    }
+
+    #[test]
+    fn a_section_libwebrtc_takes_no_media_on_keeps_its_mid_out_of_this_sides_reach() {
+        let mut layout = Layout::default();
+        let plain = plain_offer(VIDEO_OFFER, &mut layout).unwrap();
+        assert_eq!(
+            section(&plain, "3"),
+            "m=application 0 UDP/DTLS/SCTP webrtc-datachannel\nc=IN IP4 0.0.0.0\na=mid:3",
+            "{plain}"
+        );
+        assert!(plain.contains("a=group:BUNDLE 0 1 2\r\n"), "{plain}");
+        let again = plain_offer(VIDEO_OFFER, &mut layout).unwrap();
+        assert_eq!(again.matches("a=mid:3\r\n").count(), 1, "{again}");
+        assert!(again.find("m=application").unwrap() > again.find("a=mid:2").unwrap());
     }
 
     #[test]

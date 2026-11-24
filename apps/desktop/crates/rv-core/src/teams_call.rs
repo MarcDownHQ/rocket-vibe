@@ -456,6 +456,7 @@ async fn drive(
     let mut offers = voice.local_offers();
     let mut roster: BTreeMap<String, String> = BTreeMap::new();
     let mut shown: Vec<RemoteVideo> = Vec::new();
+    let mut sharing = false;
     let Media { mut layout, mut answered, mut renegotiation, mut media_leg } = media;
     let mut answered_at = answered.then(tokio::time::Instant::now);
     let debugging = std::env::var("RV_CALL_DEBUG").as_deref() == Ok("1");
@@ -495,7 +496,8 @@ async fn drive(
                     eprintln!("teams call: offering {}", sdp::sdp_sections(&offer));
                 }
                 let modalities = sdp::modalities(&layout, sending);
-                let body = calling::renegotiate(&identity.caller(), &offer, media_leg.as_deref(), &modalities);
+                let screen = std::mem::replace(&mut sharing, sending.screen) != sending.screen;
+                let body = calling::renegotiate(&identity.caller(), &offer, media_leg.as_deref(), &modalities, screen);
                 let sent = teams.service.calling_post(&link, chain, &body).await.map(|_| ());
                 if sent.is_err() {
                     layout.withdraw();
