@@ -995,7 +995,9 @@ goes out as this side's video.
   (org.webrtc leaves video sections alone without it, where LiveKit's Rust binding defaulted to stripping
   their receiving), so a placed call offers a camera section from the start. The call screen
   (`app/call/[callId].tsx` `externalVideo`) opens the call with video and so shows the camera and screen
-  buttons. **Checked**: compiled and unit-tested only, not run on a device nor against Teams.
+  buttons. The fixes the 2026-11-23 capture led to (the answer acknowledged on `mediaAcknowledgement`,
+  `negotiationTag`, Teams' other mids reserved) are ported. **Checked**: compiled and unit-tested only, not
+  run on a device nor against Teams.
 
 ## Order
 
