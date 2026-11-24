@@ -700,20 +700,40 @@ goes out as this side's video.
   rebuilds its browser's SDP by label and renumbers the `a=mid`s between offers (its share went from mid 2
   to 4, the other side's to 5). In a 1:1 call (not `multiParty`), a camera or a screen starting is a
   renegotiation: the side starting it posts `renegotiate {mediaNegotiation {callModalities, sender, links
-  {mediaAnswer, rejection}, mediaContent {blob, mediaLegId}}}`, Teams answers on the `mediaAnswer` callback,
-  and the answer is acknowledged on its `links.acknowledgement`; the other side's renegotiation comes as
-  `mediaNegotiation` (the hold path above). The `renegotiate` link is `links.mediaRenegotiation` of a
+  {mediaAnswer, rejection}, mediaContent {blob, mediaLegId, negotiationTag}}}` (the tag is
+  `<participantId>;v_1` for a camera, `;ss_1` for a screen), Teams answers on the `mediaAnswer` callback,
+  and the answer is acknowledged by a POST on its `links.mediaAcknowledgement` (the web client's is empty, this client sends `{}`) (a `callAcceptance`'s
+  is `links.acknowledgement`); the other side's renegotiation comes as `mediaNegotiation` (the hold path
+  above), answered on its `links.mediaAnswer`, and Teams then pushes `mediaAcknowledgement`. The `renegotiate` link is `links.mediaRenegotiation` of a
   pushed `callAcceptance` on a placed call, and `callAcceptanceAcknowledgement.links.mediaRenegotiation`
   of the acceptance's own answer on a call answered here (`call_in` HAR). A call through Teams' media
   server (`multiParty`: group calls, meetings) sends no one's video until the client asks for a source
   (`controlVideoStreaming {controlInfo {sourceId, streamMsid, fmtParams}}`, over the data channel or the
   signalling), and Microslop's RTCP video source request (`PSFB` `AFB` type 1) is the native clients' form
   of it: **neither is built**.
+- **What a 1:1 call between two web clients showed** (the 2026-11-23 `video1` HAR): Teams never reuses a
+  mid. Its first offer lists `applicationsharing-video` open under mid 2 (`inactive`); the web client
+  answers it with port 0 and no mid, and its shares later took mids 6 and 5 (data being 3). A stopped share
+  goes back to the placeholder `m=video 0 RTP/SAVP 34` with only its label, no mid; a camera turned off
+  keeps `main-video` under its mid, `inactive`, its msid and sources kept. Video is H.264 (several
+  profiles) and AV1 only, no VP8 or VP9. `callModalities` say `Audio` plus `Video` while the camera is on,
+  `ScreenSharer` while sharing; the answers say `audio`, `screenViewer`.
+- **What a group call showed** (the `video2` HAR, no websocket frames): the client's own offer lists ten
+  `main-video` sections (mid 1 its camera with a range of 100 sources, 2 to 6 `sendrecv`, 7 to 10
+  `recvonly`), `applicationsharing-video` mid 11 and `data` mid 12. Turning the camera or a share on or off
+  is no renegotiation there: the client posts `updateMediaDescriptions {UpdateMediaDescriptions
+  {mediaDescriptions {descriptions [{mid, direction, label}], negotiationTag, requestId}}}` with every
+  section's direction (`sendrecv` and `main-video` on mid 1 for the camera, `sendonly` and
+  `applicationsharing-video` on mid 11 for a share), and `applyChannelParameters` on its `mcProxy` link
+  with `maxVideoSendCapabilities`. Which section shows whom was not captured.
 - **The translation** (rv-teams `sdp.rs`): a `Layout` per call holds the plain sections libwebrtc
   negotiated, in their order. The audio keeps its section whatever mid Teams gives it (as before); a video
   section keeps its plain mid equal to Teams' own, since the other side's packets carry it (`sdes:mid`), so a
   video section under a mid the call has not seen becomes a new plain section after the others and the
-  section Teams stopped listing is refused (port 0); `m=x-data` is refused, as Microslop does. Each video
+  section Teams stopped listing is refused (port 0); `m=x-data` is refused, as Microslop does. Every
+  section of Teams' libwebrtc takes no media on (the data section, a refused one) stays in the plain offer
+  refused under its mid (`m=application 0` for the data), so libwebrtc never gives this side's new screen
+  section a mid Teams already uses: before, the share took mid 3, Teams' data section. Each video
   section the other side sends gets `a=msid:teams-<mid>` (its own msid and `a=ssrc` msids dropped) and is
   named camera or screen by its label. This side's offer is labelled by the stream ids the sidecar gives
   its tracks (`<endpoint>-camera`, `<endpoint>-screen`); a section of its own takes the label over from one
@@ -742,12 +762,13 @@ goes out as this side's video.
   side's camera turned on, through a script outside the repo: libwebrtc took every translated offer and
   answer, the other side's camera track came up under its stream and was shown on its member, the camera
   went out `sendrecv` on `main-video`, the screen on a new `applicationsharing-video` section, and each
-  stop was offered anew as `inactive`. That run also found that taking a stopped capture off its sender
+  stop was offered anew as `inactive` (run again after the reserved mids on 2026-11-24: the share took mid 4
+  and offered H.264 and AV1). That run also found that taking a stopped capture off its sender
   crashed the sidecar in every native call (webrtc-sys dereferences the track it is given): the sender now
   gets a track that sends nothing. **Not run
-  against Teams**: whether Teams takes `renegotiate` from this client, the exact `mediaAnswer` push and its
-  acknowledgement's body (the HAR's has none; `{}` is sent), whether Teams' native clients renegotiate as its
-  web client does, and the codecs the two libwebrtcs settle on (Teams offers H.264 and AV1). Android owes the
+  against Teams**: whether Teams takes `renegotiate` from this client, whether it minds a stopped share
+  told as `inactive` on its mid where its web client goes back to the placeholder, whether Teams' native
+  clients renegotiate as its web client does, and the codec the two sides settle on. Android owes the
   whole of it.
 
 ## Order
