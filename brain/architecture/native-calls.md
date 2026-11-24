@@ -767,7 +767,7 @@ goes out as this side's video.
   server (`multiParty`: group calls, meetings) sends no one's video until the client asks for a source
   (`controlVideoStreaming {controlInfo {sourceId, streamMsid, fmtParams}}`, over the data channel or the
   signalling), and Microslop's RTCP video source request (`PSFB` `AFB` type 1) is the native clients' form
-  of it: **neither is built**.
+  of it: the data channel's form is built (below), the RTCP one is not.
 - **What a 1:1 call between two web clients showed** (the 2026-11-23 `video1` HAR): Teams never reuses a
   mid. Its first offer lists `applicationsharing-video` open under mid 2 (`inactive`); the web client
   answers it with port 0 and no mid, and its shares later took mids 6 and 5 (data being 3). A stopped share
@@ -782,7 +782,25 @@ goes out as this side's video.
   {mediaDescriptions {descriptions [{mid, direction, label}], negotiationTag, requestId}}}` with every
   section's direction (`sendrecv` and `main-video` on mid 1 for the camera, `sendonly` and
   `applicationsharing-video` on mid 11 for a share), and `applyChannelParameters` on its `mcProxy` link
-  with `maxVideoSendCapabilities`. Which section shows whom was not captured.
+  with `maxVideoSendCapabilities`.
+- **What a meeting's data channel showed** (the 2026-11-24 `video3` HAR with its socket frames, and
+  `teams-datachannel.json` from a script wrapping `RTCPeerConnection.createDataChannel`, two accounts):
+  the browser opens one in-band channel `main-channel` (id 0, no protocol) for the `x-data` section, which
+  is a plain SCTP channel (`a=x-data-protocol:sctp`, no `sctp-port`). The media server's answer names every
+  section by `a=x-source-streamid` (201 for mid 0 to 213 for the data, in m-line order), and each
+  `rosterUpdate` push lists an endpoint's `call.mediaStreams` with its own ids the same way (`main-audio`
+  414, `main-video` 415, `applicationsharing-video` 425, `data` 426) and `direction` `sendrecv` while that
+  video is on, `recvonly` while off. Every message is a frame: `0x10`, the header's remaining length
+  (`0x0f`, `0x13` for two receivers), the kind (`0x92` JSON; `0x80`, `0x81` carry the client's own events
+  and a handshake with the other endpoint, not needed), `0x00`, a little-endian frame counter, the
+  sender's stream id, the receivers' count and ids (big-endian; the server is `0xfffffffc`), `0x01`, then
+  a JSON array. The client sends `syn {client_capabilities}` (answered `ack`), a `heartbeat {state: 0}`
+  every second as the server does, and, a second after a remote video turns `sendrecv`, `sr
+  {controlVideoStreaming {sequenceNumber, controlInfo {sourceId: 415, streamMsid: 202, fmtParams
+  [{max-fs, max-mbps, max-fps, profile-level-id: 64001f}]}}}` putting that camera on its mid 1; a share
+  went on its `applicationsharing-video` section (212), and `sourceId: -1` when the video stopped. The
+  server answers `sr_res {result: ok, sequenceNumber}`, and sends `bwe`, `dsh` (dominant speakers' audio
+  ids) and `vdclc` (what it wants of this side's own sending, a keyframe flag included).
 - **The translation** (rv-teams `sdp.rs`): a `Layout` per call holds the plain sections libwebrtc
   negotiated, in their order. The audio keeps its section whatever mid Teams gives it (as before); a video
   section keeps its plain mid equal to Teams' own, since the other side's packets carry it (`sdes:mid`), so a
@@ -796,7 +814,12 @@ goes out as this side's video.
   its tracks (`<endpoint>-camera`, `<endpoint>-screen`); a section of its own takes the label over from one
   that only received, and a capture stopped is told as `recvonly` or `inactive`, its track gone.
   `modalities` fills `callModalities` (`Video`, `ScreenSharer`, `ScreenViewer`) in the accept, the answers
-  and `renegotiate`.
+  and `renegotiate`. libwebrtc's `m=application` data section goes out as `m=x-data ... 127` with
+  `x-data-protocol:sctp` and a made-up source range, and Teams' comes back as `UDP/DTLS/SCTP
+  webrtc-datachannel` on port 5000; the stream id of each section is kept (`video_slots`, `data_stream`). A
+  group call's `Layout::group` offers every receiving video section rather than one per label, the last one
+  not labelled yet as the shared screen's; a receive-only section names the range `1-1`, as the web
+  client's do.
 - **The sidecar** (`call.rs` `External`, `ConnectExternal {video}`): it takes the camera and the screen;
   the camera goes on the first unused video section (the one receiving the other side's camera,
   `reuses_section`), the screen on a new send-only section, as the web client's share does. Each start or stop
@@ -808,10 +831,17 @@ goes out as this side's video.
   client's does. An offer of Teams' crossing this side's rolls it back, answers, then
   offers again; a late answer to a new offer no longer ends a running call. `Command::RemoteVideos` names the
   other side's videos by stream, whose (the one other person in the roster) and which kind.
+  `ConnectExternal {data_channel, receive_videos}` opens a data channel by its label and adds that many
+  receive-only video sections (then the first of them is the camera's); `SendData` sends a binary message
+  on it once open, and what arrives comes back as `Event::Data`.
 - **rv-core** (`teams_call.rs` `drive`): each new local offer (`VoiceController::local_offers`) goes through
   `renegotiate` once the call is answered; a `mediaAnswer` push answers it while it waits
   (`Layout::offering`), and an offer of Teams' meanwhile withdraws it. GTK and SwiftUI need no change: the
-  window shows the camera and screen buttons from `CallVideo`, as for Jitsi.
+  window shows the camera and screen buttons from `CallVideo`, as for Jitsi. A channel or meeting call
+  (`join_thread_call`) opens `main-channel` with five receiving sections (four cameras, one screen); once
+  answered it sends `syn`, a heartbeat every second, and (rv-teams `datachannel.rs` `Routing`) asks for each
+  roster source turning live on a free section of its kind and for nothing there when it stops, the
+  videos then named after whose source each section carries. A fifth camera is not shown.
 - **Checked** (2026-11-23): the translation against SDP shaped like the HARs' (camera and screen received,
   a renumbered screen section, this side's share taking the label over, a stopped camera), the external
   signalling's offers, and the controller's new offers and `RemoteVideos` against the fake sidecar. The real
@@ -823,7 +853,10 @@ goes out as this side's video.
   and offered H.264 and AV1). That run also found that taking a stopped capture off its sender
   crashed the sidecar in every native call (webrtc-sys dereferences the track it is given): the sender now
   gets a track that sends nothing. **Not run
-  against Teams**: whether Teams takes `renegotiate` from this client, whether it minds a stopped share
+  against Teams**: a group call's channel and requests (the real sidecar's offer went through the
+  translation and a Teams-shaped answer outside the repo: the data channel and five slots, stream ids
+  202 to 207); this side's own camera or share in a group call, still offered through `renegotiate` where
+  the web client posts `updateMediaDescriptions`; whether Teams takes `renegotiate` from this client, whether it minds a stopped share
   told as `inactive` on its mid where its web client goes back to the placeholder, whether Teams' native
   clients renegotiate as its web client does, and the codec the two sides settle on. Android owes the
   whole of it.
@@ -842,12 +875,12 @@ Teams meetings and video last.
 - **Slack**: nothing blocking (the second capture has credentials, signalling, TURN and SDP, the
   third cameras and screen shares). Useful later: the main socket's `LEAVE`. A huddle opens in its own
   window: Chrome's DevTools setting "Auto-open DevTools for popups" catches it from the start.
-- **Teams**: what `callKeepAliveInterval` wants of a call past 45 minutes; a webrtc-internals
-  dump of a Teams group call or meeting (the `x-data` channel's messages, its source requests); the
+- **Teams**: what `callKeepAliveInterval` wants of a call past 45 minutes; the
   `mediaAnswer` push answering this side's `renegotiate`; the pushes of a meeting join (the HARs of
   2026-11-18 hold its requests, not the socket). The outgoing call's answer was read live
   (2026-11-06), the auth audience, its creating request and screen sharing captured (2026-11-02),
-  a meeting join and a channel call (2026-11-18).
+  a meeting join and a channel call (2026-11-18), a meeting's data channel and roster sources
+  (2026-11-24).
 
 ## Sources
 
