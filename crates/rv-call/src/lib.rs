@@ -189,6 +189,13 @@ pub trait CallSignaling {
     fn offers_to_receive_video(&self) -> bool {
         false
     }
+    /// How many receive-only video sections this side's offers must carry, one
+    /// per remote video the provider sends when asked on a section of its own
+    /// (Chime). Sections added stay: an offer with more than this many leaves
+    /// the rest unused.
+    fn receive_videos(&self) -> usize {
+        0
+    }
     /// The stream id a local video track carries; the microphone's by default.
     fn video_stream(&self, _kind: VideoKind) -> String {
         self.local_id().to_owned()

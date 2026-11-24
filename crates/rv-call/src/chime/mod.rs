@@ -10,12 +10,13 @@
 #[cfg(feature = "client")]
 pub mod client;
 pub mod proto;
+pub(crate) mod video;
 
 use std::collections::BTreeMap;
 
 use proto::{Message, Writer, frame, kind};
 
-use crate::{IceServer, Member};
+use crate::{IceServer, Member, VideoKind};
 
 /// The SDK this client presents itself as: the protocol it speaks is that one's.
 const SDK_VERSION: &str = "3.32.0";
@@ -82,9 +83,17 @@ pub(crate) fn join(timestamp: u64, audio_session_id: u32) -> Vec<u8> {
     proto::signal(timestamp, kind::JOIN, frame::JOIN, body)
 }
 
-/// The SUBSCRIBE carrying the offer: the microphone as the one stream sent.
-pub(crate) fn subscribe(timestamp: u64, config: &Config, compressed_offer: &[u8], muted: bool) -> Vec<u8> {
-    let stream = Writer::default()
+/// The SUBSCRIBE carrying the offer: the microphone, the camera when `camera`,
+/// and the remote videos `placed` on the offer's receiving sections.
+pub(crate) fn subscribe(
+    timestamp: u64,
+    config: &Config,
+    compressed_offer: &[u8],
+    muted: bool,
+    camera: bool,
+    placed: &video::Placed,
+) -> Vec<u8> {
+    let microphone = Writer::default()
         .uint(1, 1)
         .uint(2, 15)
         .uint(3, 600)
@@ -94,17 +103,45 @@ pub(crate) fn subscribe(timestamp: u64, config: &Config, compressed_offer: &[u8]
         .string(8, &config.attendee_id)
         // AUDIO
         .uint(9, 1);
-    let body = Writer::default()
-        // RX: no video sent
-        .uint(1, 1)
-        .message(2, stream)
-        .uint(3, 0)
-        .string(4, "")
-        .string(5, &config.audio_host)
-        .bool(6, false)
-        .bool(7, muted)
-        .bytes(8, compressed_offer);
+    // RX, or DUPLEX with the camera
+    let mut body = Writer::default().uint(1, if camera { 3 } else { 1 }).message(2, microphone);
+    if camera {
+        let stream = Writer::default()
+            .uint(1, 2)
+            .uint(2, 15)
+            .uint(3, 1400)
+            .string(4, "AmazonChimeExpressVideo")
+            .uint(6, 2)
+            .string(8, &config.attendee_id)
+            // VIDEO
+            .uint(9, 2);
+        body = body.message(2, stream);
+    }
+    for id in &placed.receive {
+        body = body.uint(3, u64::from(*id));
+    }
+    body = body.string(4, "").string(5, &config.audio_host).bool(6, false).bool(7, muted).bytes(8, compressed_offer);
+    for subscription in &placed.subscriptions {
+        let (priority, kbps, adaptation) = match subscription.kind {
+            VideoKind::Camera => (4_294_967_265, 600, 2),
+            VideoKind::Screen => (4_294_967_285, 10_000, 3),
+        };
+        let config = Writer::default()
+            .string(1, &subscription.mid)
+            .string(2, &subscription.attendee)
+            .uint(4, priority)
+            .uint(5, kbps)
+            .uint(6, adaptation)
+            .uint(7, 1);
+        body = body.message(9, config);
+    }
     proto::signal(timestamp, kind::SUBSCRIBE, frame::SUBSCRIBE, body)
+}
+
+/// Tells the server these receiving sections no longer receive.
+pub(crate) fn remote_video_removed(timestamp: u64, mids: &[String]) -> Vec<u8> {
+    let body = mids.iter().fold(Writer::default(), |w, mid| w.string(2, mid));
+    proto::signal(timestamp, kind::REMOTE_VIDEO_UPDATE, frame::REMOTE_VIDEO_UPDATE, body)
 }
 
 pub(crate) fn audio_control(timestamp: u64, muted: bool) -> Vec<u8> {
@@ -299,7 +336,14 @@ mod tests {
 
     #[test]
     fn the_subscribe_sends_the_microphone_and_the_offer() {
-        let b = subscribe(7, &config(), b"deflated", true);
+        let b = subscribe(
+            7,
+            &config(),
+            b"deflated",
+            true,
+            false,
+            &video::Placed { receive: vec![0], ..Default::default() },
+        );
         let (kind, m) = proto::received(&b).unwrap();
         assert_eq!(kind, kind::SUBSCRIBE);
         let sub = m.message(frame::SUBSCRIBE).unwrap();

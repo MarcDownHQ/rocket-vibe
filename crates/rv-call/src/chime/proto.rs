@@ -144,6 +144,17 @@ impl<'a> Message<'a> {
             .collect()
     }
 
+    /// Every value of a repeated integer field, unpacked as the SDK writes them.
+    pub fn ints(&self, field: u32) -> Vec<u64> {
+        self.0
+            .iter()
+            .filter_map(|(f, v)| match v {
+                Value::Int(i) if *f == field => Some(*i),
+                _ => None,
+            })
+            .collect()
+    }
+
     pub fn strings(&self, field: u32) -> Vec<String> {
         self.0
             .iter()
@@ -161,6 +172,7 @@ pub mod kind {
     pub const JOIN_ACK: u64 = 2;
     pub const SUBSCRIBE: u64 = 3;
     pub const SUBSCRIBE_ACK: u64 = 4;
+    pub const INDEX: u64 = 5;
     pub const LEAVE: u64 = 9;
     pub const LEAVE_ACK: u64 = 10;
     pub const AUDIO_CONTROL: u64 = 16;
@@ -168,6 +180,7 @@ pub mod kind {
     pub const AUDIO_STREAM_ID_INFO: u64 = 18;
     pub const PING_PONG: u64 = 19;
     pub const AUDIO_STATUS: u64 = 20;
+    pub const REMOTE_VIDEO_UPDATE: u64 = 24;
 }
 
 /// `SdkSignalFrame`'s fields.
@@ -179,12 +192,14 @@ pub mod frame {
     pub const JOIN_ACK: u32 = 5;
     pub const SUBSCRIBE: u32 = 6;
     pub const SUBSCRIBE_ACK: u32 = 7;
+    pub const INDEX: u32 = 8;
     pub const LEAVE: u32 = 11;
     pub const AUDIO_CONTROL: u32 = 17;
     pub const AUDIO_METADATA: u32 = 18;
     pub const AUDIO_STREAM_ID_INFO: u32 = 19;
     pub const PING_PONG: u32 = 20;
     pub const AUDIO_STATUS: u32 = 21;
+    pub const REMOTE_VIDEO_UPDATE: u32 = 25;
 }
 
 /// The type byte before a frame the client sends (`FRAME_TYPE_RTC`); the

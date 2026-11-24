@@ -553,7 +553,8 @@ impl VoiceController {
         self.start(label.to_owned(), true, None, None, connect).await
     }
 
-    /// Joins an Amazon Chime meeting natively (a Slack huddle). Audio only.
+    /// Joins an Amazon Chime meeting natively (a Slack huddle): audio, the
+    /// others' cameras and screens, this side's camera.
     pub async fn connect_chime(&self, label: &str, call: &ChimeCall) -> Result<(), VoiceError> {
         let connect = Command::ConnectChime {
             signaling_url: call.signaling_url.clone(),

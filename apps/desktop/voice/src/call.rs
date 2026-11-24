@@ -359,11 +359,14 @@ async fn joined<S: CallSignaling>(
                         session.leave().await;
                         return Stop::Lost("connect_failed".to_owned());
                     }
-                    let Some(pc) = &call.pc else { continue };
-                    if session.offers_in_turn() && pc.signaling_state() != SignalingState::Stable {
+                    if session.offers_in_turn()
+                        && call.pc.as_ref().is_some_and(|pc| pc.signaling_state() != SignalingState::Stable)
+                    {
                         call.deferred = true;
                         continue;
                     }
+                    call.add_receivers(session.receive_videos());
+                    let Some(pc) = &call.pc else { continue };
                     match offer(pc, session.offers_to_receive_video()).await {
                         Ok(sdp) => {
                             call.offering = Some((sdp, tokio::time::Instant::now()));
@@ -557,6 +560,7 @@ const REOFFERS: u8 = 3;
 
 /// This side's offer anew, the one waiting rolled back first.
 async fn reoffer<S: CallSignaling>(session: &mut S, call: &mut Call) -> Result<(), rv_call::Error> {
+    call.add_receivers(session.receive_videos());
     let Some(pc) = &call.pc else { return Ok(()) };
     if pc.signaling_state() == SignalingState::HaveLocalOffer
         && let Ok(rollback) = SessionDescription::parse("", SdpType::Rollback)
@@ -843,6 +847,8 @@ struct Call {
     last: Option<Vec<Participant>>,
     /// The call's video, where the app shows any (not a call carried as PCM).
     video: Option<Videos>,
+    /// The receive-only video sections added for [`CallSignaling::receive_videos`].
+    receivers: usize,
     /// A call carried as PCM: what its video shows.
     pcm_video: Option<Arc<pcm_video::Flags>>,
 }
@@ -872,6 +878,7 @@ impl Call {
             input_level: 0.0,
             last: None,
             video: None,
+            receivers: 0,
             pcm_video: None,
         }
     }
@@ -902,6 +909,24 @@ impl Call {
         self.deferred = false;
         self.answering = None;
         self.gathered.clear();
+        self.receivers = 0;
+    }
+
+    /// Receive-only video sections on the peer connection until there are `wanted`.
+    fn add_receivers(&mut self, wanted: usize) {
+        let Some(pc) = &self.pc else { return };
+        while self.receivers < wanted {
+            let init = livekit::webrtc::rtp_transceiver::RtpTransceiverInit {
+                direction: livekit::webrtc::rtp_transceiver::RtpTransceiverDirection::RecvOnly,
+                stream_ids: Vec::new(),
+                send_encodings: Vec::new(),
+            };
+            if let Err(e) = pc.add_transceiver_for_media(livekit::webrtc::MediaType::Video, init) {
+                diagnose(&format!("call: video receiver: {e:?}"));
+                return;
+            }
+            self.receivers += 1;
+        }
     }
 
     /// The peer connection, opened with the microphone on first need; false
