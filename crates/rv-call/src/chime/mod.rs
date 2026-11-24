@@ -230,6 +230,27 @@ pub(crate) fn audio_status(status: u64) -> Status {
     }
 }
 
+/// A SUBSCRIBE_ACK's raw-deflated answer, which the server compresses with the
+/// previous answer on the same socket as its preset dictionary (none for the
+/// first).
+pub(crate) fn inflate_answer(compressed: &[u8], previous: &[u8]) -> Option<Vec<u8>> {
+    let dictionary = &previous[previous.len().saturating_sub(32 * 1024)..];
+    let mut stream = Vec::with_capacity(dictionary.len() + 5 + compressed.len());
+    if !dictionary.is_empty() {
+        // miniz_oxide takes no preset dictionary: a non-final stored block
+        // holding it ends byte-aligned, so the answer's own blocks follow it.
+        let len = dictionary.len() as u16;
+        stream.push(0);
+        stream.extend_from_slice(&len.to_le_bytes());
+        stream.extend_from_slice(&(!len).to_le_bytes());
+        stream.extend_from_slice(dictionary);
+    }
+    stream.extend_from_slice(compressed);
+    let mut inflated = miniz_oxide::inflate::decompress_to_vec(&stream).ok()?;
+    inflated.drain(..dictionary.len());
+    Some(inflated)
+}
+
 /// An attendee's volume as the server sends it (minus decibels) between 0 and
 /// 1, over the SDK's own range of -42 to -14 dB.
 fn level(volume: u64) -> f32 {
@@ -361,5 +382,25 @@ mod tests {
         assert_eq!(level(42), 0.0);
         assert_eq!(level(127), 0.0);
         assert!((level(28) - 0.5).abs() < 1e-6);
+    }
+
+    #[test]
+    fn an_answer_inflates_with_the_previous_one_as_its_dictionary() {
+        let previous = b"v=0\r\no=- 0 0 IN IP4 127.0.0.1\r\ns=-\r\nt=0 0\r\na=group:BUNDLE 0 1\r\n\
+            m=audio 9 UDP/TLS/RTP/SAVPF 111\r\na=mid:0\r\nm=video 9 UDP/TLS/RTP/SAVPF 96\r\na=mid:1\r\na=inactive\r\n";
+        let answer = b"v=0\r\no=- 0 0 IN IP4 127.0.0.1\r\ns=-\r\nt=0 0\r\na=group:BUNDLE 0 1 2\r\n\
+            m=audio 9 UDP/TLS/RTP/SAVPF 111\r\na=mid:0\r\nm=video 9 UDP/TLS/RTP/SAVPF 96\r\na=mid:1\r\na=inactive\r\n\
+            m=video 9 UDP/TLS/RTP/SAVPF 96\r\na=mid:2\r\na=sendonly\r\na=msid:v_2 track_2\r\n";
+        // zlib's raw deflate of `answer` with `previous` as its preset dictionary.
+        let compressed = [
+            0x2b, 0xa3, 0xc4, 0x75, 0x0a, 0x46, 0x34, 0x77, 0x1f, 0x71, 0x9a, 0x8c, 0x40, 0x8c, 0xe2, 0xd4, 0xbc, 0x94,
+            0xfc, 0xbc, 0x9c, 0x4a, 0xb0, 0x60, 0x31, 0x50, 0xb4, 0x2c, 0xde, 0x48, 0xa1, 0xa4, 0x28, 0x31, 0x39, 0x3b,
+            0x1e, 0x28, 0x0f, 0x00,
+        ];
+        assert_eq!(inflate_answer(&compressed, previous).as_deref(), Some(&answer[..]));
+        assert_eq!(inflate_answer(&compressed, b""), None);
+
+        let first = miniz_oxide::deflate::compress_to_vec(previous, 6);
+        assert_eq!(inflate_answer(&first, b"").as_deref(), Some(&previous[..]));
     }
 }

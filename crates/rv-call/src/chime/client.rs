@@ -98,7 +98,13 @@ pub async fn join(config: Config) -> Result<Session, Error> {
     let _ = event_tx.send(Event::IceServers(servers));
     let _ = event_tx.send(Event::OfferWanted { relay_only: true });
     let attendee = config.attendee_id.clone();
-    let mut state = State { roster: Roster::new(&config.attendee_id), config, muted: false, events: event_tx };
+    let mut state = State {
+        roster: Roster::new(&config.attendee_id),
+        config,
+        muted: false,
+        last_answer: String::new(),
+        events: event_tx,
+    };
     tokio::spawn(async move { state.run(socket, command_rx).await });
     Ok(Session { events, commands, attendee })
 }
@@ -141,6 +147,7 @@ struct State {
     config: Config,
     roster: Roster,
     muted: bool,
+    last_answer: String,
     events: mpsc::UnboundedSender<Event>,
 }
 
@@ -232,10 +239,11 @@ impl State {
                 let sdp = match ack.string(3).filter(|s| !s.is_empty()) {
                     Some(sdp) => sdp,
                     None => {
-                        let inflated = miniz_oxide::inflate::decompress_to_vec(ack.bytes(5)?).ok()?;
+                        let inflated = super::inflate_answer(ack.bytes(5)?, self.last_answer.as_bytes())?;
                         String::from_utf8(inflated).ok()?
                     }
                 };
+                self.last_answer.clone_from(&sdp);
                 let _ = self.events.send(Event::Answer { sdp });
             }
             kind::AUDIO_STREAM_ID_INFO => {
