@@ -51,7 +51,7 @@ The desktop applies the same exception with the same bounds (2026-09-30), and th
 
 ## Slack huddles
 
-A huddle runs natively first, audio only, in the same call window as a native Jitsi call: `rooms.join` hands out Amazon Chime credentials and the voice engine joins (GTK, SwiftUI through the `rv-voice` sidecar, Android over JNI). No sidecar, or a join that fails, opens the huddle's page as before ([Slack session](../architecture/slack-session.md#people-emoji-and-huddles)). Chime mixes the audio, so a person's own volume cannot be set. Mechanism and what was run live: [native calls](../architecture/native-calls.md#slack-huddles-over-chime-audio-2026-11-06).
+A huddle runs natively first, in the same call window as a native Jitsi call: `rooms.join` hands out Amazon Chime credentials and the voice engine joins (GTK, SwiftUI through the `rv-voice` sidecar, Android over JNI). No sidecar, or a join that fails, opens the huddle's page as before ([Slack session](../architecture/slack-session.md#people-emoji-and-huddles)). Chime mixes the audio, so a person's own volume cannot be set. On the desktop the others' cameras and shared screens show (GTK, and SwiftUI through the same sidecar) and GTK sends this side's camera; sharing this side's screen in a huddle is not built, and Android huddles stay audio only. Video was built from a capture and is not yet run against a live huddle. Mechanism and what was run live: [native calls](../architecture/native-calls.md#slack-huddles-over-chime-audio-2026-11-06), its video [here](../architecture/native-calls.md#slack-huddles-over-chime-video-2026-11-24).
 
 ## Teams
 
@@ -66,7 +66,7 @@ Mattermost's Calls plugin a screen, and a camera where the plugin enables video.
 (GTK) shows the peer's camera and sends this side's camera or screen as its one picture, the camera off
 until turned on; a video call is answered in the app. A Teams call carried natively shows the other
 person's camera and shared screen, and sends this side's camera and screen (not yet run against Teams).
-Huddles stay audio only. A header button opens the chat of the call's room beside the call. Android
+A Slack huddle shows the others' cameras and screens and sends this side's camera, not its screen (see above). A header button opens the chat of the call's room beside the call. Android
 owes both. Mechanism: [native calls](../architecture/native-calls.md#video-in-native-calls-2026-11-12),
 for WhatsApp [its video](../architecture/native-calls.md#whatsapp-11-calls-video-2026-11-21), for Teams
 [its video](../architecture/native-calls.md#teams-call-video-2026-11-23).
@@ -105,6 +105,7 @@ Start, join, call card with Join, profile Call: both apps ([parity](../parity.md
 ## Sources
 
 - apps/desktop/crates/rv-gtk/src/native_call.rs, apps/desktop/crates/rv-gtk/src/call_chat.rs
+- crates/rv-call/src/chime/video.rs, apps/desktop/voice/src/call.rs (huddle video)
 - apps/desktop/macos/Sources/RocketVibe/NativeCallWindow.swift
 - apps/desktop/crates/rv-core/src/supervisor.rs
 - apps/desktop/crates/rv-gtk/src/window.rs

@@ -13,6 +13,7 @@ section here.
 - The call window opens the chat of the call's room beside the call, from a button in its header (GTK, macOS).
 - Teams (experimental): video in calls inside the app: the other person's camera and shared screen show, and your camera (Linux, Windows) and your screen go out. Not yet tried in a call with Teams; group calls and meetings show no one's video yet.
 - WhatsApp (experimental): video in 1:1 calls inside the app. A video call is answered there too, your camera off until you turn it on; the other person's camera shows, and your camera (Linux, Windows) or your screen goes out, asking them to switch to video first in a voice call. Group calls stay on the phone.
+- Slack (experimental): video in huddles inside the app: the others' cameras and shared screens show, and your camera goes out (Linux, Windows). Sharing your own screen in a huddle is not there yet. Not yet tried in a live huddle.
 
 ## [0.31.0] - 2026-11-18
 

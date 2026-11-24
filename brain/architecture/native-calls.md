@@ -139,8 +139,9 @@ in `#caca`):
    peer connection is created with
    `iceTransportPolicy: relay`, `bundlePolicy: max-bundle` and that single TURN host
    (webrtc-internals): all media goes through Chime's TURN;
-5. **the SDP is compressed**: `deflateRaw` (pako) seeded with the previous SDP of the same
-   direction as dictionary, empty for the first offer and answer
+5. **the SDP is compressed**: `deflateRaw` (pako); the server seeds each answer after the
+   first on a socket with the previous answer as dictionary, the client's offers inflate
+   with none (third capture, below)
    ([ZLIBTextCompressor.ts](https://github.com/aws/amazon-chime-sdk-js/blob/main/src/sdp/ZLIBTextCompressor.ts));
 6. the SDP itself is plain WebRTC: client offer `setup:actpass`, server answer `passive`,
    `BUNDLE 0 1` (audio `sendrecv`, video `inactive` until a camera or share), `rtcp-mux`,
@@ -151,9 +152,9 @@ in `#caca`):
    A second offer/answer pair follows once connected (renegotiation).
 
 So the Slack side gives everything a native Chime client needs: credentials, signalling
-sequence, TURN, SDP; built, see "Slack huddles" under "Implementation status". Still unseen: a captured `LEAVE` (the SDK's own is what is sent), video subscription (another participant with a
-camera or a share: `SUBSCRIBE` with `receive_stream_ids` and the `INDEX` source list),
-and the screen-share path (`ScreenSharingUrl`, a separate WebSocket).
+sequence, TURN, SDP; built, see "Slack huddles" under "Implementation status". Video and
+the screen share were decoded from a third capture, see "Slack huddles over Chime, video".
+Still unseen: the main socket's `LEAVE` (the SDK's own is what is sent).
 
 Media is standard WebRTC with the client always offering. AWS publishes the signalling for
 custom media stacks: [amazon-chime-sdk-cpp signaling](https://github.com/aws/amazon-chime-sdk-cpp/blob/main/chime-sdk-signaling-cpp/README.md)
@@ -338,7 +339,8 @@ meetings with video (2 to 3 months more).
   socket: the join token as `Sec-WebSocket-Protocol: _aws_wt_session, <token>`, JOIN, JOIN_ACK's TURN
   servers, then the engine offers. The trait gained that direction: `Event::OfferWanted { relay_only }`,
   `CallSignaling::offer`, `Event::Answer`, as Chime's client always offers and takes no trickle. The
-  SDP is raw deflate (`miniz_oxide`), with no dictionary as this client sends one offer per session.
+  SDP is raw deflate (`miniz_oxide`); the server's answers after the first need the previous one as
+  dictionary (`inflate_answer`, see the video section).
   The server mixes everyone into one audio stream (`msid:audio audio`), so who speaks comes from
   AUDIO_METADATA, `Event::Levels` (minus decibels over the SDK's -42 to -14 dB); the volume of one
   person cannot be set.
@@ -372,6 +374,61 @@ meetings with video (2 to 3 months more).
   tone mode plays nothing, so a remote voice was seen as packets and levels, never heard here); a real
   microphone in a huddle; the GTK window on a signed-in Slack account (none on the test machine);
   SwiftUI (macOS CI only); Android on a device (Kotlin and the Android cross-compile only).
+
+### Slack huddles over Chime, video (2026-11-24)
+
+Decoded from `app.slack.com_huddle2.har` (2026-11-23: two attendees of one Slack user, each turning a
+camera on, then sharing a screen), both signalling sockets read frame by frame:
+
+- **INDEX** (type 5, field 8) lists every remote video source each time; one with no source means
+  none. Each: `stream_id`, `group_id`, `attendee_id`, `media_type` 2, `external_user_id`, width and
+  height, field 15 the base stream, field 17 a codec number (8 for a camera, 11 for a screen: VP9 and
+  AV1 by inference, the client offering those first). This client's own camera never appears in it.
+- **A shared screen is a second attendee**, `<attendee>#content`, on a second socket to the same
+  `SignalingUrl`. Its join token is the main one with `#content` appended, made by the client (no HTTP
+  call). It JOINs, SUBSCRIBEs duplex 3 sending video only (stream 2, 1500 kbps), receives nothing and
+  LEAVEs when the share stops. The main socket sees it in INDEX under the person's external id; with
+  the JOIN asking for every temporal layer (field 13) it comes as three streams (base, layers 0 and 1,
+  field 13). `ScreenSharingUrl` / `ScreenViewingUrl` were not used.
+- **Receiving**: SUBSCRIBE `receive_stream_ids` has one entry per video section of the offer, in
+  m-line order: the stream to receive, or 0 for a sending or spare section. Each received one gets a
+  `video_subscription_configuration` (mid, attendee, priority, target 600 kbps for a camera and
+  10000 for a screen, adaptation 2 or 3). SUBSCRIBE_ACK maps the stream to an SSRC labelled `v_<mid>`;
+  the answer's section is `sendonly`, `msid:v_<mid> track_<mid>`. A source gone: REMOTE_VIDEO_UPDATE
+  (type 24, field 25) with its mid removed, then a SUBSCRIBE with 0 there.
+- **Sending the camera**: duplex 3 and a second send stream (stream 2, group 2,
+  `AmazonChimeExpressVideo`, media_type 2, 15 fps, 1400 kbps); off, duplex 1 and the audio stream
+  alone. One encoding, no simulcast; dependency-descriptor and video-layers-allocation negotiated.
+- **Answers are deflated with the previous answer on the same socket as preset dictionary**, every
+  one after the first; the offers carry none.
+- **Slack itself moves nothing**: `rooms.join` gives `Capabilities` Video and Content `SendReceive`;
+  `sh_room_join`'s `participants_camera_on` and `participants_screenshare_on` stayed empty throughout.
+  A share announces itself only in Chime data messages (`data-channel`, `browser:content`).
+
+Built (desktop):
+
+- **rv-call** `chime/video.rs`: `index_sources` (one source per attendee, its base stream; this
+  attendee and its own `#content` left out), `Subscriptions` (the sources wanted, at most JOIN_ACK's
+  `video_subscription_limit` and 16, each kept on its receive-only section across offers; the receive
+  ids and configurations built from the offer's video sections; `remote` names each video by the
+  answer's stream id `v_<mid>`, as libwebrtc gives a receiver this side created a random track id).
+  `mod.rs`: `subscribe` (camera, receive ids, configurations), `remote_video_removed`,
+  `inflate_answer` (the dictionary as a stored deflate block before the answer, `miniz_oxide` having
+  no preset dictionary). `client.rs`: an INDEX change frees sections, sends `Event::Videos` and
+  `Event::OfferWanted`, one SUBSCRIBE in flight at a time; `can_send` the camera, `set_video` offers
+  again.
+- **The trait** gained `CallSignaling::receive_videos`; the sidecar (`call.rs` `Call::add_receivers`)
+  adds receive-only video transceivers up to it before each offer and never removes one. Chime's
+  `offers_to_receive_video` turns true once a video was wanted and stays so: libwebrtc's legacy offer
+  option at false makes every video section inactive (test
+  `offers_carry_the_receiving_sections_asked_and_keep_them`).
+- **Windows**: nothing huddle-specific; GTK shows the camera button from `Event::CallVideo`, the
+  others' cameras in tiles and a screen on the stage as for Jitsi.
+- **Not built**: this side's screen share (`can_send(Screen)` stays false: it needs the `#content`
+  attendee's socket and a second peer connection); PAUSE/RESUME of a group; Android
+  (`rv-voice-mobile`'s offers carry no video section, so nothing is subscribed, and its peer
+  connection offers again on each change of the others' videos). **Not run** against a live huddle:
+  the capture, unit tests and the sidecar's offer test only.
 
 ### Teams calls placed from a chat, audio (2026-11-06)
 
@@ -621,7 +678,7 @@ then run on the bench. kChat has no such plugin: its calls stay kMeet's.
   redrawn on its changes, and a composer posting through the outbox) behind a header button
   (`native_call::Opened::chat`); SwiftUI the room's `MessageList` and `Composer` on a `RoomModel` of
   its own (`AppModel::callChat`).
-- **Owed**: Android (video and the chat button); Chime (video subscription, the screen-share socket);
+- **Owed**: Android (video and the chat button); Chime (this side's screen share, the `#content` socket);
   the plugin's `MediaMap`. WhatsApp's video has its own path, below; Teams' is after it.
 
 ### WhatsApp 1:1 calls, audio (2026-11-11)
@@ -782,9 +839,8 @@ Teams meetings and video last.
 
 - **kMeet**: one live call in `#testtest` from the kChat app itself (the `/conferences`
   answer's `url` shape, the XMPP `session-initiate`, the TURN servers from XEP-0215).
-- **Slack**: nothing blocking (the second capture has credentials, signalling, TURN and SDP).
-  Useful later: a huddle with a second participant's camera or a screen share (video
-  subscription, the `ScreenSharingUrl` socket) and a `LEAVE`. A huddle opens in its own
+- **Slack**: nothing blocking (the second capture has credentials, signalling, TURN and SDP, the
+  third cameras and screen shares). Useful later: the main socket's `LEAVE`. A huddle opens in its own
   window: Chrome's DevTools setting "Auto-open DevTools for popups" catches it from the start.
 - **Teams**: what `callKeepAliveInterval` wants of a call past 45 minutes; a webrtc-internals
   dump of a Teams group call or meeting (the `x-data` channel's messages, its source requests); the
@@ -819,4 +875,6 @@ Teams meetings and video last.
   `teams.cloud.microsoft*.har` (incl. `_call_out`, `_call_in`, `_group_call`, `_group_call2`)
 - https://github.com/jbg/gst-meet, https://docs.rs/crate/lib-gst-meet/latest
 - https://github.com/aws/amazon-chime-sdk-cpp, https://github.com/aws/amazon-chime-sdk-js
+- crates/rv-call/src/chime/video.rs, crates/rv-call/src/chime/client.rs, apps/desktop/voice/src/call.rs
+  (huddle video); capture 2026-11-23 `app.slack.com_huddle2.har` (both Chime sockets, camera and share)
 - https://github.com/brandonp2412/microslop
