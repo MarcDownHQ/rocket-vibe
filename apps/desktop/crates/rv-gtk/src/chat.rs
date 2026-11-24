@@ -592,8 +592,9 @@ impl ChatPage {
         room_content.append(&upload_strip);
         room_content.append(&typing_label);
         // Capture phase: the composer's text view would otherwise take dropped files as text.
+        // MOVE too: Hyprland announces a file manager's drag as MOVE only and never renegotiates.
         let drop = gtk::DropTarget::builder()
-            .actions(gdk::DragAction::COPY)
+            .actions(gdk::DragAction::COPY | gdk::DragAction::MOVE)
             .propagation_phase(gtk::PropagationPhase::Capture)
             .build();
         drop.set_types(&[gdk::FileList::static_type(), gdk::Texture::static_type()]);

@@ -7,6 +7,10 @@ section here.
 
 ## [Unreleased]
 
+### Fixed
+
+- Linux (GTK): files dragged from a file manager into a conversation are attached on Hyprland, instead of their path being typed into the composer.
+
 ## [0.31.0] - 2026-11-18
 
 ### Added
