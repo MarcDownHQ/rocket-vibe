@@ -7,6 +7,8 @@ use std::io::Read;
 use base64::Engine;
 use serde_json::{Value, json};
 
+pub use crate::datachannel::Source;
+
 /// Microsoft's Test Call bot: it plays back what it hears, and rings no one.
 pub const ECHO_BOT: &str = "cf28171e-fcfd-47e4-a1d6-79460b0b3ca0";
 
@@ -92,6 +94,26 @@ pub struct RosterChange {
     pub mri: String,
     pub name: String,
     pub present: bool,
+    /// The cameras and screens its endpoints have, sending or not (a group call's).
+    pub sources: Vec<Source>,
+}
+
+/// An endpoint's videos, from its `call.mediaStreams`.
+fn sources(endpoint: &Value) -> Vec<Source> {
+    let streams = endpoint.pointer("/call/mediaStreams").and_then(Value::as_array);
+    streams
+        .into_iter()
+        .flatten()
+        .filter_map(|stream| {
+            let screen = match stream.get("label").and_then(Value::as_str)? {
+                "main-video" => false,
+                "applicationsharing-video" => true,
+                _ => return None,
+            };
+            let live = matches!(stream.get("direction").and_then(Value::as_str), Some("sendrecv" | "sendonly"));
+            Some(Source { id: stream.get("sourceId")?.as_i64()?, screen, live })
+        })
+        .collect()
 }
 
 fn roster_changes(body: &Value) -> Option<Vec<RosterChange>> {
@@ -99,10 +121,14 @@ fn roster_changes(body: &Value) -> Option<Vec<RosterChange>> {
     Some(
         participants
             .iter()
-            .map(|(mri, entry)| RosterChange {
-                mri: mri.clone(),
-                name: entry.pointer("/details/displayName").and_then(Value::as_str).unwrap_or_default().to_owned(),
-                present: entry.get("endpoints").and_then(Value::as_object).is_some_and(|e| !e.is_empty()),
+            .map(|(mri, entry)| {
+                let endpoints = entry.get("endpoints").and_then(Value::as_object);
+                RosterChange {
+                    mri: mri.clone(),
+                    name: entry.pointer("/details/displayName").and_then(Value::as_str).unwrap_or_default().to_owned(),
+                    present: endpoints.is_some_and(|e| !e.is_empty()),
+                    sources: endpoints.into_iter().flat_map(|e| e.values()).flat_map(sources).collect(),
+                }
             })
             .collect(),
     )
@@ -684,14 +710,27 @@ mod tests {
         assert_eq!(call_event(&ended), CallEvent::Ended { phrase: Some("Busy".into()) });
         assert_eq!(call_event(&json!({"body": "{}"})), CallEvent::Other);
         let roster = json!({"url": "https://x/callAgent/e/r/conversation/rosterUpdate/", "body": {"participants": {
-            "8:orgid:a": {"details": {"displayName": "Ana"}, "endpoints": {"x": {}}},
+            "8:orgid:a": {"details": {"displayName": "Ana"}, "endpoints": {"x": {"call": {"mediaStreams": [
+                {"type": "audio", "label": "main-audio", "sourceId": 414, "direction": "sendrecv"},
+                {"type": "video", "label": "main-video", "sourceId": 415, "direction": "sendrecv"},
+                {"type": "applicationsharing-video", "label": "applicationsharing-video", "sourceId": 425, "direction": "recvonly"},
+                {"type": "data", "label": "data", "sourceId": 426, "direction": "sendrecv"},
+            ]}}}},
             "8:orgid:b": {"details": {"displayName": "Bo"}, "endpoints": {}},
         }}});
         assert_eq!(
             call_event(&roster),
             CallEvent::Roster(vec![
-                RosterChange { mri: "8:orgid:a".into(), name: "Ana".into(), present: true },
-                RosterChange { mri: "8:orgid:b".into(), name: "Bo".into(), present: false },
+                RosterChange {
+                    mri: "8:orgid:a".into(),
+                    name: "Ana".into(),
+                    present: true,
+                    sources: vec![
+                        Source { id: 415, screen: false, live: true },
+                        Source { id: 425, screen: true, live: false },
+                    ],
+                },
+                RosterChange { mri: "8:orgid:b".into(), name: "Bo".into(), present: false, sources: Vec::new() },
             ])
         );
     }

@@ -15,6 +15,10 @@
 //! sends, the media line names a real address taken from a candidate (port 9 and
 //! `0.0.0.0` read as disabled media, `DisabledMediaNotSupported`), and only UDP
 //! candidates, without the extras Teams does not parse, go either way.
+//!
+//! Teams' `m=x-data` section is a plain SCTP data channel under another name: a
+//! group call's media server takes its requests on it (datachannel.rs), and names
+//! each section's stream in its answer (`a=x-source-streamid`).
 
 use std::collections::HashMap;
 
@@ -64,9 +68,19 @@ pub struct Layout {
     labels: HashMap<String, Label>,
     /// The plain mid of each section of Teams' last offer, by Teams' mid.
     mids: HashMap<String, String>,
+    /// The stream id Teams gives each plain section, by its mid.
+    streams: HashMap<String, u32>,
+    /// A group call's: every receiving video section is offered, the last one
+    /// nothing labelled yet as the shared screen's.
+    group: bool,
 }
 
 impl Layout {
+    /// A group call's layout ([`Layout::group`]).
+    pub fn group() -> Self {
+        Layout { group: true, ..Layout::default() }
+    }
+
     /// Whether an offer of this side's waits for Teams' answer.
     pub fn offering(&self) -> bool {
         self.offered.is_some()
@@ -136,6 +150,11 @@ impl<'a> Section<'a> {
 
     fn ssrc(&self) -> Option<&'a str> {
         self.lines.iter().find_map(|l| l.strip_prefix("a=ssrc:")?.split(' ').next())
+    }
+
+    /// The stream id Teams gives the section.
+    fn stream_id(&self) -> Option<u32> {
+        self.lines.iter().find_map(|l| l.strip_prefix("a=x-source-streamid:")?.trim().parse().ok())
     }
 }
 
@@ -247,8 +266,10 @@ fn teams_section(
             } else {
                 "a=x-signaling-fb:* x-message app send:src recv:src,vc"
             });
-            if let Some(ssrc) = section.ssrc() {
-                push(&format!("a=x-ssrc-range:{ssrc}-{ssrc}"));
+            match section.ssrc() {
+                Some(ssrc) => push(&format!("a=x-ssrc-range:{ssrc}-{ssrc}")),
+                None if section.direction() == "recvonly" => push("a=x-ssrc-range:1-1"),
+                None => {}
             }
         } else if let Some(direction) =
             direction.filter(|_| DIRECTIONS.iter().any(|d| line.strip_prefix("a=") == Some(*d)))
@@ -356,6 +377,57 @@ fn reserved(section: &Section, mid: &str) -> String {
     out
 }
 
+/// libwebrtc's data channel section in Teams' dialect, under `mid`. The source
+/// range it names is made up: no RTP goes on it.
+fn teams_data(section: &Section, mid: &str, (port, address): (&str, &str)) -> String {
+    let mut out = format!("m=x-data {port} RTP/SAVP 127\r\nc=IN IP4 {address}\r\na=x-data-protocol:sctp\r\n");
+    let source = section
+        .lines
+        .iter()
+        .find_map(|l| l.strip_prefix("a=ice-ufrag:"))
+        .unwrap_or(mid)
+        .bytes()
+        .fold(2_166_136_261u32, |hash, b| (hash ^ u32::from(b)).wrapping_mul(16_777_619))
+        | 1;
+    out.push_str(&format!("a=x-ssrc-range:{source}-{source}\r\na=rtpmap:127 x-data/90000\r\n"));
+    for line in &section.lines[1..] {
+        if ["a=setup:", "a=ice-ufrag:", "a=ice-pwd:", "a=fingerprint:", "a=ice-options:"]
+            .iter()
+            .any(|p| line.starts_with(p))
+        {
+            out.push_str(line);
+            out.push_str("\r\n");
+        } else if let Some(c) = candidate_fields(line).filter(|c| c.udp) {
+            out.push_str(&format!("a=candidate:{}\r\n", c.plain));
+        }
+    }
+    out.push_str(&format!("a=mid:{mid}\r\na=sendrecv\r\na=rtcp-mux\r\na=label:data\r\n"));
+    out
+}
+
+/// Teams' data section as libwebrtc's SCTP data channel, under `mid`.
+fn plain_data(section: &Section, mid: &str) -> String {
+    let mut out = format!("m=application {} UDP/DTLS/SCTP webrtc-datachannel\r\n", section.field(1));
+    for line in &section.lines[1..] {
+        if line.starts_with("c=")
+            || ["a=setup:", "a=ice-ufrag:", "a=ice-pwd:", "a=fingerprint:", "a=ice-options:"]
+                .iter()
+                .any(|p| line.starts_with(p))
+        {
+            out.push_str(line);
+            out.push_str("\r\n");
+        } else if let Some(candidate) = line.strip_prefix("a=candidate:") {
+            let fields: Vec<&str> = candidate.split(' ').collect();
+            if fields.get(2).is_some_and(|p| p.eq_ignore_ascii_case("udp")) {
+                let end = fields.iter().position(|f| *f == "MTURNID").unwrap_or(fields.len());
+                out.push_str(&format!("a=candidate:{}\r\n", fields[..end].join(" ")));
+            }
+        }
+    }
+    out.push_str(&format!("a=mid:{mid}\r\na=sctp-port:5000\r\na=max-message-size:262144\r\n"));
+    out
+}
+
 /// Teams' session lines in plain WebRTC, bundling `mids`.
 fn plain_head(head: &[&str], mids: &[String]) -> String {
     let mut out = String::new();
@@ -393,7 +465,13 @@ fn teams_head(head: &[&str], mids: &[&str]) -> String {
 pub fn teams_offer(sdp: &str, sending: Sending, layout: &mut Layout) -> String {
     let (head, sections) = split(sdp);
     let (port, address) = media_address(sdp);
-    let mut kept: Vec<(usize, Label)> = Vec::new();
+    let labelled = |s: &Section| s.own().or_else(|| s.mid().and_then(|m| layout.labels.get(m).copied()));
+    let spare_screen = if layout.group && !sections.iter().any(|s| s.open() && labelled(s) == Some(Label::Screen)) {
+        sections.iter().rposition(|s| s.open() && s.kind() == "video" && labelled(s).is_none())
+    } else {
+        None
+    };
+    let mut kept: Vec<(usize, Option<Label>)> = Vec::new();
     let mut audio = false;
     for (at, section) in sections.iter().enumerate() {
         if !section.open() {
@@ -404,16 +482,19 @@ pub fn teams_offer(sdp: &str, sending: Sending, layout: &mut Layout) -> String {
                 audio = true;
                 Label::Audio
             }
-            "video" => section
-                .own()
-                .or_else(|| section.mid().and_then(|m| layout.labels.get(m).copied()))
-                .unwrap_or(Label::Camera),
+            "video" if spare_screen == Some(at) => Label::Screen,
+            "video" => labelled(section).unwrap_or(Label::Camera),
+            "application" if !kept.iter().any(|(_, l)| l.is_none()) => {
+                kept.push((at, None));
+                continue;
+            }
             _ => continue,
         };
-        match kept.iter().position(|(_, l)| *l == label) {
-            Some(i) if section.own().is_some() => kept[i] = (at, label),
+        match kept.iter().position(|(_, l)| *l == Some(label)) {
+            Some(_) if layout.group && label == Label::Camera => kept.push((at, Some(label))),
+            Some(i) if section.own().is_some() => kept[i] = (at, Some(label)),
             Some(_) => {}
-            None => kept.push((at, label)),
+            None => kept.push((at, Some(label))),
         }
     }
     let mut mids = Vec::new();
@@ -421,11 +502,15 @@ pub fn teams_offer(sdp: &str, sending: Sending, layout: &mut Layout) -> String {
     for (at, label) in &kept {
         let section = &sections[*at];
         let Some(mid) = section.mid() else { continue };
-        if *label != Label::Audio {
-            layout.labels.insert(mid.to_owned(), *label);
-        }
         mids.push(mid);
-        body.push_str(&teams_section(section, *label, mid, (&port, &address), told_direction(section, sending)));
+        let Some(label) = *label else {
+            body.push_str(&teams_data(section, mid, (&port, &address)));
+            continue;
+        };
+        if label != Label::Audio {
+            layout.labels.insert(mid.to_owned(), label);
+        }
+        body.push_str(&teams_section(section, label, mid, (&port, &address), told_direction(section, sending)));
     }
     layout.offered = Some(sdp.to_owned());
     teams_head(&head, &mids) + &body
@@ -438,11 +523,26 @@ pub fn plain_answer(sdp: &str, layout: &mut Layout) -> Option<String> {
     let offer = layout.offered.take()?;
     let (head, answered) = split(sdp);
     let (_, offered) = split(&offer);
+    for section in &answered {
+        if let (Some(mid), Some(id)) = (section.mid(), section.stream_id()) {
+            layout.streams.insert(mid.to_owned(), id);
+        }
+    }
     let mut body = String::new();
     let mut bundle = Vec::new();
     let mut audio = false;
     for section in &offered {
         let mid = section.mid().unwrap_or("");
+        if section.kind() == "application" {
+            match answered.iter().find(|a| a.open() && section.open() && a.kind() == "x-data" && a.mid() == Some(mid)) {
+                Some(a) => {
+                    body.push_str(&plain_data(a, mid));
+                    bundle.push(mid.to_owned());
+                }
+                None => body.push_str(&closed(section)),
+            }
+            continue;
+        }
         let answer = answered
             .iter()
             .filter(|a| a.open() && section.open() && a.kind() == section.kind())
@@ -488,9 +588,19 @@ pub fn plain_offer(sdp: &str, layout: &mut Layout) -> Option<String> {
         slots.iter().map(|s| (s.mid().unwrap_or("").to_owned(), closed(s), false)).collect();
     let audio_slot = slots.iter().position(|s| s.kind() == "audio");
     let mut audio = false;
+    let data_slot = slots.iter().position(|s| s.kind() == "application" && s.open());
     layout.mids.clear();
     for section in &sections {
         let Some(theirs) = section.mid() else { continue };
+        if let (true, "x-data", Some(i)) = (section.open(), section.kind(), data_slot) {
+            let mid = out[i].0.clone();
+            layout.mids.insert(theirs.to_owned(), mid.clone());
+            if let Some(id) = section.stream_id() {
+                layout.streams.insert(mid.clone(), id);
+            }
+            out[i] = (mid.clone(), plain_data(section, &mid), true);
+            continue;
+        }
         if !section.open() || !matches!(section.kind(), "audio" | "video") {
             if !out.iter().any(|(mid, _, _)| mid == theirs) {
                 out.push((theirs.to_owned(), reserved(section, theirs), false));
@@ -518,6 +628,9 @@ pub fn plain_offer(sdp: &str, layout: &mut Layout) -> Option<String> {
         layout.mids.insert(theirs.to_owned(), mid.clone());
         if label != Label::Audio {
             layout.labels.insert(mid.clone(), label);
+        }
+        if let Some(id) = section.stream_id() {
+            layout.streams.insert(mid.clone(), id);
         }
         let stream = (section.kind() == "video" && sends(section.direction())).then(|| remote_stream(&mid));
         let text = plain_section(section, &mid, stream.as_deref(), &keep);
@@ -550,6 +663,10 @@ pub fn teams_answer(answer: &str, offer: &str, sending: Sending, layout: &Layout
         let plain = layout.mids.get(theirs);
         let found = plain.and_then(|mid| answered.iter().find(|a| a.open() && a.mid() == Some(mid.as_str())));
         match found {
+            Some(a) if a.kind() == "application" => {
+                bundle.push(theirs);
+                body.push_str(&teams_data(a, theirs, (&port, &address)));
+            }
             Some(a) => {
                 let label = match a.kind() {
                     "audio" => Label::Audio,
@@ -583,6 +700,42 @@ pub fn remote_videos(layout: &Layout) -> Vec<(String, Label)> {
             Some((stream.to_owned(), layout.labels.get(mid).copied().unwrap_or(Label::Camera)))
         })
         .collect()
+}
+
+/// A video section Teams sends on, in a group call: what its media server is
+/// asked to send there names it by `stream_id`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct VideoSlot {
+    pub stream_id: u32,
+    /// The stream id its track has on this side.
+    pub stream: String,
+    pub label: Label,
+}
+
+/// The video sections Teams sends on, with the stream id it gave each.
+pub fn video_slots(layout: &Layout) -> Vec<VideoSlot> {
+    split(&layout.remote)
+        .1
+        .iter()
+        .filter(|s| s.kind() == "video" && s.open())
+        .filter_map(|s| {
+            let (stream, mid) = (s.stream()?, s.mid()?);
+            Some(VideoSlot {
+                stream_id: *layout.streams.get(mid)?,
+                stream: stream.to_owned(),
+                label: layout.labels.get(mid).copied().unwrap_or(Label::Camera),
+            })
+        })
+        .collect()
+}
+
+/// The stream id Teams gave the data channel's section: this side's address on it.
+pub fn data_stream(layout: &Layout) -> Option<u32> {
+    split(&layout.remote)
+        .1
+        .iter()
+        .find(|s| s.kind() == "application" && s.open())
+        .and_then(|s| layout.streams.get(s.mid()?).copied())
 }
 
 /// The call's modalities as Teams' requests name them.
@@ -870,5 +1023,77 @@ mod tests {
         assert_eq!(remote_videos(&layout), vec![("teams-1".to_owned(), Label::Camera)]);
         let stopped = teams_offer(ours, Sending::default(), &mut layout);
         assert!(section(&stopped, "6").contains("a=inactive"), "{stopped}");
+    }
+
+    /// libwebrtc's offer for a group call: three receiving video sections and the data channel.
+    const GROUP_OFFER: &str = "v=0\r\no=- 1 2 IN IP4 127.0.0.1\r\ns=-\r\nt=0 0\r\na=group:BUNDLE 0 1 2 3 4\r\n\
+        m=audio 9 UDP/TLS/RTP/SAVPF 111\r\nc=IN IP4 0.0.0.0\r\na=mid:0\r\na=sendrecv\r\na=ssrc:42 cname:x\r\n\
+        a=candidate:2 1 udp 22 192.168.1.5 222 typ host generation 0\r\n\
+        m=application 9 UDP/DTLS/SCTP webrtc-datachannel\r\nc=IN IP4 0.0.0.0\r\na=ice-ufrag:uf\r\na=ice-pwd:pw\r\n\
+        a=fingerprint:sha-256 AB\r\na=setup:actpass\r\na=mid:1\r\na=sctp-port:5000\r\na=max-message-size:262144\r\n\
+        m=video 9 UDP/TLS/RTP/SAVPF 102\r\nc=IN IP4 0.0.0.0\r\na=mid:2\r\na=recvonly\r\na=rtpmap:102 H264/90000\r\n\
+        m=video 9 UDP/TLS/RTP/SAVPF 102\r\nc=IN IP4 0.0.0.0\r\na=mid:3\r\na=recvonly\r\na=rtpmap:102 H264/90000\r\n\
+        m=video 9 UDP/TLS/RTP/SAVPF 102\r\nc=IN IP4 0.0.0.0\r\na=mid:4\r\na=recvonly\r\na=rtpmap:102 H264/90000\r\n";
+
+    /// The media server's answer, each section named by its stream id.
+    const GROUP_ANSWER: &str = "v=0\r\no=- 1 0 IN IP4 127.0.0.1\r\ns=session\r\nc=IN IP4 52.1.2.3\r\nt=0 0\r\n\
+        m=audio 3480 RTP/SAVP 111\r\nc=IN IP4 52.1.2.3\r\na=x-source-streamid:201\r\na=setup:passive\r\n\
+        a=ice-ufrag:Z6\r\na=ice-pwd:pw2\r\na=label:main-audio\r\na=mid:0\r\na=rtpmap:111 OPUS/48000/2\r\n\
+        m=x-data 3480 RTP/SAVP 127 126\r\nc=IN IP4 52.1.2.3\r\na=x-source-streamid:205\r\na=setup:passive\r\n\
+        a=ice-ufrag:Z6\r\na=ice-pwd:pw2\r\na=rtcp-mux\r\na=label:data\r\na=mid:1\r\na=rtpmap:127 x-data/90000\r\n\
+        a=fingerprint:sha-256 CD\r\na=candidate:1 1 UDP 54001663 52.1.2.3 3480 typ relay raddr 10.0.0.1 rport 3480 MTURNID 9\r\n\
+        a=x-data-protocol:sctp\r\n\
+        m=video 3480 RTP/SAVP 102\r\nc=IN IP4 52.1.2.3\r\na=x-source-streamid:202\r\na=label:main-video\r\na=mid:2\r\n\
+        a=sendonly\r\na=rtpmap:102 H264/90000\r\n\
+        m=video 3480 RTP/SAVP 102\r\nc=IN IP4 52.1.2.3\r\na=x-source-streamid:203\r\na=label:main-video\r\na=mid:3\r\n\
+        a=sendonly\r\na=rtpmap:102 H264/90000\r\n\
+        m=video 3480 RTP/SAVP 102\r\nc=IN IP4 52.1.2.3\r\na=x-source-streamid:204\r\na=label:applicationsharing-video\r\n\
+        a=mid:4\r\na=sendonly\r\na=rtpmap:102 H264/90000\r\n";
+
+    #[test]
+    fn a_group_call_offers_every_video_section_the_last_for_a_screen_and_its_data_channel() {
+        let mut layout = Layout::group();
+        let offer = teams_offer(GROUP_OFFER, Sending::default(), &mut layout);
+        assert!(offer.contains("a=group:BUNDLE 0 1 2 3 4\r\n"), "{offer}");
+        assert_eq!(offer.matches("a=label:main-video").count(), 2, "{offer}");
+        assert!(section(&offer, "4").contains("a=label:applicationsharing-video"), "{offer}");
+        let data = section(&offer, "1");
+        assert!(data.starts_with("m=x-data 222 RTP/SAVP 127\n"), "{data}");
+        for line in ["a=x-data-protocol:sctp", "a=rtpmap:127 x-data/90000", "a=setup:actpass", "a=ice-ufrag:uf"] {
+            assert!(data.contains(line), "{line}: {data}");
+        }
+        assert!(data.contains("a=label:data") && !data.contains("sctp-port"), "{data}");
+        assert!(section(&offer, "2").contains("a=x-ssrc-range:1-1"), "a receiving section names no source");
+
+        let answer = plain_answer(GROUP_ANSWER, &mut layout).unwrap();
+        let data = section(&answer, "1");
+        assert!(data.starts_with("m=application 3480 UDP/DTLS/SCTP webrtc-datachannel\n"), "{data}");
+        assert!(data.contains("a=sctp-port:5000") && data.contains("a=setup:passive"), "{data}");
+        assert!(
+            data.contains("a=candidate:1 1 UDP 54001663 52.1.2.3 3480 typ relay raddr 10.0.0.1 rport 3480\n"),
+            "{data}"
+        );
+        assert!(answer.contains("a=group:BUNDLE 0 1 2 3 4\r\n"), "{answer}");
+        assert_eq!(data_stream(&layout), Some(205));
+        assert_eq!(
+            video_slots(&layout),
+            vec![
+                VideoSlot { stream_id: 202, stream: "teams-2".into(), label: Label::Camera },
+                VideoSlot { stream_id: 203, stream: "teams-3".into(), label: Label::Camera },
+                VideoSlot { stream_id: 204, stream: "teams-4".into(), label: Label::Screen },
+            ]
+        );
+
+        let again = teams_offer(GROUP_OFFER, Sending::default(), &mut layout);
+        assert!(section(&again, "4").contains("a=label:applicationsharing-video"), "the screen's section stays");
+        assert!(section(&again, "3").contains("a=label:main-video"), "{again}");
+    }
+
+    #[test]
+    fn a_one_to_one_call_still_offers_one_camera_section() {
+        let mut layout = Layout::default();
+        let offer = teams_offer(GROUP_OFFER, Sending::default(), &mut layout);
+        assert_eq!(offer.matches("m=video").count(), 1, "{offer}");
+        assert!(!offer.contains("applicationsharing"), "{offer}");
     }
 }
