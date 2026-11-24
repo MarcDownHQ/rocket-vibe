@@ -7,6 +7,9 @@
  */
 
 import type { ExternalCallEngine } from '@rocket-vibe/provider-api/calls';
+import { Channel, LABEL as DATA_LABEL, Routing, type Source, type VideoSlot } from './datachannel.ts';
+
+export type { Source, VideoSlot } from './datachannel.ts';
 
 type Doc = Record<string, unknown>;
 
@@ -14,6 +17,8 @@ export const ECHO_BOT = 'cf28171e-fcfd-47e4-a1d6-79460b0b3ca0';
 export const EPCONV = 'https://api.flightproxy.teams.microsoft.com/api/v2/epconv';
 export const CALL_CLIENT = 'SkypeSpaces/1415/26100212018/os=linux; osVer=undefined; deviceType=computer; browser=chrome';
 const RINGING_MS = 90_000;
+/** The receiving video sections a group call offers: the last for a shared screen, the others for cameras (this side's own on the first). */
+const GROUP_VIDEOS = 5;
 
 /**
  * Teams' SDP dialect against plain WebRTC's (`sdp.rs` in crates/rv-teams). Teams
@@ -25,6 +30,9 @@ const RINGING_MS = 90_000;
  * video section under a mid the call has not seen becomes a section of its own,
  * and a section Teams no longer lists is refused. On Teams' side the media line
  * names a real address from a candidate: port 9 and `0.0.0.0` read as disabled media.
+ * Its `m=x-data` section is a plain SCTP data channel under another name: a group
+ * call's media server takes its requests on it (datachannel.ts), and names each
+ * section's stream in its answer (`a=x-source-streamid`).
  */
 
 /** What a Teams section carries. */
@@ -53,6 +61,17 @@ export class Layout {
   labels = new Map<string, Label>();
   /** The plain mid of each section of Teams' last offer, by Teams' mid. */
   mids = new Map<string, string>();
+  /** The stream id Teams gives each plain section, by its mid. */
+  streams = new Map<string, number>();
+  /** A group call's: every receiving video section is offered, the last one nothing labelled yet as the shared screen's. */
+  group = false;
+
+  /** A group call's layout. */
+  static group(): Layout {
+    const layout = new Layout();
+    layout.group = true;
+    return layout;
+  }
 
   /** Whether an offer of this side's waits for Teams' answer. */
   offering(): boolean {
@@ -87,6 +106,13 @@ const directionOf = (s: Section) => s.find(isDirection)?.slice(2) ?? 'sendrecv';
 const labelIn = (s: Section) => s.filter((l) => l.startsWith('a=label:')).map((l) => labelOf(l.slice('a=label:'.length))).find((l) => l !== null) ?? null;
 const streamOf = (s: Section) => after(s, 'a=msid:')?.split(' ')[0] ?? null;
 const ssrcOf = (s: Section) => after(s, 'a=ssrc:')?.split(' ')[0] ?? null;
+/** The stream id Teams gives the section. */
+function streamIdOf(s: Section): number | null {
+  const value = after(s, 'a=x-source-streamid:')?.trim() ?? null;
+  if (value === null || !/^\+?\d+$/.test(value)) return null;
+  const id = Number(value);
+  return id <= 0xffffffff ? id : null;
+}
 
 /** This side's own camera or screen, by the stream id the voice engine gives it. */
 function own(s: Section): Label | null {
@@ -167,6 +193,7 @@ function teamsSection(section: Section, label: Label, mid: string, [port, addres
       out.push(label === 'audio' ? 'a=x-signaling-fb:* x-message app recv:dsh' : 'a=x-signaling-fb:* x-message app send:src recv:src,vc');
       const ssrc = ssrcOf(section);
       if (ssrc !== null) out.push(`a=x-ssrc-range:${ssrc}-${ssrc}`);
+      else if (directionOf(section) === 'recvonly') out.push('a=x-ssrc-range:1-1');
     } else if (direction !== null && isDirection(line)) out.push(`a=${direction}`);
     else out.push(line);
   }
@@ -241,6 +268,42 @@ function reserved(section: Section, mid: string): string {
   return text([`m=${kind} 0 UDP/TLS/RTP/SAVPF ${formats(section)}`, 'c=IN IP4 0.0.0.0', ...codecs, `a=mid:${mid}`, 'a=inactive']);
 }
 
+const TRANSPORT = ['a=setup:', 'a=ice-ufrag:', 'a=ice-pwd:', 'a=fingerprint:', 'a=ice-options:'];
+
+/** libwebrtc's data channel section in Teams' dialect, under `mid`. The source range it names is made up: no RTP goes on it. */
+function teamsData(section: Section, mid: string, [port, address]: [string, string]): string {
+  const out = [`m=x-data ${port} RTP/SAVP 127`, `c=IN IP4 ${address}`, 'a=x-data-protocol:sctp'];
+  let hash = 2_166_136_261;
+  for (const byte of new TextEncoder().encode(after(section, 'a=ice-ufrag:') ?? mid)) hash = Math.imul(hash ^ byte, 16_777_619) >>> 0;
+  const source = (hash | 1) >>> 0;
+  out.push(`a=x-ssrc-range:${source}-${source}`, 'a=rtpmap:127 x-data/90000');
+  for (const line of section.slice(1)) {
+    if (TRANSPORT.some((p) => line.startsWith(p))) out.push(line);
+    else {
+      const candidate = candidateFields(line);
+      if (candidate?.udp) out.push(`a=candidate:${candidate.plain}`);
+    }
+  }
+  out.push(`a=mid:${mid}`, 'a=sendrecv', 'a=rtcp-mux', 'a=label:data');
+  return text(out);
+}
+
+/** Teams' data section as libwebrtc's SCTP data channel, under `mid`. */
+function plainData(section: Section, mid: string): string {
+  const out = [`m=application ${field(section, 1)} UDP/DTLS/SCTP webrtc-datachannel`];
+  for (const line of section.slice(1)) {
+    if (line.startsWith('c=') || TRANSPORT.some((p) => line.startsWith(p))) out.push(line);
+    else if (line.startsWith('a=candidate:')) {
+      const fields = line.slice('a=candidate:'.length).split(' ');
+      if (fields[2]?.toLowerCase() !== 'udp') continue;
+      const end = fields.indexOf('MTURNID');
+      out.push(`a=candidate:${(end < 0 ? fields : fields.slice(0, end)).join(' ')}`);
+    }
+  }
+  out.push(`a=mid:${mid}`, 'a=sctp-port:5000', 'a=max-message-size:262144');
+  return text(out);
+}
+
 /** Teams' session lines in plain WebRTC, bundling `mids`. */
 function plainHead(head: readonly string[], mids: readonly string[]): string {
   const out: string[] = [];
@@ -266,7 +329,15 @@ function teamsHead(head: readonly string[], mids: readonly string[]): string {
 export function teamsOffer(sdp: string, sending: Sending, layout: Layout): string {
   const [head, sections] = split(sdp);
   const address = mediaAddress(sdp);
-  const kept: [number, Label][] = [];
+  const labelled = (s: Section): Label | null => {
+    const mid = midOf(s);
+    return own(s) ?? (mid === null ? undefined : layout.labels.get(mid)) ?? null;
+  };
+  let spareScreen = -1;
+  if (layout.group && !sections.some((s) => isOpen(s) && labelled(s) === 'screen')) {
+    spareScreen = sections.findLastIndex((s) => isOpen(s) && kindOf(s) === 'video' && labelled(s) === null);
+  }
+  const kept: [number, Label | null][] = [];
   let audio = false;
   sections.forEach((section, at) => {
     if (!isOpen(section)) return;
@@ -274,12 +345,14 @@ export function teamsOffer(sdp: string, sending: Sending, layout: Layout): strin
     if (kindOf(section) === 'audio' && !audio) {
       audio = true;
       label = 'audio';
-    } else if (kindOf(section) === 'video') {
-      const mid = midOf(section);
-      label = own(section) ?? (mid === null ? undefined : layout.labels.get(mid)) ?? 'camera';
+    } else if (kindOf(section) === 'video') label = at === spareScreen ? 'screen' : labelled(section) ?? 'camera';
+    else if (kindOf(section) === 'application' && !kept.some(([, l]) => l === null)) {
+      kept.push([at, null]);
+      return;
     } else return;
     const i = kept.findIndex(([, l]) => l === label);
-    if (i >= 0 && own(section) !== null) kept[i] = [at, label];
+    if (i >= 0 && layout.group && label === 'camera') kept.push([at, label]);
+    else if (i >= 0 && own(section) !== null) kept[i] = [at, label];
     else if (i < 0) kept.push([at, label]);
   });
   const mids: string[] = [];
@@ -288,8 +361,12 @@ export function teamsOffer(sdp: string, sending: Sending, layout: Layout): strin
     const section = sections[at]!;
     const mid = midOf(section);
     if (mid === null) continue;
-    if (label !== 'audio') layout.labels.set(mid, label);
     mids.push(mid);
+    if (label === null) {
+      body += teamsData(section, mid, address);
+      continue;
+    }
+    if (label !== 'audio') layout.labels.set(mid, label);
     body += teamsSection(section, label, mid, address, toldDirection(section, sending));
   }
   layout.offered = sdp;
@@ -307,6 +384,11 @@ export function plainAnswer(sdp: string, layout: Layout): string | null {
   layout.offered = null;
   const [head, answered] = split(sdp);
   const [, offered] = split(offer);
+  for (const section of answered) {
+    const mid = midOf(section);
+    const id = streamIdOf(section);
+    if (mid !== null && id !== null) layout.streams.set(mid, id);
+  }
   let body = '';
   const bundle: string[] = [];
   let audio = false;
@@ -314,6 +396,15 @@ export function plainAnswer(sdp: string, layout: Layout): string | null {
     const mid = midOf(section) ?? '';
     const kind = kindOf(section);
     const usable = (a: Section) => isOpen(a) && isOpen(section);
+    if (kind === 'application') {
+      const data = answered.find((a) => usable(a) && kindOf(a) === 'x-data' && midOf(a) === mid);
+      if (data === undefined) body += closed(section);
+      else {
+        body += plainData(data, mid);
+        bundle.push(mid);
+      }
+      continue;
+    }
     let answer = answered.filter((a) => usable(a) && kindOf(a) === kind).find((a) => midOf(a) === mid)
       ?? answered.find((a) => usable(a) && kindOf(a) === 'audio' && kind === 'audio') ?? null;
     if (kind === 'audio' && audio) answer = null;
@@ -351,10 +442,19 @@ export function plainOffer(sdp: string, layout: Layout): string | null {
   const out: [string, string, boolean][] = slots.map((s) => [midOf(s) ?? '', closed(s), false]);
   const audioSlot = slots.findIndex((s) => kindOf(s) === 'audio');
   let audio = false;
+  const dataSlot = slots.findIndex((s) => kindOf(s) === 'application' && isOpen(s));
   layout.mids.clear();
   for (const section of sections) {
     const theirs = midOf(section);
     if (theirs === null) continue;
+    if (isOpen(section) && kindOf(section) === 'x-data' && dataSlot >= 0) {
+      const mid = out[dataSlot]![0];
+      layout.mids.set(theirs, mid);
+      const id = streamIdOf(section);
+      if (id !== null) layout.streams.set(mid, id);
+      out[dataSlot] = [mid, plainData(section, mid), true];
+      continue;
+    }
     if (!isOpen(section) || (kindOf(section) !== 'audio' && kindOf(section) !== 'video')) {
       if (!out.some(([mid]) => mid === theirs)) out.push([theirs, reserved(section, theirs), false]);
       continue;
@@ -375,6 +475,8 @@ export function plainOffer(sdp: string, layout: Layout): string | null {
     } else continue;
     layout.mids.set(theirs, mid);
     if (label !== 'audio') layout.labels.set(mid, label);
+    const id = streamIdOf(section);
+    if (id !== null) layout.streams.set(mid, id);
     const stream = kindOf(section) === 'video' && sends(directionOf(section)) ? remoteStream(mid) : null;
     const plain = plainSection(section, mid, stream, keep);
     if (slot !== null) out[slot] = [mid, plain, true];
@@ -403,7 +505,10 @@ export function teamsAnswer(answer: string, offer: string, sending: Sending, lay
     const theirs = midOf(section) ?? '';
     const plain = layout.mids.get(theirs);
     const found = plain === undefined ? undefined : answered.find((a) => isOpen(a) && midOf(a) === plain);
-    if (found !== undefined) {
+    if (found !== undefined && kindOf(found) === 'application') {
+      bundle.push(theirs);
+      body += teamsData(found, theirs, address);
+    } else if (found !== undefined) {
       const label: Label = kindOf(found) === 'audio' ? 'audio' : (plain === undefined ? undefined : layout.labels.get(plain)) ?? 'camera';
       bundle.push(theirs);
       body += teamsSection(found, label, theirs, address, toldDirection(found, sending));
@@ -428,6 +533,24 @@ export function remoteVideos(layout: Layout): [string, Label][] {
   return out;
 }
 
+/** The video sections Teams sends on, with the stream id it gave each. */
+export function videoSlots(layout: Layout): VideoSlot[] {
+  return split(layout.remote)[1].flatMap((s) => {
+    if (kindOf(s) !== 'video' || !isOpen(s)) return [];
+    const [stream, mid] = [streamOf(s), midOf(s)];
+    const streamId = mid === null ? undefined : layout.streams.get(mid);
+    if (stream === null || mid === null || streamId === undefined) return [];
+    return [{ streamId, stream, label: layout.labels.get(mid) ?? 'camera' }];
+  });
+}
+
+/** The stream id Teams gave the data channel's section: this side's address on it. */
+export function dataStream(layout: Layout): number | null {
+  const section = split(layout.remote)[1].find((s) => kindOf(s) === 'application' && isOpen(s));
+  const mid = section === undefined ? null : midOf(section);
+  return (mid === null ? undefined : layout.streams.get(mid)) ?? null;
+}
+
 /** The call's modalities as Teams' requests name them. */
 export function modalities(layout: Layout, sending: Sending): string[] {
   const remote = remoteVideos(layout);
@@ -438,7 +561,8 @@ export function modalities(layout: Layout, sending: Sending): string[] {
   return out;
 }
 
-export type RosterChange = { mri: string; name: string; present: boolean };
+/** `sources`: the cameras and screens its endpoints have, sending or not (a group call's). */
+export type RosterChange = { mri: string; name: string; present: boolean; sources: Source[] };
 export type CallPushEvent =
   | { kind: 'accepted'; sdp: string; acknowledge: string | null; callLeg: string | null; renegotiation: string | null }
   | { kind: 'negotiation'; sdp: string; answerLink: string; mediaLeg: string | null }
@@ -465,6 +589,19 @@ export function isCallCallback(envelope: Doc, endpoint: string): boolean {
   return typeof envelope.url === 'string' && envelope.url.includes(`callAgent/${endpoint}/`);
 }
 
+/** An endpoint's videos, from its `call.mediaStreams`. */
+function sourcesOf(endpoint: unknown): Source[] {
+  const streams = ((endpoint as Doc | null)?.call as Doc | undefined)?.mediaStreams;
+  if (!Array.isArray(streams)) return [];
+  return streams.flatMap((stream: Doc) => {
+    const label = stream?.label;
+    if (label !== 'main-video' && label !== 'applicationsharing-video') return [];
+    const id = stream.sourceId;
+    if (typeof id !== 'number' || !Number.isSafeInteger(id)) return [];
+    return [{ id, screen: label === 'applicationsharing-video', live: stream.direction === 'sendrecv' || stream.direction === 'sendonly' }];
+  });
+}
+
 export function callPushEvent(envelope: Doc): CallPushEvent {
   const body = bodyOf(envelope);
   if (body === null) return { kind: 'other' };
@@ -487,10 +624,12 @@ export function callPushEvent(envelope: Doc): CallPushEvent {
     const changes = Object.entries(body.participants as Record<string, Doc>).map(([mri, entry]) => {
       const name = (entry.details as Doc | undefined)?.displayName;
       const endpoints = entry.endpoints;
+      const object = typeof endpoints === 'object' && endpoints !== null && !Array.isArray(endpoints) ? (endpoints as Record<string, unknown>) : null;
       return {
         mri,
         name: typeof name === 'string' ? name : '',
-        present: typeof endpoints === 'object' && endpoints !== null && Object.keys(endpoints).length > 0,
+        present: object !== null && Object.keys(object).length > 0,
+        sources: object === null ? [] : Object.values(object).flatMap(sourcesOf),
       };
     });
     return { kind: 'roster', changes };
@@ -749,8 +888,8 @@ export async function placeExternalCall(deps: CallDeps, engine: ExternalCallEngi
 export async function joinThreadCall(deps: CallDeps, engine: ExternalCallEngine, thread: string, join: MeetingJoin | null): Promise<void> {
   const caller: Caller = { ...deps.me, endpoint: deps.id(), participant: deps.id(), surl: deps.surl, random: deps.id() };
   const chain = deps.id();
-  await engine.start(caller.endpoint);
-  const layout = new Layout();
+  await engine.start(caller.endpoint, { dataChannel: DATA_LABEL, receiveVideos: GROUP_VIDEOS });
+  const layout = Layout.group();
   const offer = teamsOffer(await engine.offer(), sendingOf(engine), layout);
   const pushes = listen(deps);
   let created: Doc;
@@ -891,6 +1030,9 @@ const sendingOf = (engine: ExternalCallEngine): Sending => engine.sending?.() ??
 
 type Video = { stream: string; member: string; screen: boolean };
 
+/** A group call's media server, spoken to on the data channel: which video it sends on which section. */
+type Group = { channel: Channel; routing: Routing };
+
 /**
  * The call's run until it ends: the broker lease, the endpoint metadata, the
  * answer (when placed here), this side's new offers and Teams' answers to them,
@@ -936,19 +1078,39 @@ function runCall(deps: CallDeps, engine: ExternalCallEngine, caller: Caller, cha
     if (done) return;
     done = true;
     clearTimeout(ringing);
+    if (heartbeat !== null) clearInterval(heartbeat);
     pushes.stop();
     unsubscribe();
     if (reason !== null) void engine.ended(reason);
   };
   const ringing = setTimeout(() => { if (!answered) { finish('no_answer'); leave(); } }, RINGING_MS);
   const roster = new Map<string, string>();
+  const sources = new Map<string, Source[]>();
+  let group: Group | null = null;
+  let heartbeat: ReturnType<typeof setInterval> | null = null;
   let shown: Video[] = [];
   const showVideos = async () => {
     const member = roster.size === 1 ? [...roster.keys()][0]! : null;
-    const videos = member === null ? [] : remoteVideos(layout).map(([stream, label]) => ({ stream, member, screen: label === 'screen' }));
+    const videos = group !== null ? group.routing.shown(videoSlots(layout))
+      : member === null ? [] : remoteVideos(layout).map(([stream, label]) => ({ stream, member, screen: label === 'screen' }));
     if (JSON.stringify(videos) === JSON.stringify(shown)) return;
     shown = videos;
     await engine.videos?.(videos);
+  };
+  const route = async () => {
+    if (group === null) return;
+    for (const [stream, source, screen] of group.routing.plan(videoSlots(layout), sources)) await engine.sendData?.(group.channel.subscribe(stream, source, screen));
+  };
+  const greet = async () => {
+    const address = dataStream(layout);
+    if (address === null || engine.sendData === undefined) return;
+    const channel = new Channel(address);
+    await engine.sendData(channel.syn());
+    group = { channel, routing: new Routing() };
+    await route();
+    if (done) return;
+    const started = group;
+    heartbeat = setInterval(() => { void engine.sendData?.(started.channel.heartbeat()).catch(() => {}); }, 1000);
   };
   let waiting: string | null = null;
   let sharing = false;
@@ -980,12 +1142,14 @@ function runCall(deps: CallDeps, engine: ExternalCallEngine, caller: Caller, cha
       const sending = sendingOf(engine);
       const answer = teamsAnswer(local, event.sdp, sending, layout);
       await deps.post(event.answerLink, chain, answerNegotiationBody(answer, mediaLeg, modalities(layout, sending))).catch(() => {});
+      await route();
       await showVideos();
     } else if (event.kind === 'accepted' && answered && layout.offering()) {
       const answer = plainAnswer(event.sdp, layout);
       if (answer === null) return;
       await engine.answer(answer);
       if (event.acknowledge !== null) await deps.post(event.acknowledge, chain, {}).catch(() => {});
+      await route();
       await showVideos();
     } else if (event.kind === 'accepted' && !answered) {
       const answer = plainAnswer(event.sdp, layout);
@@ -993,6 +1157,7 @@ function runCall(deps: CallDeps, engine: ExternalCallEngine, caller: Caller, cha
       answered = true;
       renegotiation = event.renegotiation;
       await engine.answer(answer);
+      await greet();
       if (event.acknowledge !== null) {
         const acknowledged = await deps.post(event.acknowledge, chain, acknowledgeBody(caller)).catch(() => null);
         if (renegotiation === null && acknowledged !== null) renegotiation = renegotiationLink(acknowledged);
@@ -1005,9 +1170,15 @@ function runCall(deps: CallDeps, engine: ExternalCallEngine, caller: Caller, cha
     } else if (event.kind === 'roster') {
       for (const change of event.changes) {
         if (change.mri.toLowerCase() === caller.mri.toLowerCase()) continue;
-        if (change.present) roster.set(change.mri, change.name);
-        else roster.delete(change.mri);
+        if (change.present) {
+          sources.set(change.mri, change.sources);
+          roster.set(change.mri, change.name);
+        } else {
+          sources.delete(change.mri);
+          roster.delete(change.mri);
+        }
       }
+      await route();
       await engine.roster([...roster].map(([id, name]) => ({ id, name, muted: false })));
       await showVideos();
     } else if (event.kind === 'ended') finish('remote_ended');

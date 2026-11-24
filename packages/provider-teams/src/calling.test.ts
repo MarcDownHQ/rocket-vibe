@@ -1,7 +1,8 @@
 import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
 
-import { acceptBody, acknowledgeBody, answerExternalCall, answerNegotiationBody, attachBody, attachedLinks, callPushEvent, isCallCallback, joinMessage, joinThreadCall, Layout, meetingJoin, modalities, NOT_SENDING, nextSubscription, placeCallBody, placeExternalCall, plainAnswer, plainOffer, remoteVideos, renegotiateBody, renegotiationLink, teamsAnswer, teamsOffer, type Caller } from './calling.ts';
+import { messages } from './datachannel.ts';
+import { acceptBody, acknowledgeBody, answerExternalCall, answerNegotiationBody, attachBody, attachedLinks, callPushEvent, dataStream, isCallCallback, joinMessage, joinThreadCall, Layout, meetingJoin, modalities, NOT_SENDING, nextSubscription, placeCallBody, placeExternalCall, plainAnswer, plainOffer, remoteVideos, renegotiateBody, renegotiationLink, teamsAnswer, teamsOffer, videoSlots, type Caller } from './calling.ts';
 
 const sectionsOf = (sdp: string) => {
   const out: string[][] = [];
@@ -108,9 +109,17 @@ describe('Teams calling', () => {
     assert.ok(!isCallCallback(accepted, 'other'));
     assert.deepEqual(callPushEvent({ body: { callEnd: { phrase: 'Busy' } } }), { kind: 'ended' });
     assert.deepEqual(callPushEvent({ url: 'https://x/callAgent/e/r/conversation/rosterUpdate/', body: { participants: {
-      '8:orgid:a': { details: { displayName: 'Ana' }, endpoints: { x: {} } },
+      '8:orgid:a': { details: { displayName: 'Ana' }, endpoints: { x: { call: { mediaStreams: [
+        { type: 'audio', label: 'main-audio', sourceId: 414, direction: 'sendrecv' },
+        { type: 'video', label: 'main-video', sourceId: 415, direction: 'sendrecv' },
+        { type: 'applicationsharing-video', label: 'applicationsharing-video', sourceId: 425, direction: 'recvonly' },
+        { type: 'data', label: 'data', sourceId: 426, direction: 'sendrecv' },
+      ] } } } },
       '8:orgid:b': { details: { displayName: 'Bo' }, endpoints: {} },
-    } } }), { kind: 'roster', changes: [{ mri: '8:orgid:a', name: 'Ana', present: true }, { mri: '8:orgid:b', name: 'Bo', present: false }] });
+    } } }), { kind: 'roster', changes: [
+      { mri: '8:orgid:a', name: 'Ana', present: true, sources: [{ id: 415, screen: false, live: true }, { id: 425, screen: true, live: false }] },
+      { mri: '8:orgid:b', name: 'Bo', present: false, sources: [] },
+    ] });
   });
   test('bodies name this client\'s callbacks and the people rung', () => {
     const c: Caller = { mri: '8:orgid:me', name: 'Me', endpoint: 'e', participant: 'p', surl: 'https://t/', random: 'r' };
@@ -493,6 +502,120 @@ describe('Teams calling', () => {
     assert.equal(answers.length, 1, 'an answer to an offer Teams\' own withdrew is dropped');
     const negotiated = posted.find(([u]) => u === 'https://cc/answer')?.[1] as { mediaAnswer: { mediaContent: { mediaLegId: string } } };
     assert.equal(negotiated.mediaAnswer.mediaContent.mediaLegId, 'LEG2');
+  });
+});
+
+const GROUP_OFFER = 'v=0\r\no=- 1 2 IN IP4 127.0.0.1\r\ns=-\r\nt=0 0\r\na=group:BUNDLE 0 1 2 3 4\r\n'
+  + 'm=audio 9 UDP/TLS/RTP/SAVPF 111\r\nc=IN IP4 0.0.0.0\r\na=mid:0\r\na=sendrecv\r\na=ssrc:42 cname:x\r\n'
+  + 'a=candidate:2 1 udp 22 192.168.1.5 222 typ host generation 0\r\n'
+  + 'm=application 9 UDP/DTLS/SCTP webrtc-datachannel\r\nc=IN IP4 0.0.0.0\r\na=ice-ufrag:uf\r\na=ice-pwd:pw\r\n'
+  + 'a=fingerprint:sha-256 AB\r\na=setup:actpass\r\na=mid:1\r\na=sctp-port:5000\r\na=max-message-size:262144\r\n'
+  + 'm=video 9 UDP/TLS/RTP/SAVPF 102\r\nc=IN IP4 0.0.0.0\r\na=mid:2\r\na=recvonly\r\na=rtpmap:102 H264/90000\r\n'
+  + 'm=video 9 UDP/TLS/RTP/SAVPF 102\r\nc=IN IP4 0.0.0.0\r\na=mid:3\r\na=recvonly\r\na=rtpmap:102 H264/90000\r\n'
+  + 'm=video 9 UDP/TLS/RTP/SAVPF 102\r\nc=IN IP4 0.0.0.0\r\na=mid:4\r\na=recvonly\r\na=rtpmap:102 H264/90000\r\n';
+
+const GROUP_ANSWER = 'v=0\r\no=- 1 0 IN IP4 127.0.0.1\r\ns=session\r\nc=IN IP4 52.1.2.3\r\nt=0 0\r\n'
+  + 'm=audio 3480 RTP/SAVP 111\r\nc=IN IP4 52.1.2.3\r\na=x-source-streamid:201\r\na=setup:passive\r\n'
+  + 'a=ice-ufrag:Z6\r\na=ice-pwd:pw2\r\na=label:main-audio\r\na=mid:0\r\na=rtpmap:111 OPUS/48000/2\r\n'
+  + 'm=x-data 3480 RTP/SAVP 127 126\r\nc=IN IP4 52.1.2.3\r\na=x-source-streamid:205\r\na=setup:passive\r\n'
+  + 'a=ice-ufrag:Z6\r\na=ice-pwd:pw2\r\na=rtcp-mux\r\na=label:data\r\na=mid:1\r\na=rtpmap:127 x-data/90000\r\n'
+  + 'a=fingerprint:sha-256 CD\r\na=candidate:1 1 UDP 54001663 52.1.2.3 3480 typ relay raddr 10.0.0.1 rport 3480 MTURNID 9\r\n'
+  + 'a=x-data-protocol:sctp\r\n'
+  + 'm=video 3480 RTP/SAVP 102\r\nc=IN IP4 52.1.2.3\r\na=x-source-streamid:202\r\na=label:main-video\r\na=mid:2\r\n'
+  + 'a=sendonly\r\na=rtpmap:102 H264/90000\r\n'
+  + 'm=video 3480 RTP/SAVP 102\r\nc=IN IP4 52.1.2.3\r\na=x-source-streamid:203\r\na=label:main-video\r\na=mid:3\r\n'
+  + 'a=sendonly\r\na=rtpmap:102 H264/90000\r\n'
+  + 'm=video 3480 RTP/SAVP 102\r\nc=IN IP4 52.1.2.3\r\na=x-source-streamid:204\r\na=label:applicationsharing-video\r\n'
+  + 'a=mid:4\r\na=sendonly\r\na=rtpmap:102 H264/90000\r\n';
+
+describe('Teams group calls', () => {
+  test('a group call offers every video section, the last for a screen, and its data channel', () => {
+    const layout = Layout.group();
+    const offer = teamsOffer(GROUP_OFFER, NOT_SENDING, layout);
+    assert.ok(offer.includes('a=group:BUNDLE 0 1 2 3 4\r\n'), offer);
+    assert.equal(offer.split('a=label:main-video').length - 1, 2, offer);
+    assert.ok(section(offer, '4').includes('a=label:applicationsharing-video'), offer);
+    let data = section(offer, '1');
+    assert.ok(data.startsWith('m=x-data 222 RTP/SAVP 127\n'), data);
+    for (const line of ['a=x-data-protocol:sctp', 'a=rtpmap:127 x-data/90000', 'a=setup:actpass', 'a=ice-ufrag:uf']) assert.ok(data.includes(line), `${line}: ${data}`);
+    assert.ok(data.includes('a=label:data') && !data.includes('sctp-port'), data);
+    assert.ok(section(offer, '2').includes('a=x-ssrc-range:1-1'), 'a receiving section names no source');
+
+    const answer = plainAnswer(GROUP_ANSWER, layout)!;
+    data = section(answer, '1');
+    assert.ok(data.startsWith('m=application 3480 UDP/DTLS/SCTP webrtc-datachannel\n'), data);
+    assert.ok(data.includes('a=sctp-port:5000') && data.includes('a=setup:passive'), data);
+    assert.ok(data.includes('a=candidate:1 1 UDP 54001663 52.1.2.3 3480 typ relay raddr 10.0.0.1 rport 3480\n'), data);
+    assert.ok(answer.includes('a=group:BUNDLE 0 1 2 3 4\r\n'), answer);
+    assert.equal(dataStream(layout), 205);
+    assert.deepEqual(videoSlots(layout), [
+      { streamId: 202, stream: 'teams-2', label: 'camera' },
+      { streamId: 203, stream: 'teams-3', label: 'camera' },
+      { streamId: 204, stream: 'teams-4', label: 'screen' },
+    ]);
+
+    const again = teamsOffer(GROUP_OFFER, NOT_SENDING, layout);
+    assert.ok(section(again, '4').includes('a=label:applicationsharing-video'), 'the screen\'s section stays');
+    assert.ok(section(again, '3').includes('a=label:main-video'), again);
+  });
+  test('a one-to-one call still offers one camera section', () => {
+    const offer = teamsOffer(GROUP_OFFER, NOT_SENDING, new Layout());
+    assert.equal(offer.split('m=video').length - 1, 1, offer);
+    assert.ok(!offer.includes('applicationsharing'), offer);
+  });
+  test('a group call greets the media server, beats, asks for each live video and names it, and stops beating when it ends', async () => {
+    let push: (envelope: Record<string, unknown>) => void = () => {};
+    let id = 0;
+    const started: unknown[] = [];
+    const sent: Uint8Array[] = [];
+    const shown: unknown[] = [];
+    const posted: string[] = [];
+    await joinThreadCall({
+      post: async (url) => { posted.push(url); return { links: { leave: 'https://conv/leave' } }; },
+      pushes: (listener) => { push = listener; return () => { push = () => {}; }; },
+      poll: async () => ({}),
+      put: async () => {},
+      id: () => `id${++id}`,
+      me: { mri: '8:orgid:me', name: 'Me' },
+      surl: 'https://t/',
+    }, {
+      start: async (_identity, options) => { started.push(options); },
+      offer: async () => GROUP_OFFER,
+      answer: async () => {},
+      roster: async () => {},
+      ended: async () => {},
+      left: () => new Promise<void>(() => {}),
+      sendData: async (data) => { sent.push(data); },
+      videos: async (videos) => { shown.push(videos); },
+    }, '19:c@thread.tacv2', null);
+    assert.deepEqual(started, [{ dataChannel: 'main-channel', receiveVideos: 5 }]);
+    const url = (path: string) => `https://t/callAgent/id1/id3/${path}`;
+    push({ url: url('call/acceptance/'), body: { callAcceptance: { mediaContent: { blob: GROUP_ANSWER } } } });
+    await settle();
+    assert.equal(messages(sent[0]!)[0]!.type, 'syn');
+    assert.deepEqual([...sent[0]!.subarray(6, 10)], [0, 0, 0, 205], 'this side speaks from the data section\'s stream id');
+    push({ url: url('conversation/rosterUpdate/'), body: { participants: {
+      '8:orgid:me': { details: { displayName: 'Me' }, endpoints: { e: { call: { mediaStreams: [{ label: 'main-video', sourceId: 1, direction: 'sendrecv' }] } } } },
+      '8:orgid:a': { details: { displayName: 'Ana' }, endpoints: { x: { call: { mediaStreams: [
+        { label: 'main-video', sourceId: 415, direction: 'sendrecv' },
+        { label: 'applicationsharing-video', sourceId: 425, direction: 'sendonly' },
+      ] } } } },
+    } } });
+    await settle();
+    const asked = sent.slice(1).map((frame) => (messages(frame)[0]!.controlVideoStreaming as { controlInfo: unknown }).controlInfo);
+    assert.deepEqual(asked.map((info) => [(info as { streamMsid: number }).streamMsid, (info as { sourceId: number }).sourceId]), [[202, 415], [204, 425]]);
+    assert.deepEqual(shown.at(-1), [
+      { stream: 'teams-2', member: '8:orgid:a', screen: false },
+      { stream: 'teams-4', member: '8:orgid:a', screen: true },
+    ]);
+    const before = sent.length;
+    await new Promise((resolve) => setTimeout(resolve, 1100));
+    assert.equal(messages(sent[before]!)[0]!.type, 'heartbeat');
+    push({ url: url('conversation/end/'), body: { conversationEnd: {} } });
+    await settle();
+    const after = sent.length;
+    await new Promise((resolve) => setTimeout(resolve, 1100));
+    assert.equal(sent.length, after, 'no beat once the call ended');
   });
 });
 
