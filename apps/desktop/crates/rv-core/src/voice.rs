@@ -574,13 +574,16 @@ impl VoiceController {
     /// through [`Self::local_offers`], the rest goes through the `remote_*` methods.
     /// `data_channel` names a data channel the offer opens, spoken through
     /// [`Self::send_data`] and [`Self::data`]; `receive_videos` receive-only
-    /// video sections come with the camera's.
+    /// video sections come with the camera's. With `video_up_front` the first
+    /// offer carries the camera's and the screen's sections, and starting or
+    /// stopping either makes no new offer.
     pub async fn connect_external(
         &self,
         label: &str,
         identity: &str,
         data_channel: Option<&str>,
         receive_videos: usize,
+        video_up_front: bool,
     ) -> Result<(), VoiceError> {
         self.inner.local_offer.send_replace(None);
         let connect = Command::ConnectExternal {
@@ -589,7 +592,7 @@ impl VoiceController {
             video: true,
             data_channel: data_channel.map(str::to_owned),
             receive_videos,
-            video_up_front: false,
+            video_up_front,
         };
         self.start(label.to_owned(), true, None, None, connect).await
     }

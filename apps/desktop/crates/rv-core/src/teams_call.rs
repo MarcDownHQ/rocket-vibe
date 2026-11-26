@@ -14,6 +14,7 @@ use crate::sync::Backend;
 use crate::teams::calling::{self, CallEvent, Caller, Source};
 use crate::teams::datachannel::{self, Channel, Routing};
 use crate::teams::sdp;
+use crate::teams::sync::TeamsSync;
 use crate::voice::VoiceController;
 use rv_provider::rest::RestError;
 
@@ -21,9 +22,10 @@ use rv_provider::rest::RestError;
 const RINGING: Duration = Duration::from_secs(90);
 /// How long after the answer a conversation's end push is believed.
 const SETTLED: Duration = Duration::from_secs(5);
-/// The receiving video sections a group call offers: the last for a shared
-/// screen, the others for cameras (this side's own on the first).
-const GROUP_VIDEOS: usize = 5;
+/// The receive-only video sections a group call offers besides this side's
+/// camera and screen sections, which receive too: four cameras and a shared
+/// screen in all.
+const GROUP_RECEIVERS: usize = 3;
 
 /// Who a call goes to.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -59,6 +61,13 @@ impl Media {
 fn sending(voice: &VoiceController) -> sdp::Sending {
     let snapshot = voice.snapshot();
     sdp::Sending { camera: snapshot.camera, screen: snapshot.sharing }
+}
+
+/// What the sidecar sends now, its track on: what a group call tells Teams.
+fn sent(voice: &VoiceController) -> sdp::Sending {
+    let snapshot = voice.snapshot();
+    let local = snapshot.local();
+    sdp::Sending { camera: local.is_some_and(|p| p.camera), screen: local.is_some_and(|p| p.screen) }
 }
 
 struct Identity {
@@ -124,7 +133,7 @@ impl Session {
             chain: calling::random_id(),
         };
         voice
-            .connect_external(label, &identity.endpoint, None, 0)
+            .connect_external(label, &identity.endpoint, None, 0, false)
             .await
             .map_err(|e| RestError::incomplete(&format!("call: {e}")))?;
         let Some(offer) = voice.local_offer().await else {
@@ -185,7 +194,7 @@ impl Session {
             chain: calling::random_id(),
         };
         voice
-            .connect_external(label, &identity.endpoint, Some(datachannel::LABEL), GROUP_VIDEOS)
+            .connect_external(label, &identity.endpoint, Some(datachannel::LABEL), GROUP_RECEIVERS, true)
             .await
             .map_err(|e| RestError::incomplete(&format!("call: {e}")))?;
         let Some(offer) = voice.local_offer().await else {
@@ -194,6 +203,10 @@ impl Session {
         };
         let mut layout = sdp::Layout::group();
         let offer = sdp::teams_offer(&offer, sending(voice), &mut layout);
+        let described = |mut body: Value| {
+            calling::describe_media(&mut body, sdp::media_descriptions(&layout, sdp::Sending::default()));
+            body
+        };
         let (chain, caller) = (identity.chain.as_str(), identity.caller());
         let mut pushes = self.teams_call_pushes.subscribe();
         let created = match &join {
@@ -201,10 +214,8 @@ impl Session {
                 match teams.service.calling_post(calling::EPCONV, chain, &calling::join_meeting(&caller, join)).await {
                     Ok(conversation) => match conversation.get("conversationController").and_then(Value::as_str) {
                         Some(controller) => {
-                            teams
-                                .service
-                                .calling_post(controller, chain, &calling::join_meeting_call(&caller, join, &offer))
-                                .await
+                            let body = described(calling::join_meeting_call(&caller, join, &offer));
+                            teams.service.calling_post(controller, chain, &body).await
                         }
                         None => Err(RestError::incomplete("call: the meeting's conversation has no controller")),
                     },
@@ -212,10 +223,8 @@ impl Session {
                 }
             }
             None => {
-                teams
-                    .service
-                    .calling_post(calling::EPCONV, chain, &calling::start_channel_call(&caller, rid, &offer))
-                    .await
+                let body = described(calling::start_channel_call(&caller, rid, &offer));
+                teams.service.calling_post(calling::EPCONV, chain, &body).await
             }
         };
         let created = match created {
@@ -429,6 +438,66 @@ struct Group {
     routing: Routing,
 }
 
+/// What a group call told Teams this side sends, and where it tells it.
+struct Told {
+    descriptions: String,
+    capabilities: Option<String>,
+    sharer: Option<String>,
+    sent: sdp::Sending,
+    request: u32,
+    camera_described: bool,
+    shares: u32,
+}
+
+impl Told {
+    fn new(descriptions: String, capabilities: Option<String>, sharer: Option<String>) -> Self {
+        Told {
+            descriptions,
+            capabilities,
+            sharer,
+            sent: sdp::Sending::default(),
+            request: 1,
+            camera_described: false,
+            shares: 0,
+        }
+    }
+}
+
+/// Tells Teams each change of what this side sends in a group call, as its web
+/// client does: the camera's capabilities before it first goes out, the sharer
+/// before a share, then every section's direction.
+async fn tell(
+    teams: &TeamsSync,
+    chain: &str,
+    caller: &Caller<'_>,
+    layout: &sdp::Layout,
+    told: &mut Told,
+    now: sdp::Sending,
+) {
+    for (step, label) in sdp::sending_steps(told.sent, now) {
+        if label == sdp::Label::Camera && step.camera && !told.camera_described {
+            told.camera_described = true;
+            if let (Some(link), Some(mid)) = (&told.capabilities, sdp::own_mid(layout, sdp::Label::Camera)) {
+                let body = calling::camera_capabilities(mid, 1);
+                report("camera's capabilities", teams.service.calling_post(link, chain, &body).await.map(|_| ()));
+            }
+        }
+        if label == sdp::Label::Screen
+            && step.screen
+            && let Some(link) = &told.sharer
+        {
+            told.shares += 1;
+            let body = calling::screen_sharer(caller, told.shares);
+            report("screen sharer", teams.service.calling_post(link, chain, &body).await.map(|_| ()));
+        }
+        told.request += 1;
+        told.sent = step;
+        let descriptions = sdp::media_descriptions(layout, step);
+        let body = calling::update_media_descriptions(caller, descriptions, label == sdp::Label::Screen, told.request);
+        report("media descriptions", teams.service.calling_post(&told.descriptions, chain, &body).await.map(|_| ()));
+    }
+}
+
 /// The other side's videos to the sidecar, when they changed: in a group call
 /// the ones its media server was asked for, whose each is; otherwise whose they
 /// are is the one other person a call with one has.
@@ -500,6 +569,7 @@ async fn drive(
     let mut heartbeat = tokio::time::interval(Duration::from_secs(1));
     let mut shown: Vec<RemoteVideo> = Vec::new();
     let mut sharing = false;
+    let mut told: Option<Told> = None;
     let Media { mut layout, mut answered, mut renegotiation, mut media_leg } = media;
     let mut answered_at = answered.then(tokio::time::Instant::now);
     let debugging = std::env::var("RV_CALL_DEBUG").as_deref() == Ok("1");
@@ -525,6 +595,9 @@ async fn drive(
             change = changes.recv() => {
                 if change.is_err() || voice.snapshot().ended.is_some() {
                     break true;
+                }
+                if let Some(told) = &mut told {
+                    tell(teams, chain, &identity.caller(), &layout, told, sent(voice)).await;
                 }
             }
             _ = heartbeat.tick(), if group.is_some() => {
@@ -625,7 +698,15 @@ async fn drive(
                         }
                         show_videos(voice, &layout, &roster, group.as_ref(), &mut shown).await;
                     }
-                    CallEvent::Accepted { sdp, acknowledge, call_leg, renegotiation: link, .. } if !answered => {
+                    CallEvent::Accepted {
+                        sdp,
+                        acknowledge,
+                        call_leg,
+                        renegotiation: link,
+                        media_descriptions,
+                        channel_parameters,
+                        ..
+                    } if !answered => {
                         let Some(answer) = sdp::plain_answer(&sdp, &mut layout) else {
                             voice.remote_ended("connect_failed").await;
                             break true;
@@ -651,6 +732,12 @@ async fn drive(
                         }
                         if debugging && renegotiation.is_none() {
                             eprintln!("teams call: no renegotiation link");
+                        }
+                        if layout.is_group() && let Some(link) = media_descriptions {
+                            let sharer = links.get("updateParticipantProperties").and_then(Value::as_str);
+                            let mut started = Told::new(link, channel_parameters, sharer.map(str::to_owned));
+                            tell(teams, chain, &identity.caller(), &layout, &mut started, sent(voice)).await;
+                            told = Some(started);
                         }
                         show_videos(voice, &layout, &roster, group.as_ref(), &mut shown).await;
                         if let Some(link) = call_leg {

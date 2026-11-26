@@ -92,7 +92,7 @@ async fn a_jitsi_call_runs_in_the_same_controller() {
 #[tokio::test]
 async fn an_external_call_offers_again_for_its_camera_and_shows_the_videos_it_is_told_of() {
     let voice = fake(&[]);
-    voice.connect_external("Teams", "ep", None, 0).await.unwrap();
+    voice.connect_external("Teams", "ep", None, 0, false).await.unwrap();
     assert_eq!(voice.local_offer().await.as_deref(), Some("offer 1"));
     let snapshot = until(&voice, |s| s.call_video.is_some()).await;
     assert_eq!(snapshot.call_video, Some((true, true)), "a Teams call takes the camera and the screen");
@@ -109,6 +109,23 @@ async fn an_external_call_offers_again_for_its_camera_and_shows_the_videos_it_is
         .await;
     let snapshot = until(&voice, |s| s.participants.iter().any(|p| p.identity == "peer" && p.screen)).await;
     assert!(snapshot.participants.iter().any(|p| p.identity == "peer" && !p.camera));
+    voice.disconnect().await;
+}
+
+#[tokio::test]
+async fn an_external_call_with_its_video_up_front_never_offers_again_for_it() {
+    let voice = fake(&[]);
+    voice.connect_external("Teams", "ep", Some("main-channel"), 3, true).await.unwrap();
+    assert_eq!(voice.local_offer().await.as_deref(), Some("offer 1"));
+    let mut offers = voice.local_offers();
+    offers.borrow_and_update();
+    voice.set_camera(true).await;
+    let snapshot = until(&voice, |s| s.local().is_some_and(|p| p.camera)).await;
+    assert!(snapshot.camera);
+    assert!(
+        tokio::time::timeout(Duration::from_millis(300), offers.changed()).await.is_err(),
+        "the camera goes out on the section offered first"
+    );
     voice.disconnect().await;
 }
 

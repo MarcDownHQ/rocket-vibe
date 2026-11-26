@@ -5,7 +5,8 @@
 //! `fake://no-screen` cancels every screen share as a closed picker would.
 //! `fake://declined` has the other side refuse every switch to video.
 //! An external call offers once connected and again each time its camera
-//! changes; the videos named by `RemoteVideos` show on `peer`.
+//! changes, unless its video came up front; the videos named by `RemoteVideos`
+//! show on `peer`.
 //! The token is used as the local identity, followed by `#<key>` in an
 //! encrypted session (the key `SetKey` replaces), so tests see what it got.
 //! Video: once connected, a 4 by 2 frame of `peer`'s camera; the camera and the
@@ -70,6 +71,7 @@ fn main() {
     let mut url = String::new();
     let mut video: Option<TcpStream> = None;
     let mut offers = 0;
+    let mut up_front = false;
     let publish = |me: &Participant, peer: &Participant| {
         emit(Event::Participants { participants: vec![me.clone(), peer.clone()] })
     };
@@ -108,8 +110,9 @@ fn main() {
                 connected = true;
                 publish(&me, &peer);
             }
-            Command::ConnectExternal { identity, video, .. } => {
+            Command::ConnectExternal { identity, video, video_up_front, .. } => {
                 url = "external".to_owned();
+                up_front = video_up_front;
                 me.identity = identity;
                 emit(Event::State { state: ConnectionState::Connecting });
                 emit(Event::State { state: ConnectionState::Connected });
@@ -193,7 +196,7 @@ fn main() {
                     frame(&mut video, Source::Camera, &identity, 0, 0)
                 }
                 publish(&me, &peer);
-                if url == "external" {
+                if url == "external" && !up_front {
                     offers += 1;
                     emit(Event::LocalOffer { sdp: format!("offer {offers}") });
                 }
