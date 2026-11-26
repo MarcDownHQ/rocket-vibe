@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
 
 import { messages } from './datachannel.ts';
-import { acceptBody, acknowledgeBody, answerExternalCall, answerNegotiationBody, attachBody, attachedLinks, callPushEvent, dataStream, isCallCallback, joinMessage, joinThreadCall, Layout, meetingJoin, modalities, NOT_SENDING, nextSubscription, placeCallBody, placeExternalCall, plainAnswer, plainOffer, remoteVideos, renegotiateBody, renegotiationLink, teamsAnswer, teamsOffer, videoSlots, type Caller } from './calling.ts';
+import { acceptBody, acknowledgeBody, answerExternalCall, answerNegotiationBody, attachBody, attachedLinks, callPushEvent, cameraCapabilitiesBody, dataStream, describeMedia, isCallCallback, joinMessage, joinThreadCall, Layout, mediaDescriptions, meetingJoin, modalities, NOT_SENDING, nextSubscription, ownMid, placeCallBody, placeExternalCall, plainAnswer, plainOffer, remoteVideos, renegotiateBody, renegotiationLink, screenSharerBody, sendingSteps, startChannelCallBody, teamsAnswer, teamsOffer, updateMediaDescriptionsBody, videoSlots, type Caller, type Sending } from './calling.ts';
 
 const sectionsOf = (sdp: string) => {
   const out: string[][] = [];
@@ -616,6 +616,175 @@ describe('Teams group calls', () => {
     const after = sent.length;
     await new Promise((resolve) => setTimeout(resolve, 1100));
     assert.equal(sent.length, after, 'no beat once the call ended');
+  });
+});
+
+/** libwebrtc's offer for a group call whose camera and screen sections come up front, no track on either yet: then the data channel and two receivers. */
+const UP_FRONT_OFFER = 'v=0\r\no=- 1 2 IN IP4 127.0.0.1\r\ns=-\r\nt=0 0\r\na=group:BUNDLE 0 1 2 3 4 5\r\n'
+  + 'm=audio 9 UDP/TLS/RTP/SAVPF 111\r\nc=IN IP4 0.0.0.0\r\na=mid:0\r\na=sendrecv\r\na=ssrc:42 cname:x\r\n'
+  + 'a=candidate:2 1 udp 22 192.168.1.5 222 typ host generation 0\r\n'
+  + 'm=video 9 UDP/TLS/RTP/SAVPF 102 103\r\nc=IN IP4 0.0.0.0\r\na=mid:1\r\na=sendrecv\r\na=msid:ep-camera t1\r\n'
+  + 'a=rtpmap:102 H264/90000\r\na=rtpmap:103 rtx/90000\r\na=ssrc-group:FID 51 52\r\na=ssrc:51 cname:x\r\n'
+  + 'a=ssrc:51 msid:ep-camera t1\r\na=ssrc:52 cname:x\r\na=ssrc:52 msid:ep-camera t1\r\n'
+  + 'm=video 9 UDP/TLS/RTP/SAVPF 102\r\nc=IN IP4 0.0.0.0\r\na=mid:2\r\na=sendrecv\r\na=msid:ep-screen t2\r\n'
+  + 'a=rtpmap:102 H264/90000\r\na=ssrc:61 cname:x\r\na=ssrc:61 msid:ep-screen t2\r\n'
+  + 'm=application 9 UDP/DTLS/SCTP webrtc-datachannel\r\nc=IN IP4 0.0.0.0\r\na=ice-ufrag:uf\r\na=ice-pwd:pw\r\n'
+  + 'a=fingerprint:sha-256 AB\r\na=setup:actpass\r\na=mid:3\r\na=sctp-port:5000\r\n'
+  + 'm=video 9 UDP/TLS/RTP/SAVPF 102\r\nc=IN IP4 0.0.0.0\r\na=mid:4\r\na=recvonly\r\na=rtpmap:102 H264/90000\r\n'
+  + 'm=video 9 UDP/TLS/RTP/SAVPF 102\r\nc=IN IP4 0.0.0.0\r\na=mid:5\r\na=recvonly\r\na=rtpmap:102 H264/90000\r\n';
+
+/** The media server's answer: it sends on every video section, this side's own included. */
+const UP_FRONT_ANSWER = 'v=0\r\no=- 1 0 IN IP4 127.0.0.1\r\ns=session\r\nc=IN IP4 52.1.2.3\r\nt=0 0\r\n'
+  + 'm=audio 3480 RTP/SAVP 111\r\nc=IN IP4 52.1.2.3\r\na=x-source-streamid:201\r\na=label:main-audio\r\na=mid:0\r\n'
+  + 'a=rtpmap:111 OPUS/48000/2\r\n'
+  + 'm=video 3480 RTP/SAVP 102\r\nc=IN IP4 52.1.2.3\r\na=x-source-streamid:202\r\na=label:main-video\r\na=mid:1\r\n'
+  + 'a=rtpmap:102 H264/90000\r\n'
+  + 'm=video 3480 RTP/SAVP 102\r\nc=IN IP4 52.1.2.3\r\na=x-source-streamid:203\r\n'
+  + 'a=label:applicationsharing-video\r\na=mid:2\r\na=rtpmap:102 H264/90000\r\n'
+  + 'm=x-data 3480 RTP/SAVP 127\r\nc=IN IP4 52.1.2.3\r\na=x-source-streamid:204\r\na=label:data\r\na=mid:3\r\n'
+  + 'a=x-data-protocol:sctp\r\n'
+  + 'm=video 3480 RTP/SAVP 102\r\nc=IN IP4 52.1.2.3\r\na=x-source-streamid:205\r\na=label:main-video\r\na=mid:4\r\n'
+  + 'a=sendonly\r\na=rtpmap:102 H264/90000\r\n'
+  + 'm=video 3480 RTP/SAVP 102\r\nc=IN IP4 52.1.2.3\r\na=x-source-streamid:206\r\na=label:main-video\r\na=mid:5\r\n'
+  + 'a=sendonly\r\na=rtpmap:102 H264/90000\r\n';
+
+describe('Teams group calls sending', () => {
+  const caller: Caller = { mri: '8:orgid:me', name: 'Me', endpoint: 'ep', participant: 'p', surl: 'https://t/', random: 'r' };
+  test('a group call tells what it sends on the links its acceptance names', () => {
+    const accepted = { url: 'https://x/callAgent/ep/r/call/acceptance/', body: { callAcceptance: {
+      links: { updateMediaDescriptions: 'https://fp/ep/cc/v1/active/1/updateMediaDescriptions?i=1',
+        applyChannelParameters: 'https://fp/ep/cc/v1/mcProxy/1/applyChannelParameters?i=1' },
+      mediaContent: { blob: 'v=0' } } } };
+    const event = callPushEvent(accepted);
+    assert.equal(event.kind, 'accepted');
+    if (event.kind !== 'accepted') return;
+    assert.equal(event.mediaDescriptions, 'https://fp/ep/cc/v1/active/1/updateMediaDescriptions?i=1');
+    assert.equal(event.channelParameters, 'https://fp/ep/cc/v1/mcProxy/1/applyChannelParameters?i=1');
+    const callback = callPushEvent({ body: { callAcceptance: { links: { updateMediaDescriptions: 'wss://t/x' }, mediaContent: { blob: 'v=0' } } } });
+    assert.ok(callback.kind === 'accepted' && callback.mediaDescriptions === null);
+
+    const descriptions = [{ mid: '1', direction: 'sendrecv', label: 'main-video' }, { mid: '2', direction: 'recvonly' }];
+    assert.deepEqual(updateMediaDescriptionsBody(caller, descriptions, false, 2),
+      { UpdateMediaDescriptions: { mediaDescriptions: { descriptions, negotiationTag: 'p;v_1', requestId: 2 } } });
+    const share = updateMediaDescriptionsBody(caller, [], true, 3) as { UpdateMediaDescriptions: { mediaDescriptions: { negotiationTag: string } } };
+    assert.equal(share.UpdateMediaDescriptions.mediaDescriptions.negotiationTag, 'p;ss_1');
+
+    const invitation = describeMedia(startChannelCallBody(caller, '19:t@thread.tacv2', 'v=0'), [{ mid: '1', direction: 'recvonly' }]);
+    const content = (invitation.callInvitation as { mediaContent: Record<string, unknown> }).mediaContent;
+    assert.deepEqual(content.mediaDescriptions, { descriptions: [{ mid: '1', direction: 'recvonly' }], requestId: 1 });
+    assert.equal(content.blob, 'v=0');
+
+    const caps = cameraCapabilitiesBody('1', 1) as { applyChannelParameters: { multiChannelParameter: { mids: string[]; mediaParameter: string } } };
+    assert.deepEqual(caps.applyChannelParameters.multiChannelParameter.mids, ['1']);
+    assert.equal(caps.applyChannelParameters.multiChannelParameter.mediaParameter,
+      '{"maxVideoSendCapabilities":{"caps":{"max-fps":30,"max-height":1280,"max-layers":1,"max-streams":1,"max-width":1280,"sequence-number":1}}}',
+      'serde_json\'s sorted keys, as rv-teams writes it');
+
+    const sharer = screenSharerBody(caller, 1, 'op') as { to: { id: string; propertyBag: unknown }[]; links: Record<string, string>; operationId: string };
+    assert.equal(sharer.to[0]!.id, '8:orgid:me');
+    assert.deepEqual(sharer.to[0]!.propertyBag, { screenSharerAttributes: { sequenceNumber: 1, value: { source: 1 } } });
+    assert.equal(sharer.links.updateParticipantPropertiesStatus, 'https://t/callAgent/ep/r/conversation/updateParticipantPropertiesStatus/');
+    assert.equal(sharer.operationId, 'op');
+  });
+  test('a group call offers its own sections up front and describes what they send', () => {
+    const layout = Layout.group();
+    const offer = teamsOffer(UP_FRONT_OFFER, NOT_SENDING, layout);
+    const camera = section(offer, '1');
+    for (const line of ['a=label:main-video', 'a=sendrecv', 'a=x-ssrc-range:51-51']) assert.ok(camera.includes(line), `${line}: ${camera}`);
+    const screen = section(offer, '2');
+    for (const line of ['a=label:applicationsharing-video', 'a=sendrecv', 'a=x-ssrc-range:61-61']) assert.ok(screen.includes(line), `${line}: ${screen}`);
+    assert.ok(section(offer, '4').includes('a=recvonly') && section(offer, '5').includes('a=label:main-video'), offer);
+    assert.equal(offer.split('a=label:applicationsharing-video').length - 1, 1, offer);
+    assert.deepEqual(mediaDescriptions(layout, NOT_SENDING), [{ mid: '1', direction: 'recvonly' }, { mid: '2', direction: 'recvonly' }]);
+    assert.deepEqual(mediaDescriptions(layout, { camera: true, screen: false }),
+      [{ mid: '1', direction: 'sendrecv', label: 'main-video' }, { mid: '2', direction: 'recvonly' }]);
+    assert.deepEqual(mediaDescriptions(layout, { camera: false, screen: true }),
+      [{ mid: '1', direction: 'recvonly' }, { mid: '2', direction: 'sendonly', label: 'applicationsharing-video' }]);
+    assert.deepEqual([ownMid(layout, 'camera'), ownMid(layout, 'screen')], ['1', '2']);
+
+    assert.ok(plainAnswer(UP_FRONT_ANSWER, layout) !== null);
+    assert.deepEqual(videoSlots(layout).map((s) => [s.streamId, s.label]),
+      [[202, 'camera'], [203, 'screen'], [205, 'camera'], [206, 'camera']], 'this side\'s own sections receive too');
+    const again = teamsOffer(UP_FRONT_OFFER, { camera: true, screen: true }, layout);
+    assert.ok(section(again, '1').includes('a=sendrecv'), again);
+    assert.ok(section(again, '2').includes('a=sendrecv'), again);
+  });
+  test('what this side sends is told one change at a time', () => {
+    const off: Sending = NOT_SENDING;
+    const camera: Sending = { camera: true, screen: false };
+    const both: Sending = { camera: true, screen: true };
+    assert.deepEqual(sendingSteps(off, off), []);
+    assert.deepEqual(sendingSteps(off, camera), [[camera, 'camera']]);
+    assert.deepEqual(sendingSteps(camera, { camera: false, screen: true }), [[off, 'camera'], [{ camera: false, screen: true }, 'screen']]);
+    assert.deepEqual(sendingSteps(both, camera), [[camera, 'screen']]);
+    assert.equal(ownMid(new Layout(), 'camera'), null);
+  });
+  test('a channel call offers its video up front and tells each change of it on its acceptance\'s links', async () => {
+    let push: (envelope: Record<string, unknown>) => void = () => {};
+    let tellSent: (now: Sending) => void = () => {};
+    let id = 0;
+    const started: unknown[] = [];
+    const offers: unknown[] = [];
+    const posted: [string, Record<string, unknown>][] = [];
+    await joinThreadCall({
+      post: async (url, _chain, body) => {
+        posted.push([url, body]);
+        return url.endsWith('/epconv') ? { links: { leave: 'https://conv/leave', updateParticipantProperties: 'https://conv/props' } } : {};
+      },
+      pushes: (listener) => { push = listener; return () => { push = () => {}; }; },
+      poll: async () => ({}),
+      put: async () => {},
+      id: () => `id${++id}`,
+      me: { mri: '8:orgid:me', name: 'Me' },
+      surl: 'https://t/',
+    }, {
+      start: async (_identity, options) => { started.push(options); },
+      offer: async () => UP_FRONT_OFFER,
+      answer: async () => {},
+      roster: async () => {},
+      ended: async () => {},
+      left: () => new Promise<void>(() => {}),
+      offers: (listener) => { offers.push(listener); return () => {}; },
+      sent: (listener) => { tellSent = listener; listener(NOT_SENDING); return () => { tellSent = () => {}; }; },
+      sendData: async () => {},
+    }, '19:c@thread.tacv2', null);
+    assert.deepEqual(started, [{ dataChannel: 'main-channel', receiveVideos: 3, videoUpFront: true }]);
+    const invitation = posted[0]![1].callInvitation as { mediaContent: { mediaDescriptions: unknown } };
+    assert.deepEqual(invitation.mediaContent.mediaDescriptions,
+      { descriptions: [{ mid: '1', direction: 'recvonly' }, { mid: '2', direction: 'recvonly' }], requestId: 1 });
+
+    tellSent({ camera: true, screen: false });
+    await settle();
+    assert.equal(posted.length, 1, 'nothing is told before Teams took the call');
+    const url = (path: string) => `https://t/callAgent/id1/id3/${path}`;
+    push({ url: url('call/acceptance/'), body: { callAcceptance: {
+      links: { updateMediaDescriptions: 'https://cc/describe', applyChannelParameters: 'https://cc/parameters' },
+      mediaContent: { blob: UP_FRONT_ANSWER } } } });
+    await settle();
+    const told = () => posted.slice(1).filter(([u]) => u.startsWith('https://cc/') || u === 'https://conv/props');
+    assert.deepEqual(told().map(([u]) => u), ['https://cc/parameters', 'https://cc/describe'], 'the camera\'s capabilities before it is first told');
+    assert.deepEqual(told()[1]![1], { UpdateMediaDescriptions: { mediaDescriptions: {
+      descriptions: [{ mid: '1', direction: 'sendrecv', label: 'main-video' }, { mid: '2', direction: 'recvonly' }], negotiationTag: 'id2;v_1', requestId: 2 } } });
+
+    tellSent({ camera: true, screen: true });
+    await settle();
+    assert.deepEqual(told().slice(2).map(([u]) => u), ['https://conv/props', 'https://cc/describe'], 'the sharer before the share');
+    const share = told()[3]![1] as { UpdateMediaDescriptions: { mediaDescriptions: { descriptions: unknown; negotiationTag: string; requestId: number } } };
+    assert.deepEqual(share.UpdateMediaDescriptions.mediaDescriptions, {
+      descriptions: [{ mid: '1', direction: 'sendrecv', label: 'main-video' }, { mid: '2', direction: 'sendonly', label: 'applicationsharing-video' }],
+      negotiationTag: 'id2;ss_1', requestId: 3 });
+
+    tellSent({ camera: false, screen: false });
+    tellSent({ camera: true, screen: false });
+    await settle();
+    const later = told().slice(4);
+    assert.deepEqual(later.map(([u]) => u), ['https://cc/describe', 'https://cc/describe', 'https://cc/describe'], 'the capabilities go once, the sharer only when a share starts');
+    const steps = later.map(([, b]) => (b as { UpdateMediaDescriptions: { mediaDescriptions: { descriptions: { direction: string }[]; requestId: number } } }).UpdateMediaDescriptions.mediaDescriptions);
+    assert.deepEqual(steps.map((m) => [m.requestId, m.descriptions.map((d) => d.direction).join(' ')]),
+      [[4, 'recvonly sendonly'], [5, 'recvonly recvonly'], [6, 'sendrecv recvonly']]);
+    assert.equal(offers.length, 1);
+    push({ url: url('conversation/end/'), body: { conversationEnd: {} } });
+    await settle();
   });
 });
 
