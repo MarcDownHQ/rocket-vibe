@@ -159,7 +159,7 @@ impl CallSignaling for Session {
     }
 
     fn can_send(&self, kind: VideoKind) -> bool {
-        kind == VideoKind::Camera
+        kind == VideoKind::Camera || self.content.is_some()
     }
 
     fn offers_to_receive_video(&self) -> bool {
