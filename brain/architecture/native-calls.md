@@ -433,8 +433,8 @@ Built (desktop):
   through the call's video list (`shown()` matches it by stream); the camera goes on a send-only
   section of its own, as for Mattermost. The call screen needed nothing: its camera button follows
   `canCamera`, true for Chime since the shared code's `can_send(Camera)`.
-- **Not built**: this side's screen share (`can_send(Screen)` stays false: it needs the `#content`
-  attendee's socket and a second peer connection); PAUSE/RESUME of a group. **Not run** against a
+- **Not built**: this side's screen share on Android (the `#content` attendee, built on the desktop:
+  `rv-voice-mobile` runs no second session nor peer connection); PAUSE/RESUME of a group. **Not run** against a
   live huddle: the capture, unit tests and the sidecar's offer test only; Android by compiling (the
   Android cross-compile, `:voice:compileDebugKotlin`) and rv-voice-mobile's tests only.
 
@@ -754,7 +754,7 @@ then run on the bench. kChat has no such plugin: its calls stay kMeet's.
   the Vibez voice screen), camera and screen buttons only where the call can send them, and a chat button
   opening the call's room over the call. Checked by compiling only (Kotlin, TypeScript, rv-voice-mobile
   tests), not run on a device.
-- **Owed**: Chime (this side's screen share, the `#content` socket); the plugin's `MediaMap`. WhatsApp's
+- **Owed**: Chime on Android (this side's screen share, the `#content` socket); the plugin's `MediaMap`. WhatsApp's
   video has its own path, below; Teams' is after it.
 
 ### WhatsApp 1:1 calls, audio (2026-11-11)
@@ -1011,7 +1011,9 @@ goes out as this side's video.
   `drive` does. The Kotlin call adds the receive-only transceivers before its first offer (the camera's
   `addTrack` then reuses the first) and opens the channel ordered and in-band; `sendData` queues until it is
   open and what arrives reaches JS as the `data` event (bytes as a number array). **Checked**: compiled and
-  unit-tested only, not run on a device nor against Teams.
+  unit-tested only, not run on a device nor against Teams. **Owed**: this side's camera and share in a
+  group call still go through `renegotiate`, where the desktop now offers them up front and posts
+  `updateMediaDescriptions`.
 
 ## Order
 
@@ -1061,6 +1063,9 @@ Teams meetings and video last.
   packages/provider-teams/src/datachannel.ts, packages/provider-teams/src/datachannel.test.ts,
   packages/provider-api/src/calls.ts, apps/mobile/modules/voice/android/src/main/java/com/rocketvibe/voice/JitsiCall.kt
   (Teams' video on Android)
+- crates/rv-teams/src/datachannel.rs, crates/rv-call/src/lib.rs (`video_up_front`), captures 2026-11-23/24
+  `teams.cloud.microsoft_video2.har`, `teams.cloud.microsoft_video3.har`, `teams-datachannel.json`
+  (a group call's and a meeting's own camera and share)
 - https://github.com/aws/amazon-chime-sdk-js/blob/main/protocol/SignalingProtocol.proto
 - https://github.com/aws/amazon-chime-sdk-js/blob/main/src/signalingclient/DefaultSignalingClient.ts
 - https://github.com/aws/amazon-chime-sdk-js/blob/main/src/sdp/ZLIBTextCompressor.ts
