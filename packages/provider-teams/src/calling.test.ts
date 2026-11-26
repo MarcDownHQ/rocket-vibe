@@ -102,7 +102,7 @@ describe('Teams calling', () => {
   });
   test('pushes say what happened', () => {
     const accepted = { url: 'https://x/callAgent/e/r/call/acceptance/', body: JSON.stringify({ callAcceptance: { links: { acknowledgement: 'https://cc/ack', mediaRenegotiation: 'https://cc/active/1/renegotiate' }, mediaContent: { blob: 'v=0' } } }) };
-    assert.deepEqual(callPushEvent(accepted), { kind: 'accepted', sdp: 'v=0', acknowledge: 'https://cc/ack', callLeg: null, renegotiation: 'https://cc/active/1/renegotiate' });
+    assert.deepEqual(callPushEvent(accepted), { kind: 'accepted', sdp: 'v=0', acknowledge: 'https://cc/ack', callLeg: null, renegotiation: 'https://cc/active/1/renegotiate', mediaDescriptions: null, channelParameters: null });
     assert.equal(renegotiationLink({ callAcceptanceAcknowledgement: { links: { mediaRenegotiation: 'https://cc/r' } } }), 'https://cc/r');
     assert.equal(renegotiationLink({ links: { mediaRenegotiation: 'wss://x' } }), null);
     assert.ok(isCallCallback(accepted, 'e'));
@@ -588,7 +588,7 @@ describe('Teams group calls', () => {
       sendData: async (data) => { sent.push(data); },
       videos: async (videos) => { shown.push(videos); },
     }, '19:c@thread.tacv2', null);
-    assert.deepEqual(started, [{ dataChannel: 'main-channel', receiveVideos: 5 }]);
+    assert.deepEqual(started, [{ dataChannel: 'main-channel', receiveVideos: 3, videoUpFront: true }]);
     const url = (path: string) => `https://t/callAgent/id1/id3/${path}`;
     push({ url: url('call/acceptance/'), body: { callAcceptance: { mediaContent: { blob: GROUP_ANSWER } } } });
     await settle();

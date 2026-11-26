@@ -17,8 +17,8 @@ export const ECHO_BOT = 'cf28171e-fcfd-47e4-a1d6-79460b0b3ca0';
 export const EPCONV = 'https://api.flightproxy.teams.microsoft.com/api/v2/epconv';
 export const CALL_CLIENT = 'SkypeSpaces/1415/26100212018/os=linux; osVer=undefined; deviceType=computer; browser=chrome';
 const RINGING_MS = 90_000;
-/** The receiving video sections a group call offers: the last for a shared screen, the others for cameras (this side's own on the first). */
-const GROUP_VIDEOS = 5;
+/** The receive-only video sections a group call offers besides this side's camera and screen sections, which receive too: four cameras and a shared screen in all. */
+const GROUP_RECEIVERS = 3;
 
 /**
  * Teams' SDP dialect against plain WebRTC's (`sdp.rs` in crates/rv-teams). Teams
@@ -65,6 +65,8 @@ export class Layout {
   streams = new Map<string, number>();
   /** A group call's: every receiving video section is offered, the last one nothing labelled yet as the shared screen's. */
   group = false;
+  /** A group call's video sections that may send, in the offer's order, and what this side's own carry: what `updateMediaDescriptions` tells. */
+  described: [string, Label | null][] = [];
 
   /** A group call's layout. */
   static group(): Layout {
@@ -200,8 +202,9 @@ function teamsSection(section: Section, label: Label, mid: string, [port, addres
   return text(out);
 }
 
-/** What this side tells Teams of a section of its own camera or screen that sends nothing now. */
-function toldDirection(section: Section, sending: Sending): string | null {
+/** What this side tells Teams of a section of its own camera or screen that sends nothing now; a group call tells it with `updateMediaDescriptions` instead. */
+function toldDirection(section: Section, sending: Sending, group: boolean): string | null {
+  if (group) return null;
   const label = own(section);
   if (label === null) return null;
   const quietNow = label === 'camera' ? !sending.camera : label === 'screen' ? !sending.screen : false;
@@ -357,6 +360,14 @@ export function teamsOffer(sdp: string, sending: Sending, layout: Layout): strin
   });
   const mids: string[] = [];
   let body = '';
+  if (layout.group) {
+    layout.described = kept.flatMap(([at, label]): [string, Label | null][] => {
+      const section = sections[at]!;
+      const mid = midOf(section);
+      if ((label !== 'camera' && label !== 'screen') || directionOf(section) === 'recvonly' || mid === null) return [];
+      return [[mid, own(section)]];
+    });
+  }
   for (const [at, label] of kept) {
     const section = sections[at]!;
     const mid = midOf(section);
@@ -367,7 +378,7 @@ export function teamsOffer(sdp: string, sending: Sending, layout: Layout): strin
       continue;
     }
     if (label !== 'audio') layout.labels.set(mid, label);
-    body += teamsSection(section, label, mid, address, toldDirection(section, sending));
+    body += teamsSection(section, label, mid, address, toldDirection(section, sending, layout.group));
   }
   layout.offered = sdp;
   return teamsHead(head, mids) + body;
@@ -511,7 +522,7 @@ export function teamsAnswer(answer: string, offer: string, sending: Sending, lay
     } else if (found !== undefined) {
       const label: Label = kindOf(found) === 'audio' ? 'audio' : (plain === undefined ? undefined : layout.labels.get(plain)) ?? 'camera';
       bundle.push(theirs);
-      body += teamsSection(found, label, theirs, address, toldDirection(found, sending));
+      body += teamsSection(found, label, theirs, address, toldDirection(found, sending, layout.group));
     } else {
       const [kind = '', , ...rest] = section[0]!.split(' ');
       body += `${kind} 0 ${rest.join(' ')}\r\n`;
@@ -561,10 +572,47 @@ export function modalities(layout: Layout, sending: Sending): string[] {
   return out;
 }
 
+/**
+ * A group call's sections that may send and what each does now, as
+ * `updateMediaDescriptions` lists them: this side's camera `sendrecv`, its
+ * screen `sendonly`, each with its label; every other one `recvonly`.
+ */
+export function mediaDescriptions(layout: Layout, sending: Sending): Doc[] {
+  return layout.described.map(([mid, mine]) => {
+    if (mine === 'camera' && sending.camera) return { mid, direction: 'sendrecv', label: LABELS.camera };
+    if (mine === 'screen' && sending.screen) return { mid, direction: 'sendonly', label: LABELS.screen };
+    return { mid, direction: 'recvonly' };
+  });
+}
+
+/** The mid of this side's own camera or screen section in a group call. */
+export function ownMid(layout: Layout, label: Label): string | null {
+  return layout.described.find(([, mine]) => mine === label)?.[0] ?? null;
+}
+
+/** From what Teams was told to what is sent now, one change at a time, each with what it changed: the camera's first. */
+export function sendingSteps(told: Sending, now: Sending): [Sending, Label][] {
+  const steps: [Sending, Label][] = [];
+  let at = told;
+  if (at.camera !== now.camera) {
+    at = { ...at, camera: now.camera };
+    steps.push([at, 'camera']);
+  }
+  if (at.screen !== now.screen) {
+    at = { ...at, screen: now.screen };
+    steps.push([at, 'screen']);
+  }
+  return steps;
+}
+
 /** `sources`: the cameras and screens its endpoints have, sending or not (a group call's). */
 export type RosterChange = { mri: string; name: string; present: boolean; sources: Source[] };
 export type CallPushEvent =
-  | { kind: 'accepted'; sdp: string; acknowledge: string | null; callLeg: string | null; renegotiation: string | null }
+  | {
+    kind: 'accepted'; sdp: string; acknowledge: string | null; callLeg: string | null; renegotiation: string | null;
+    /** Where a group call tells what this side sends (`updateMediaDescriptionsBody`), and what its camera can send (`cameraCapabilitiesBody`). */
+    mediaDescriptions: string | null; channelParameters: string | null;
+  }
   | { kind: 'negotiation'; sdp: string; answerLink: string; mediaLeg: string | null }
   | { kind: 'ended' }
   | { kind: 'roster'; changes: RosterChange[] }
@@ -610,7 +658,11 @@ export function callPushEvent(envelope: Doc): CallPushEvent {
   if (typeof blob === 'string') {
     const links = accepted?.links as Doc | undefined;
     const text = (v: unknown) => (typeof v === 'string' ? v : null);
-    return { kind: 'accepted', sdp: blob, acknowledge: text(links?.acknowledgement) ?? text(links?.mediaAcknowledgement), callLeg: text(links?.callLeg), renegotiation: renegotiationLink(accepted!) };
+    const https = (v: unknown) => (typeof v === 'string' && v.startsWith('https://') ? v : null);
+    return {
+      kind: 'accepted', sdp: blob, acknowledge: text(links?.acknowledgement) ?? text(links?.mediaAcknowledgement), callLeg: text(links?.callLeg), renegotiation: renegotiationLink(accepted!),
+      mediaDescriptions: https(links?.updateMediaDescriptions), channelParameters: https(links?.applyChannelParameters),
+    };
   }
   const negotiation = body.mediaNegotiation as Doc | undefined;
   const offered = (negotiation?.mediaContent as Doc | undefined)?.blob;
@@ -837,6 +889,42 @@ export function renegotiateBody(c: Caller, offer: string, mediaLeg: string | nul
   };
 }
 
+/**
+ * The first offer of a group call with every section that may send told as
+ * receiving only (`descriptions`, `mediaDescriptions`), as Teams' web client
+ * sends it: the later `updateMediaDescriptions` go on from it.
+ */
+export function describeMedia(body: Doc, descriptions: Doc[]): Doc {
+  const content = (body.callInvitation as Doc | undefined)?.mediaContent;
+  if (typeof content === 'object' && content !== null) (content as Doc).mediaDescriptions = { descriptions, requestId: 1 };
+  return body;
+}
+
+/**
+ * `updateMediaDescriptions`' body: what each section of a group call does now,
+ * once this side's camera or its screen (`screen`) started or stopped. Teams
+ * answers `Success.` and the roster then shows this side's stream so.
+ */
+export function updateMediaDescriptionsBody(c: Caller, descriptions: Doc[], screen: boolean, request: number): Doc {
+  return { UpdateMediaDescriptions: { mediaDescriptions: { descriptions, negotiationTag: `${c.participant};${screen ? 'ss' : 'v'}_1`, requestId: request } } };
+}
+
+/** `applyChannelParameters`' body, as Teams' web client posts it before its camera first goes out: what the camera's section (`mid`) can send. */
+export function cameraCapabilitiesBody(mid: string, sequence: number): Doc {
+  const caps = { maxVideoSendCapabilities: { caps: { 'max-fps': 30, 'max-height': 1280, 'max-layers': 1, 'max-streams': 1, 'max-width': 1280, 'sequence-number': sequence } } };
+  return { applyChannelParameters: { multiChannelParameter: { mids: [mid], mediaParameter: JSON.stringify(caps) } } };
+}
+
+/** `updateParticipantProperties`' body, as Teams' web client posts it when its screen share starts: this side's account named the sharer. */
+export function screenSharerBody(c: Caller, sequence: number, operation: string): Doc {
+  return {
+    from: { id: c.mri, endpointId: c.endpoint, participantId: c.participant },
+    to: [{ id: c.mri, propertyBag: { screenSharerAttributes: { sequenceNumber: sequence, value: { source: 1 } } } }],
+    links: { updateParticipantPropertiesStatus: callback(c, 'conversation/updateParticipantPropertiesStatus/') },
+    operationId: operation,
+  };
+}
+
 /** The broker's next long poll: its lease is 30 s, and a call whose lease lapses dies. */
 export function nextSubscription(answer: Doc): string | null {
   const next = answer.nextSubscribeUrl;
@@ -888,17 +976,18 @@ export async function placeExternalCall(deps: CallDeps, engine: ExternalCallEngi
 export async function joinThreadCall(deps: CallDeps, engine: ExternalCallEngine, thread: string, join: MeetingJoin | null): Promise<void> {
   const caller: Caller = { ...deps.me, endpoint: deps.id(), participant: deps.id(), surl: deps.surl, random: deps.id() };
   const chain = deps.id();
-  await engine.start(caller.endpoint, { dataChannel: DATA_LABEL, receiveVideos: GROUP_VIDEOS });
+  await engine.start(caller.endpoint, { dataChannel: DATA_LABEL, receiveVideos: GROUP_RECEIVERS, videoUpFront: true });
   const layout = Layout.group();
   const offer = teamsOffer(await engine.offer(), sendingOf(engine), layout);
+  const described = (body: Doc) => describeMedia(body, mediaDescriptions(layout, NOT_SENDING));
   const pushes = listen(deps);
   let created: Doc;
   try {
-    if (join === null) created = await deps.post(EPCONV, chain, startChannelCallBody(caller, thread, offer));
+    if (join === null) created = await deps.post(EPCONV, chain, described(startChannelCallBody(caller, thread, offer)));
     else {
       const controller = (await deps.post(EPCONV, chain, joinMeetingBody(caller, join))).conversationController;
       if (typeof controller !== 'string') throw new Error('call_join_failed');
-      created = await deps.post(controller, chain, joinMeetingCallBody(caller, join, offer));
+      created = await deps.post(controller, chain, described(joinMeetingCallBody(caller, join, offer)));
     }
   } catch (error) {
     pushes.stop();
@@ -1033,6 +1122,9 @@ type Video = { stream: string; member: string; screen: boolean };
 /** A group call's media server, spoken to on the data channel: which video it sends on which section. */
 type Group = { channel: Channel; routing: Routing };
 
+/** What a group call told Teams this side sends, and where it tells it. */
+type Told = { descriptions: string; capabilities: string | null; sharer: string | null; sent: Sending; request: number; cameraDescribed: boolean; shares: number };
+
 /**
  * The call's run until it ends: the broker lease, the endpoint metadata, the
  * answer (when placed here), this side's new offers and Teams' answers to them,
@@ -1112,6 +1204,27 @@ function runCall(deps: CallDeps, engine: ExternalCallEngine, caller: Caller, cha
     const started = group;
     heartbeat = setInterval(() => { void engine.sendData?.(started.channel.heartbeat()).catch(() => {}); }, 1000);
   };
+  let told: Told | null = null;
+  let sentNow = NOT_SENDING;
+  /** Tells Teams each change of what this side sends in a group call, as its web client does: the camera's capabilities before it first goes out, the sharer before a share, then every section's direction. */
+  const tell = async () => {
+    const t = told;
+    if (t === null) return;
+    for (const [now, label] of sendingSteps(t.sent, sentNow)) {
+      if (label === 'camera' && now.camera && !t.cameraDescribed) {
+        t.cameraDescribed = true;
+        const mid = ownMid(layout, 'camera');
+        if (t.capabilities !== null && mid !== null) await deps.post(t.capabilities, chain, cameraCapabilitiesBody(mid, 1)).catch(() => {});
+      }
+      if (label === 'screen' && now.screen && t.sharer !== null) {
+        t.shares += 1;
+        await deps.post(t.sharer, chain, screenSharerBody(caller, t.shares, deps.id())).catch(() => {});
+      }
+      t.request += 1;
+      t.sent = now;
+      await deps.post(t.descriptions, chain, updateMediaDescriptionsBody(caller, mediaDescriptions(layout, now), label === 'screen', t.request)).catch(() => {});
+    }
+  };
   let waiting: string | null = null;
   let sharing = false;
   const offerAnew = async (sdp: string) => {
@@ -1126,11 +1239,16 @@ function runCall(deps: CallDeps, engine: ExternalCallEngine, caller: Caller, cha
       layout.withdraw();
     }
   };
-  unsubscribe = engine.offers?.((sdp) => {
+  const unoffer = engine.offers?.((sdp) => {
     if (done) return;
     if (!answered) { waiting = sdp; return; }
     step(() => offerAnew(sdp));
   }) ?? (() => {});
+  const unsent = engine.sent?.((now) => {
+    sentNow = now;
+    if (!done && told !== null) step(tell);
+  }) ?? (() => {});
+  unsubscribe = () => { unoffer(); unsent(); };
   const handle = async (event: CallPushEvent) => {
     if (event.kind === 'negotiation' && engine.answerOffer !== undefined) {
       layout.withdraw();
@@ -1161,6 +1279,14 @@ function runCall(deps: CallDeps, engine: ExternalCallEngine, caller: Caller, cha
       if (event.acknowledge !== null) {
         const acknowledged = await deps.post(event.acknowledge, chain, acknowledgeBody(caller)).catch(() => null);
         if (renegotiation === null && acknowledged !== null) renegotiation = renegotiationLink(acknowledged);
+      }
+      if (layout.group && event.mediaDescriptions !== null) {
+        const sharer = links.updateParticipantProperties;
+        told = {
+          descriptions: event.mediaDescriptions, capabilities: event.channelParameters, sharer: typeof sharer === 'string' ? sharer : null,
+          sent: NOT_SENDING, request: 1, cameraDescribed: false, shares: 0,
+        };
+        await tell();
       }
       await showVideos();
       if (event.callLeg !== null) await deps.post(event.callLeg, chain, registerOnLegBody(caller)).catch(() => {});
