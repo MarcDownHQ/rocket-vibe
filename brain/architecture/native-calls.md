@@ -388,8 +388,9 @@ camera on, then sharing a screen), both signalling sockets read frame by frame:
   `SignalingUrl`. Its join token is the main one with `#content` appended, made by the client (no HTTP
   call). It JOINs, SUBSCRIBEs duplex 3 sending video only (stream 2, 1500 kbps), receives nothing and
   LEAVEs when the share stops. The main socket sees it in INDEX under the person's external id; with
-  the JOIN asking for every temporal layer (field 13) it comes as three streams (base, layers 0 and 1,
-  field 13). `ScreenSharingUrl` / `ScreenViewingUrl` were not used.
+  the JOIN asking for every temporal layer (field 12, `wants_all_temporal_layers_in_index`) it comes
+  as three streams (base, layers 0 and 1, INDEX field 13). `ScreenSharingUrl` / `ScreenViewingUrl`
+  were not used. Frame by frame: "Slack huddles over Chime, screen share".
 - **Receiving**: SUBSCRIBE `receive_stream_ids` has one entry per video section of the offer, in
   m-line order: the stream to receive, or 0 for a sending or spare section. Each received one gets a
   `video_subscription_configuration` (mid, attendee, priority, target 600 kbps for a camera and
@@ -424,11 +425,67 @@ Built (desktop):
   `offers_carry_the_receiving_sections_asked_and_keep_them`).
 - **Windows**: nothing huddle-specific; GTK shows the camera button from `Event::CallVideo`, the
   others' cameras in tiles and a screen on the stage as for Jitsi.
-- **Not built**: this side's screen share (`can_send(Screen)` stays false: it needs the `#content`
-  attendee's socket and a second peer connection); PAUSE/RESUME of a group; Android
+- **Not built**: PAUSE/RESUME of a group; Android
   (`rv-voice-mobile`'s offers carry no video section, so nothing is subscribed, and its peer
   connection offers again on each change of the others' videos). **Not run** against a live huddle:
   the capture, unit tests and the sidecar's offer test only.
+
+### Slack huddles over Chime, screen share (2026-11-26)
+
+The `#content` socket of `app.slack.com_huddle2.har`, read frame by frame (a 5 s share):
+
+- **Socket**: the same `SignalingUrl` and query as the main one, subprotocol `_aws_wt_session,
+  <join token>#content`. A PING, then a JOIN like the main one but for `server_side_network_adaption`
+  1 (field 10) with no supported list (11), `wants_all_temporal_layers_in_index` false (12) and
+  `disable_periodic_keyframe_request_on_content_sender` true (13); the main JOIN has 12 and 13 at 1
+  (this client's sends neither). JOIN_ACK: TURN credentials of its own, `video_subscription_limit` 25.
+  Its INDEX lists no source.
+- **SUBSCRIBE**: first duplex 1 with an audio send stream (`AmazonChimeExpressAudio` under
+  `<attendee>#content`) and the video section inactive, then duplex 3 adding stream 2, 15 fps,
+  1500 kbps, `AmazonChimeExpressVideo`; `receive_stream_ids` one 0, no subscription configuration,
+  `audio_host`, not muted. The SDK sends it again, unchanged, on each INDEX (seven in 5 s).
+  SUBSCRIBE_ACK allocates the video stream 131 (group 4); BITRATES then names 131 to 133, the three
+  temporal layers.
+- **SDP**: `BUNDLE 0 1`, audio `sendrecv` with a track (the SDK's silent microphone), one video
+  section `sendrecv` with one track; AV1 offered first, then H264, VP8, VP9 with rtx, red, ulpfec; no
+  `rid`, no simulcast; the camera's header extensions. The answer: audio Opus and red, `msid:audio
+  audio`; video `sendrecv`, H264 first, then VP8, VP9, AV1 with rtx. Answers after the first are
+  deflated with the previous one as dictionary, as on the main socket.
+- **Otherwise**: it receives AUDIO_METADATA, AUDIO_STREAM_ID_INFO and Slack's `awareness-sync-channel`
+  broadcasts, and sends CLIENT_METRIC every second, one MEETING_SESSION_TIMING (type 43) and PINGs.
+  LEAVE (type 9, empty) is answered by LEAVE_ACK in 60 ms, then the socket closes.
+- **The main socket**: about 4.6 s before the content socket opens (the screen picker), the main
+  attendee sends two DATA_MESSAGEs on topic `data-channel`, Slack's own protobuf: `{4: attendee,
+  5: empty}` then `{4: attendee, 15: {1: "browser:content", 2: attendee}}`; the other attendee's
+  share began the same way. Nothing announces the stop. INDEX then lists `<attendee>#content`, and
+  AUDIO_STREAM_ID_INFO adds it as an audio stream under the person's external id until it leaves.
+  Both sharers' `awareness-sync-channel` carried `contentView` some seconds into the share (meaning
+  unknown; not sent here).
+
+Built (desktop):
+
+- **The trait**: `CallSignaling::screen_apart` and `screen_session` (false and `None` by default):
+  a provider taking this side's screen as a session of its own. Other providers are untouched.
+- **rv-call** `chime`: `Config::content` (`#content` after the attendee id and the token);
+  `Session::screen_session` answers at once with a session whose task connects (`client.rs`
+  `connect`) and JOINs as content (`join(.., content)`); its offers go in SUBSCRIBEs with the silent
+  microphone and the screen at 1500 kbps; it ignores INDEX, stream infos and levels; a failed
+  connection ends it with `Event::Ended`. `can_send(Screen)` is true on the main session, whose
+  `set_video` with the screen newly on sends the two `data-channel` messages (`share_announced`). The
+  roster drops every `#content` attendee: one counted as a person showed this side's share as another
+  participant, and its silence overwrote a sharer's level.
+- **Sidecar** (`call.rs`): `Videos.apart` keeps the screen off the main peer connection; once its
+  capture is ready and the main peer connection exists, `sync_video` opens a `Share`: the screen
+  session and a peer connection of its own from the same factory, a silent microphone (a
+  `NativeAudioSource` given no frames) and the screen on a `sendrecv` section as Chrome offers it
+  (whatever comes back on it is unused), offered after gathering as the main one is. Its peer connection connected, the main session is told the screen is sent.
+  Stopping the capture closes it (peer connection closed, `leave` in the background). A share failing
+  reports `screen_unavailable` before it connected and `screen_ended` after, stops the capture, and the
+  call goes on. A main session lost or over leaves its share; a rejoin opens a new one while the
+  capture runs. The windows needed nothing (`Event::CallVideo` shows the button); SwiftUI shares
+  through the same sidecar, whose screen capture works on macOS.
+- **Not run** against a live huddle: whether Chime takes a microphone that sends no frame; whether the
+  others' Slack clients show the share as they do Chrome's. Checked: the frames against the capture and the sidecar's offer, in unit tests.
 
 ### Teams calls placed from a chat, audio (2026-11-06)
 
@@ -908,6 +965,6 @@ Teams meetings and video last.
   `teams.cloud.microsoft*.har` (incl. `_call_out`, `_call_in`, `_group_call`, `_group_call2`)
 - https://github.com/jbg/gst-meet, https://docs.rs/crate/lib-gst-meet/latest
 - https://github.com/aws/amazon-chime-sdk-cpp, https://github.com/aws/amazon-chime-sdk-js
-- crates/rv-call/src/chime/video.rs, crates/rv-call/src/chime/client.rs, apps/desktop/voice/src/call.rs
-  (huddle video); capture 2026-11-23 `app.slack.com_huddle2.har` (both Chime sockets, camera and share)
+- crates/rv-call/src/chime/video.rs, crates/rv-call/src/chime/client.rs, crates/rv-call/src/chime/mod.rs,
+  crates/rv-call/src/lib.rs, apps/desktop/voice/src/call.rs (huddle video and screen share); capture 2026-11-23 `app.slack.com_huddle2.har` (both Chime sockets, camera and share)
 - https://github.com/brandonp2412/microslop
