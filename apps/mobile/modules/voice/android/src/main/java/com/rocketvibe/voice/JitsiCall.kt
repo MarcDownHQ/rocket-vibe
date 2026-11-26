@@ -109,8 +109,11 @@ internal class JitsiSession(
   private val outbox = ArrayList<Pair<ByteArray, Boolean>>()
   /** What arrives on that channel, for an app that speaks it (Teams). */
   var onData: ((ByteArray) -> Unit)? = null
-  /** The receive-only video sections each new peer connection offers. */
+  /** The receive-only video sections each offer carries, never fewer, and those the current peer connection has. */
   private var receivers = 0
+  private var addedReceivers = 0
+  /** The provider's offers receive video (a huddle, once someone's video was wanted). */
+  private var receiveVideo = false
   /** What the provider takes from this side, and the stream id each local video track carries. */
   var canCamera = false; private set
   var canScreen = false; private set
@@ -484,6 +487,8 @@ internal class JitsiSession(
         streams[CAMERA] = event.optString("cameraStream", localId)
         streams[SCREEN] = event.optString("screenStream", localId)
         reused = if (event.optBoolean("offersLocalSections")) setOf(CAMERA, SCREEN) else emptySet()
+        receivers = 0
+        receiveVideo = false
         // A capture the provider does not take ends (a rejoin keeps what it still takes).
         if (!canCamera) captures.remove(CAMERA)?.stop()
         if (!canScreen) captures.remove(SCREEN)?.let { it.stop(); onScreenStopped?.invoke() }
@@ -518,6 +523,8 @@ internal class JitsiSession(
       "offer" -> offer(event.getString("sdp"))
       "offerWanted" -> {
         relayOnly = event.optBoolean("relayOnly")
+        receivers = maxOf(receivers, event.optInt("receiveVideos"))
+        receiveVideo = receiveVideo || event.optBoolean("receiveVideo")
         localOffer()
       }
       "answer" -> remoteAnswerOfProvider(event.getString("sdp"))
@@ -588,14 +595,20 @@ internal class JitsiSession(
         })
       }
     }
-    repeat(receivers) {
-      created.addTransceiver(MediaStreamTrack.MediaType.MEDIA_TYPE_VIDEO,
-        RtpTransceiver.RtpTransceiverInit(RtpTransceiver.RtpTransceiverDirection.RECV_ONLY))
-    }
+    addReceivers(created)
     microphone = track
     pc = created
     attachVideo()
     return created
+  }
+
+  /** Receive-only video sections up to [receivers], none ever removed. */
+  private fun addReceivers(p: PeerConnection) {
+    while (addedReceivers < receivers) {
+      p.addTransceiver(MediaStreamTrack.MediaType.MEDIA_TYPE_VIDEO,
+        RtpTransceiver.RtpTransceiverInit(RtpTransceiver.RtpTransceiverDirection.RECV_ONLY))
+      addedReceivers++
+    }
   }
 
   /** The provider's messages, once its data channel is open. */
@@ -809,6 +822,7 @@ internal class JitsiSession(
   /** The local offer made and set; it goes out once gathering completed, or after a moment. */
   private fun localOffer() {
     val p = peer() ?: return onEnd("connect_failed")
+    addReceivers(p)
     making = true
     val failed = { main.post { if (pc === p) { making = false; deferred = external } } }
     p.createOffer(object : Sdp() {
@@ -831,7 +845,7 @@ internal class JitsiSession(
     }, MediaConstraints().apply {
       mandatory.add(MediaConstraints.KeyValuePair("OfferToReceiveAudio", "true"))
       // Absent, libwebrtc leaves video sections as they are; "false" would strip receiving from every one.
-      if (external && externalVideo) mandatory.add(MediaConstraints.KeyValuePair("OfferToReceiveVideo", "true"))
+      if ((external && externalVideo) || receiveVideo) mandatory.add(MediaConstraints.KeyValuePair("OfferToReceiveVideo", "true"))
     })
   }
 
@@ -961,6 +975,7 @@ internal class JitsiSession(
     pc?.close(); pc?.dispose(); pc = null
     localTracks.values.forEach { (source, track) -> track.dispose(); source.dispose() }
     localTracks.clear(); senders.clear(); told = false to false; reoffers = 0; making = false; deferred = false
+    addedReceivers = 0
     remoteVideos.clear(); videos = emptyList(); named.clear(); listed = false
     microphone = null
     factory?.dispose(); factory = null

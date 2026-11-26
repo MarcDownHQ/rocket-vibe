@@ -105,6 +105,17 @@ pub fn event_json(event: &Event) -> Value {
     }
 }
 
+/// The event as the Kotlin side reads it, an offer wanted with the receive-only
+/// video sections it must carry and whether it receives video (Chime).
+pub fn session_event_json<S: CallSignaling>(session: &S, event: &Event) -> Value {
+    let mut value = event_json(event);
+    if matches!(event, Event::OfferWanted { .. }) {
+        value["receiveVideos"] = json!(session.receive_videos());
+        value["receiveVideo"] = json!(session.offers_to_receive_video());
+    }
+    value
+}
+
 impl Call {
     /// Joins the conference; `None` when the meeting is not a Jitsi one or the join fails.
     pub fn start(
@@ -187,7 +198,7 @@ async fn drive<S: CallSignaling + Send>(
             event = session.next_event() => match event {
                 Some(event) => {
                     let ended = matches!(event, Event::Ended(_) | Event::Over(_));
-                    if events.send(event_json(&event).to_string()).is_err() || ended {
+                    if events.send(session_event_json(&session, &event).to_string()).is_err() || ended {
                         break;
                     }
                 }
