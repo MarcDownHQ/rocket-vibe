@@ -715,6 +715,106 @@ mod tests {
         assert_eq!(event_json(&Event::DataMessage("hi".into())), json!({"type": "data", "text": "hi"}));
     }
 
+    /// A provider whose screen goes on a session of its own, each session's
+    /// offers, video and leaving written down, the screen's events fed by the test.
+    struct Apart {
+        id: String,
+        events: async_mpsc::UnboundedReceiver<Event>,
+        log: Arc<Mutex<Vec<String>>>,
+        shares: Arc<Mutex<Vec<async_mpsc::UnboundedSender<Event>>>>,
+    }
+
+    impl CallSignaling for Apart {
+        async fn next_event(&mut self) -> Option<Event> {
+            self.events.recv().await
+        }
+        async fn answer(&mut self, _sdp: &str) -> Result<(), rv_call::Error> {
+            Ok(())
+        }
+        async fn offer(&mut self, sdp: &str) -> Result<(), rv_call::Error> {
+            self.log.lock().unwrap().push(format!("{} offer {sdp}", self.id));
+            Ok(())
+        }
+        async fn local_candidate(&mut self, _candidate: Candidate) -> Result<(), rv_call::Error> {
+            Ok(())
+        }
+        async fn set_muted(&mut self, _muted: bool) -> Result<(), rv_call::Error> {
+            Ok(())
+        }
+        async fn set_video(&mut self, video: LocalVideo) -> Result<(), rv_call::Error> {
+            self.log.lock().unwrap().push(format!("{} video {} {}", self.id, video.camera, video.screen));
+            Ok(())
+        }
+        async fn leave(&mut self) {
+            self.log.lock().unwrap().push(format!("{} leave", self.id));
+        }
+        fn local_id(&self) -> &str {
+            &self.id
+        }
+        fn screen_apart(&self) -> bool {
+            !self.id.ends_with("#content")
+        }
+        fn screen_session(&self) -> Option<Self> {
+            if !self.screen_apart() {
+                return None;
+            }
+            let (tx, events) = async_mpsc::unbounded_channel();
+            self.shares.lock().unwrap().push(tx);
+            Some(Apart { id: format!("{}#content", self.id), events, log: self.log.clone(), shares: self.shares.clone() })
+        }
+    }
+
+    #[test]
+    fn the_screen_goes_on_a_session_of_its_own_whose_end_ends_only_the_share() {
+        let runtime = Call::runtime().unwrap();
+        let (main_tx, main_events) = async_mpsc::unbounded_channel();
+        let (log, shares) = (Arc::new(Mutex::new(Vec::new())), Arc::new(Mutex::new(Vec::new())));
+        let session = Apart { id: "a".into(), events: main_events, log: log.clone(), shares: shares.clone() };
+        assert_eq!(local_json(&session)["screenApart"], true);
+        let (commands, command_rx) = async_mpsc::unbounded_channel();
+        let (event_tx, events) = mpsc::channel();
+        runtime.spawn(drive(session, command_rx, event_tx));
+        let next = || -> Value { serde_json::from_str(&events.recv_timeout(Duration::from_secs(2)).unwrap()).unwrap() };
+        let logged = |line: &str| {
+            for _ in 0..200 {
+                if log.lock().unwrap().iter().any(|l| l == line) {
+                    return true;
+                }
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            false
+        };
+
+        commands.send(Command::Share(true)).unwrap();
+        let local = next();
+        assert_eq!((local["type"].clone(), local["event"]["type"].clone(), local["event"]["id"].clone()), (json!("share"), json!("local"), json!("a#content")));
+        commands.send(Command::Share(true)).unwrap();
+        let share = shares.lock().unwrap()[0].clone();
+        share.send(Event::OfferWanted { relay_only: true }).unwrap();
+        assert_eq!(next(), json!({"type": "share", "event": {"type": "offerWanted", "relayOnly": true}}), "one session for a capture asked twice");
+        commands.send(Command::ShareOffer("v=0".into())).unwrap();
+        assert!(logged("a#content offer v=0"));
+        commands.send(Command::Video(LocalVideo { camera: false, screen: true })).unwrap();
+        assert!(logged("a video false true"), "the call's own session is told the screen is sent");
+        commands.send(Command::Share(false)).unwrap();
+        assert!(logged("a#content leave"));
+
+        commands.send(Command::Share(true)).unwrap();
+        assert_eq!(next()["event"]["type"], "local");
+        let share = shares.lock().unwrap()[1].clone();
+        share.send(Event::Ended("connect_failed".into())).unwrap();
+        assert_eq!(next(), json!({"type": "share", "event": {"type": "ended", "reason": "connect_failed"}}));
+        main_tx.send(Event::Roster(Vec::new())).unwrap();
+        assert_eq!(next()["type"], "roster", "the call goes on");
+        commands.send(Command::Share(true)).unwrap();
+        assert_eq!(next()["event"]["id"], "a#content", "a new share once the last one ended");
+
+        commands.send(Command::Leave).unwrap();
+        assert!(logged("a leave"));
+        assert!(logged("a#content leave"), "the call left leaves its share");
+        assert_eq!(log.lock().unwrap().iter().filter(|l| *l == "a#content leave").count(), 2);
+    }
+
     #[test]
     fn a_page_that_is_not_jitsi_starts_nothing() {
         assert!(Call::start("https://example.com/room", "var config = {};", "Ana", None).is_none());
