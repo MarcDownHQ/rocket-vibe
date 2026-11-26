@@ -1646,6 +1646,53 @@ mod tests {
         assert!(next(&mut audio).await.is_none(), "an audio call never offers again");
     }
 
+    /// Each section's kind, direction and stream.
+    fn sections(sdp: &str) -> Vec<(String, String, String)> {
+        let mut out: Vec<(String, String, String)> = Vec::new();
+        for line in sdp.lines() {
+            if let Some(media) = line.strip_prefix("m=") {
+                out.push((media.split(' ').next().unwrap_or("").to_owned(), String::new(), String::new()));
+            } else if let Some(last) = out.last_mut() {
+                if matches!(line, "a=recvonly" | "a=inactive" | "a=sendonly" | "a=sendrecv") {
+                    last.1 = line[2..].to_owned();
+                } else if let Some(msid) = line.strip_prefix("a=msid:") {
+                    last.2 = msid.split(' ').next().unwrap_or("").to_owned();
+                }
+            }
+        }
+        out
+    }
+
+    #[tokio::test]
+    async fn a_shared_screen_offers_a_silent_microphone_and_the_screen_alone() {
+        let factory = PeerConnectionFactory::default();
+        let screen = || Some(NativeVideoSource::new(VideoResolution { width: 16, height: 16 }, true));
+        let wanted = || ShareNews::Event(Some(CallEvent::OfferWanted { relay_only: false }));
+        let mut share = Share::new(External::new("me".into(), false, true, None, 0));
+        let servers = ShareNews::Event(Some(CallEvent::IceServers(Vec::new())));
+        assert!(matches!(share.step(servers, &factory, screen()).await, Step::Going));
+        assert!(matches!(share.step(wanted(), &factory, screen()).await, Step::Going));
+        let (sdp, _) = share.offering.clone().expect("an offer waits for gathering");
+        assert_eq!(
+            sections(&sdp),
+            [
+                ("audio".to_owned(), "sendrecv".to_owned(), "me".to_owned()),
+                ("video".to_owned(), "sendrecv".to_owned(), "me-screen".to_owned())
+            ]
+        );
+        assert!(matches!(share.step(wanted(), &factory, None).await, Step::Going), "a renegotiation keeps its tracks");
+        assert_eq!(sections(&share.offering.clone().unwrap().0).len(), 2);
+        let connected = ShareNews::Peer(Peer::State(PeerConnectionState::Connected));
+        assert!(matches!(share.step(connected, &factory, None).await, Step::Connected));
+        let ended = ShareNews::Event(Some(CallEvent::Ended("connection_lost".into())));
+        assert!(matches!(share.step(ended, &factory, None).await, Step::Failed));
+        share.close();
+
+        let mut bare = Share::new(External::new("me".into(), false, true, None, 0));
+        assert!(matches!(bare.step(wanted(), &factory, None).await, Step::Failed), "no screen, no share");
+        assert!(matches!(bare.step(ShareNews::Event(None), &factory, None).await, Step::Failed));
+    }
+
     fn receiving(sdp: &str) -> Vec<&str> {
         let mut video = false;
         sdp.lines()

@@ -373,6 +373,75 @@ mod tests {
     }
 
     #[test]
+    fn the_content_attendee_is_this_one_with_content_after_its_id_and_token() {
+        let content = config().content();
+        assert_eq!(content.attendee_id, "me-attendee#content");
+        assert_eq!(content.join_token, "token#content");
+        assert_eq!((content.signaling_url, content.audio_host), (config().signaling_url, config().audio_host));
+        assert!(config().content().is_content() && !config().is_content());
+    }
+
+    #[test]
+    fn the_content_join_asks_for_no_adaptation_as_captured() {
+        let b = join(7, 42, true);
+        let (_, m) = proto::received(&b).unwrap();
+        let content = m.message(frame::JOIN).unwrap();
+        assert_eq!(
+            (content.int(1), content.int(3), content.int(6), content.int(7)),
+            (Some(2), Some(2), Some(42), Some(1))
+        );
+        assert_eq!((content.int(10), content.int(12), content.int(13)), (Some(1), Some(0), Some(1)));
+        assert!(content.ints(11).is_empty());
+        let b = join(7, 42, false);
+        let (_, m) = proto::received(&b).unwrap();
+        let main = m.message(frame::JOIN).unwrap();
+        assert_eq!((main.int(10), main.ints(11), main.int(13)), (Some(4), vec![2, 3, 4], None));
+    }
+
+    #[test]
+    fn the_content_subscribe_sends_the_screen_beside_a_silent_microphone() {
+        let content = config().content();
+        let placed = video::Placed { receive: vec![0], ..Default::default() };
+        let b = subscribe(7, &content, b"deflated", false, Some(VideoKind::Screen), &placed);
+        let (_, m) = proto::received(&b).unwrap();
+        let sub = m.message(frame::SUBSCRIBE).unwrap();
+        assert_eq!((sub.int(1), sub.int(7), sub.ints(3)), (Some(3), Some(0), vec![0]));
+        let streams = sub.messages(2);
+        assert_eq!(streams.len(), 2);
+        assert_eq!(streams[0].string(8).as_deref(), Some("me-attendee#content"));
+        assert_eq!(streams[0].int(9), Some(1));
+        let screen = &streams[1];
+        assert_eq!(
+            (screen.int(1), screen.int(2), screen.int(3), screen.int(6), screen.int(9)),
+            (Some(2), Some(15), Some(1500), Some(2), Some(2))
+        );
+        assert_eq!(screen.string(4).as_deref(), Some("AmazonChimeExpressVideo"));
+        assert_eq!(screen.string(8).as_deref(), Some("me-attendee#content"));
+        assert!(sub.messages(9).is_empty());
+    }
+
+    #[test]
+    fn a_share_is_announced_as_slack_does_on_the_main_socket() {
+        let frames = share_announced(7, "me-attendee");
+        assert_eq!(frames.len(), 2);
+        let mut data = Vec::new();
+        for b in &frames {
+            let (kind, m) = proto::received(b).unwrap();
+            assert_eq!(kind, kind::DATA_MESSAGE);
+            let payload = m.message(frame::DATA_MESSAGE).unwrap().message(1).unwrap();
+            assert_eq!(payload.string(1).as_deref(), Some("data-channel"));
+            data.push(payload.bytes(2).unwrap().to_vec());
+        }
+        let first = Message::parse(&data[0]).unwrap();
+        assert_eq!((first.string(4).as_deref(), first.bytes(5)), (Some("me-attendee"), Some(&b""[..])));
+        let second = Message::parse(&data[1]).unwrap();
+        assert_eq!(second.string(4).as_deref(), Some("me-attendee"));
+        let content = second.message(15).unwrap();
+        assert_eq!(content.string(1).as_deref(), Some("browser:content"));
+        assert_eq!(content.string(2).as_deref(), Some("me-attendee"));
+    }
+
+    #[test]
     fn the_subscribe_sends_the_microphone_and_the_offer() {
         let b =
             subscribe(7, &config(), b"deflated", true, None, &video::Placed { receive: vec![0], ..Default::default() });
@@ -489,6 +558,26 @@ mod tests {
         let dropped = info(vec![Writer::default().uint(1, 3).string(2, "other").uint(5, 1)]);
         assert!(roster.stream_info(&Message::parse(&dropped).unwrap()));
         assert!(roster.members().is_empty());
+    }
+
+    #[test]
+    fn a_shared_screen_is_no_one_in_the_roster() {
+        let mut roster = Roster::new("me-attendee");
+        let joined = info(vec![
+            Writer::default().uint(1, 2).string(2, "other").string(4, "T-R-UOTHER"),
+            Writer::default().uint(1, 3).string(2, "other#content").string(4, "T-R-UOTHER"),
+            Writer::default().uint(1, 4).string(2, "me-attendee#content").string(4, "T-R-UME"),
+        ]);
+        roster.stream_info(&Message::parse(&joined).unwrap());
+        assert_eq!(roster.members(), vec![Member { id: "T-R-UOTHER".into(), name: String::new(), muted: false }]);
+        let meta = Writer::default()
+            .message(1, Writer::default().uint(1, 2).uint(2, 14))
+            .message(1, Writer::default().uint(1, 3).uint(2, 127))
+            .finish();
+        let (levels, _) = roster.metadata(&Message::parse(&meta).unwrap());
+        assert_eq!(levels, vec![("T-R-UOTHER".to_owned(), 1.0)], "the screen's silence hides no one's voice");
+        let gone = info(vec![Writer::default().uint(1, 4)]);
+        assert!(!roster.stream_info(&Message::parse(&gone).unwrap()));
     }
 
     #[test]
