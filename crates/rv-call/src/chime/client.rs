@@ -58,6 +58,20 @@ fn now_ms() -> u64 {
 /// Connects with the attendee's join token and joins: the TURN servers come
 /// back, then the engine is asked for its offer.
 pub async fn join(config: Config) -> Result<Session, Error> {
+    let (socket, servers, video_limit) = connect(&config).await?;
+    let (event_tx, events) = mpsc::unbounded_channel();
+    let (commands, command_rx) = mpsc::unbounded_channel();
+    let attendee = config.attendee_id.clone();
+    let receiving = Arc::new(AtomicUsize::new(0));
+    let received = Arc::new(AtomicBool::new(false));
+    let mut state = State::new(config, video_limit, receiving.clone(), received.clone(), event_tx);
+    state.started(servers);
+    tokio::spawn(async move { state.run(socket, command_rx).await });
+    Ok(Session { events, commands, attendee, receiving, received })
+}
+
+/// The socket joined: its TURN servers and the most videos it may receive.
+async fn connect(config: &Config) -> Result<(Socket, Vec<crate::IceServer>, usize), Error> {
     let _ = rustls::crypto::ring::default_provider().install_default();
     let url = config.socket_url().ok_or_else(|| Error::new("not a Chime signalling URL"))?;
     let mut request = url.into_client_request().map_err(|e| Error::new(format!("url: {e}")))?;
@@ -74,7 +88,7 @@ pub async fn join(config: Config) -> Result<Session, Error> {
     let mut audio_session = [0u8; 4];
     let _ = getrandom::fill(&mut audio_session);
     send(&mut socket, super::join(now_ms(), u32::from_le_bytes(audio_session))).await?;
-    let (servers, video_limit) = loop {
+    loop {
         let incoming = tokio::time::timeout(std::time::Duration::from_secs(10), socket.next())
             .await
             .map_err(|_| Error::new("no join acknowledgement"))?;
@@ -99,35 +113,13 @@ pub async fn join(config: Config) -> Result<Session, Error> {
         match kind {
             kind::JOIN_ACK => {
                 let ack = message.message(frame::JOIN_ACK).unwrap_or(Message::empty());
-                break (super::turn_servers(&ack), ack.int(2).unwrap_or(VIDEO_LIMIT as u64) as usize);
+                let limit = ack.int(2).unwrap_or(VIDEO_LIMIT as u64) as usize;
+                return Ok((socket, super::turn_servers(&ack), limit));
             }
             kind::PING_PONG => pong(&mut socket, &message).await?,
             _ => {}
         }
-    };
-
-    let (event_tx, events) = mpsc::unbounded_channel();
-    let (commands, command_rx) = mpsc::unbounded_channel();
-    let _ = event_tx.send(Event::IceServers(servers));
-    let _ = event_tx.send(Event::OfferWanted { relay_only: true });
-    let attendee = config.attendee_id.clone();
-    let receiving = Arc::new(AtomicUsize::new(0));
-    let received = Arc::new(AtomicBool::new(false));
-    let mut state = State {
-        roster: Roster::new(&config.attendee_id),
-        config,
-        muted: false,
-        camera: false,
-        last_answer: String::new(),
-        videos: Subscriptions::new(video_limit.min(VIDEO_LIMIT)),
-        receiving: receiving.clone(),
-        received: received.clone(),
-        subscribing: true,
-        resubscribe: false,
-        events: event_tx,
-    };
-    tokio::spawn(async move { state.run(socket, command_rx).await });
-    Ok(Session { events, commands, attendee, receiving, received })
+    }
 }
 
 impl CallSignaling for Session {
@@ -196,6 +188,34 @@ struct State {
 }
 
 impl State {
+    fn new(
+        config: Config,
+        video_limit: usize,
+        receiving: Arc<AtomicUsize>,
+        received: Arc<AtomicBool>,
+        events: mpsc::UnboundedSender<Event>,
+    ) -> Self {
+        State {
+            roster: Roster::new(&config.attendee_id),
+            config,
+            muted: false,
+            camera: false,
+            last_answer: String::new(),
+            videos: Subscriptions::new(video_limit.min(VIDEO_LIMIT)),
+            receiving,
+            received,
+            subscribing: true,
+            resubscribe: false,
+            events,
+        }
+    }
+
+    /// Joined: the engine gets the TURN servers, then is asked for its offer.
+    fn started(&self, servers: Vec<crate::IceServer>) {
+        let _ = self.events.send(Event::IceServers(servers));
+        let _ = self.events.send(Event::OfferWanted { relay_only: true });
+    }
+
     async fn run(&mut self, mut socket: Socket, mut commands: mpsc::UnboundedReceiver<Command>) {
         let mut ping = tokio::time::interval(PING_EVERY);
         ping.tick().await;
@@ -225,9 +245,9 @@ impl State {
                         Command::Offer(sdp) => {
                             let placed = self.videos.place(&sdp);
                             let _ = self.events.send(Event::Videos(self.videos.remote()));
-                            let camera = self.camera && video::sends_video(&sdp);
+                            let video = (self.camera && video::sends_video(&sdp)).then_some(VideoKind::Camera);
                             let deflated = miniz_oxide::deflate::compress_to_vec(sdp.as_bytes(), 6);
-                            let subscribe = super::subscribe(now_ms(), &self.config, &deflated, self.muted, camera, &placed);
+                            let subscribe = super::subscribe(now_ms(), &self.config, &deflated, self.muted, video, &placed);
                             self.subscribing = true;
                             if send(&mut socket, subscribe).await.is_err() {
                                 break End::Lost("connection_lost".to_owned());

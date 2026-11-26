@@ -83,14 +83,14 @@ pub(crate) fn join(timestamp: u64, audio_session_id: u32) -> Vec<u8> {
     proto::signal(timestamp, kind::JOIN, frame::JOIN, body)
 }
 
-/// The SUBSCRIBE carrying the offer: the microphone, the camera when `camera`,
+/// The SUBSCRIBE carrying the offer: the microphone, the `video` sent if any,
 /// and the remote videos `placed` on the offer's receiving sections.
 pub(crate) fn subscribe(
     timestamp: u64,
     config: &Config,
     compressed_offer: &[u8],
     muted: bool,
-    camera: bool,
+    video: Option<VideoKind>,
     placed: &video::Placed,
 ) -> Vec<u8> {
     let microphone = Writer::default()
@@ -103,13 +103,17 @@ pub(crate) fn subscribe(
         .string(8, &config.attendee_id)
         // AUDIO
         .uint(9, 1);
-    // RX, or DUPLEX with the camera
-    let mut body = Writer::default().uint(1, if camera { 3 } else { 1 }).message(2, microphone);
-    if camera {
+    // RX, or DUPLEX with a video
+    let mut body = Writer::default().uint(1, if video.is_some() { 3 } else { 1 }).message(2, microphone);
+    if let Some(kind) = video {
+        let kbps = match kind {
+            VideoKind::Camera => 1400,
+            VideoKind::Screen => 1500,
+        };
         let stream = Writer::default()
             .uint(1, 2)
             .uint(2, 15)
-            .uint(3, 1400)
+            .uint(3, kbps)
             .string(4, "AmazonChimeExpressVideo")
             .uint(6, 2)
             .string(8, &config.attendee_id)
@@ -336,14 +340,8 @@ mod tests {
 
     #[test]
     fn the_subscribe_sends_the_microphone_and_the_offer() {
-        let b = subscribe(
-            7,
-            &config(),
-            b"deflated",
-            true,
-            false,
-            &video::Placed { receive: vec![0], ..Default::default() },
-        );
+        let b =
+            subscribe(7, &config(), b"deflated", true, None, &video::Placed { receive: vec![0], ..Default::default() });
         let (kind, m) = proto::received(&b).unwrap();
         assert_eq!(kind, kind::SUBSCRIBE);
         let sub = m.message(frame::SUBSCRIBE).unwrap();
@@ -369,7 +367,7 @@ mod tests {
                 video::Subscription { mid: "3".into(), attendee: "other#content".into(), kind: VideoKind::Screen },
             ],
         };
-        let b = subscribe(7, &config(), b"deflated", false, true, &placed);
+        let b = subscribe(7, &config(), b"deflated", false, Some(VideoKind::Camera), &placed);
         let (_, m) = proto::received(&b).unwrap();
         let sub = m.message(frame::SUBSCRIBE).unwrap();
         assert_eq!(sub.int(1), Some(3));
