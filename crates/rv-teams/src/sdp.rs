@@ -22,6 +22,8 @@
 
 use std::collections::HashMap;
 
+use serde_json::{Value, json};
+
 /// What a Teams section carries.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Label {
@@ -73,12 +75,20 @@ pub struct Layout {
     /// A group call's: every receiving video section is offered, the last one
     /// nothing labelled yet as the shared screen's.
     group: bool,
+    /// A group call's video sections that may send, in the offer's order, and
+    /// what this side's own carry: what `updateMediaDescriptions` tells.
+    described: Vec<(String, Option<Label>)>,
 }
 
 impl Layout {
     /// A group call's layout ([`Layout::group`]).
     pub fn group() -> Self {
         Layout { group: true, ..Layout::default() }
+    }
+
+    /// Whether this is a group call's layout.
+    pub fn is_group(&self) -> bool {
+        self.group
     }
 
     /// Whether an offer of this side's waits for Teams' answer.
@@ -283,8 +293,11 @@ fn teams_section(
 }
 
 /// What this side tells Teams of a section of its own camera or screen that
-/// sends nothing now.
-fn told_direction(section: &Section, sending: Sending) -> Option<&'static str> {
+/// sends nothing now; a group call tells it with `updateMediaDescriptions` instead.
+fn told_direction(section: &Section, sending: Sending, group: bool) -> Option<&'static str> {
+    if group {
+        return None;
+    }
     let quiet_now = match section.own()? {
         Label::Camera => !sending.camera,
         Label::Screen => !sending.screen,
@@ -499,6 +512,14 @@ pub fn teams_offer(sdp: &str, sending: Sending, layout: &mut Layout) -> String {
     }
     let mut mids = Vec::new();
     let mut body = String::new();
+    if layout.group {
+        layout.described = kept
+            .iter()
+            .map(|(at, label)| (&sections[*at], *label))
+            .filter(|(s, label)| matches!(label, Some(Label::Camera | Label::Screen)) && s.direction() != "recvonly")
+            .filter_map(|(s, _)| Some((s.mid()?.to_owned(), s.own())))
+            .collect();
+    }
     for (at, label) in &kept {
         let section = &sections[*at];
         let Some(mid) = section.mid() else { continue };
@@ -510,7 +531,13 @@ pub fn teams_offer(sdp: &str, sending: Sending, layout: &mut Layout) -> String {
         if label != Label::Audio {
             layout.labels.insert(mid.to_owned(), label);
         }
-        body.push_str(&teams_section(section, label, mid, (&port, &address), told_direction(section, sending)));
+        body.push_str(&teams_section(
+            section,
+            label,
+            mid,
+            (&port, &address),
+            told_direction(section, sending, layout.group),
+        ));
     }
     layout.offered = Some(sdp.to_owned());
     teams_head(&head, &mids) + &body
@@ -673,7 +700,13 @@ pub fn teams_answer(answer: &str, offer: &str, sending: Sending, layout: &Layout
                     _ => plain.and_then(|mid| layout.labels.get(mid)).copied().unwrap_or(Label::Camera),
                 };
                 bundle.push(theirs);
-                body.push_str(&teams_section(a, label, theirs, (&port, &address), told_direction(a, sending)));
+                body.push_str(&teams_section(
+                    a,
+                    label,
+                    theirs,
+                    (&port, &address),
+                    told_direction(a, sending, layout.group),
+                ));
             }
             None => {
                 let mut fields = section.lines[0].splitn(3, ' ');
@@ -751,6 +784,43 @@ pub fn modalities(layout: &Layout, sending: Sending) -> Vec<&'static str> {
         out.push("ScreenViewer");
     }
     out
+}
+
+/// A group call's sections that may send and what each does now, as
+/// `updateMediaDescriptions` lists them: this side's camera `sendrecv`, its
+/// screen `sendonly`, each with its label; every other one `recvonly`.
+pub fn media_descriptions(layout: &Layout, sending: Sending) -> Value {
+    let described = layout.described.iter().map(|(mid, own)| match own {
+        Some(Label::Camera) if sending.camera => {
+            json!({"mid": mid, "direction": "sendrecv", "label": Label::Camera.name()})
+        }
+        Some(Label::Screen) if sending.screen => {
+            json!({"mid": mid, "direction": "sendonly", "label": Label::Screen.name()})
+        }
+        _ => json!({"mid": mid, "direction": "recvonly"}),
+    });
+    Value::Array(described.collect())
+}
+
+/// The mid of this side's own camera or screen section in a group call.
+pub fn own_mid(layout: &Layout, label: Label) -> Option<&str> {
+    layout.described.iter().find(|(_, own)| *own == Some(label)).map(|(mid, _)| mid.as_str())
+}
+
+/// From what Teams was told to what is sent now, one change at a time, each
+/// with what it changed: the camera's first.
+pub fn sending_steps(told: Sending, now: Sending) -> Vec<(Sending, Label)> {
+    let mut steps = Vec::new();
+    let mut at = told;
+    if at.camera != now.camera {
+        at.camera = now.camera;
+        steps.push((at, Label::Camera));
+    }
+    if at.screen != now.screen {
+        at.screen = now.screen;
+        steps.push((at, Label::Screen));
+    }
+    steps
 }
 
 /// `RV_CALL_DEBUG=1`: each section of an SDP: its kind, `mid` and direction.
@@ -1087,6 +1157,90 @@ mod tests {
         let again = teams_offer(GROUP_OFFER, Sending::default(), &mut layout);
         assert!(section(&again, "4").contains("a=label:applicationsharing-video"), "the screen's section stays");
         assert!(section(&again, "3").contains("a=label:main-video"), "{again}");
+    }
+
+    /// libwebrtc's offer for a group call whose camera and screen sections come up
+    /// front, no track on either yet: then the data channel and two receivers.
+    const UP_FRONT_OFFER: &str = "v=0\r\no=- 1 2 IN IP4 127.0.0.1\r\ns=-\r\nt=0 0\r\na=group:BUNDLE 0 1 2 3 4 5\r\n\
+        m=audio 9 UDP/TLS/RTP/SAVPF 111\r\nc=IN IP4 0.0.0.0\r\na=mid:0\r\na=sendrecv\r\na=ssrc:42 cname:x\r\n\
+        a=candidate:2 1 udp 22 192.168.1.5 222 typ host generation 0\r\n\
+        m=video 9 UDP/TLS/RTP/SAVPF 102 103\r\nc=IN IP4 0.0.0.0\r\na=mid:1\r\na=sendrecv\r\na=msid:ep-camera t1\r\n\
+        a=rtpmap:102 H264/90000\r\na=rtpmap:103 rtx/90000\r\na=ssrc-group:FID 51 52\r\na=ssrc:51 cname:x\r\n\
+        a=ssrc:51 msid:ep-camera t1\r\na=ssrc:52 cname:x\r\na=ssrc:52 msid:ep-camera t1\r\n\
+        m=video 9 UDP/TLS/RTP/SAVPF 102\r\nc=IN IP4 0.0.0.0\r\na=mid:2\r\na=sendrecv\r\na=msid:ep-screen t2\r\n\
+        a=rtpmap:102 H264/90000\r\na=ssrc:61 cname:x\r\na=ssrc:61 msid:ep-screen t2\r\n\
+        m=application 9 UDP/DTLS/SCTP webrtc-datachannel\r\nc=IN IP4 0.0.0.0\r\na=ice-ufrag:uf\r\na=ice-pwd:pw\r\n\
+        a=fingerprint:sha-256 AB\r\na=setup:actpass\r\na=mid:3\r\na=sctp-port:5000\r\n\
+        m=video 9 UDP/TLS/RTP/SAVPF 102\r\nc=IN IP4 0.0.0.0\r\na=mid:4\r\na=recvonly\r\na=rtpmap:102 H264/90000\r\n\
+        m=video 9 UDP/TLS/RTP/SAVPF 102\r\nc=IN IP4 0.0.0.0\r\na=mid:5\r\na=recvonly\r\na=rtpmap:102 H264/90000\r\n";
+
+    /// The media server's answer: it sends on every video section, this side's own included.
+    const UP_FRONT_ANSWER: &str = "v=0\r\no=- 1 0 IN IP4 127.0.0.1\r\ns=session\r\nc=IN IP4 52.1.2.3\r\nt=0 0\r\n\
+        m=audio 3480 RTP/SAVP 111\r\nc=IN IP4 52.1.2.3\r\na=x-source-streamid:201\r\na=label:main-audio\r\na=mid:0\r\n\
+        a=rtpmap:111 OPUS/48000/2\r\n\
+        m=video 3480 RTP/SAVP 102\r\nc=IN IP4 52.1.2.3\r\na=x-source-streamid:202\r\na=label:main-video\r\na=mid:1\r\n\
+        a=rtpmap:102 H264/90000\r\n\
+        m=video 3480 RTP/SAVP 102\r\nc=IN IP4 52.1.2.3\r\na=x-source-streamid:203\r\n\
+        a=label:applicationsharing-video\r\na=mid:2\r\na=rtpmap:102 H264/90000\r\n\
+        m=x-data 3480 RTP/SAVP 127\r\nc=IN IP4 52.1.2.3\r\na=x-source-streamid:204\r\na=label:data\r\na=mid:3\r\n\
+        a=x-data-protocol:sctp\r\n\
+        m=video 3480 RTP/SAVP 102\r\nc=IN IP4 52.1.2.3\r\na=x-source-streamid:205\r\na=label:main-video\r\na=mid:4\r\n\
+        a=sendonly\r\na=rtpmap:102 H264/90000\r\n\
+        m=video 3480 RTP/SAVP 102\r\nc=IN IP4 52.1.2.3\r\na=x-source-streamid:206\r\na=label:main-video\r\na=mid:5\r\n\
+        a=sendonly\r\na=rtpmap:102 H264/90000\r\n";
+
+    #[test]
+    fn a_group_call_offers_its_own_sections_up_front_and_describes_what_they_send() {
+        let mut layout = Layout::group();
+        let offer = teams_offer(UP_FRONT_OFFER, Sending::default(), &mut layout);
+        let camera = section(&offer, "1");
+        for line in ["a=label:main-video", "a=sendrecv", "a=x-ssrc-range:51-51"] {
+            assert!(camera.contains(line), "{line}: {camera}");
+        }
+        let screen = section(&offer, "2");
+        for line in ["a=label:applicationsharing-video", "a=sendrecv", "a=x-ssrc-range:61-61"] {
+            assert!(screen.contains(line), "{line}: {screen}");
+        }
+        assert!(section(&offer, "4").contains("a=recvonly") && section(&offer, "5").contains("a=label:main-video"));
+        assert_eq!(offer.matches("a=label:applicationsharing-video").count(), 1, "{offer}");
+        assert_eq!(
+            media_descriptions(&layout, Sending::default()),
+            serde_json::json!([{"mid": "1", "direction": "recvonly"}, {"mid": "2", "direction": "recvonly"}])
+        );
+        assert_eq!(
+            media_descriptions(&layout, Sending { camera: true, screen: false }),
+            serde_json::json!([{"mid": "1", "direction": "sendrecv", "label": "main-video"}, {"mid": "2", "direction": "recvonly"}])
+        );
+        assert_eq!(
+            media_descriptions(&layout, Sending { camera: false, screen: true }),
+            serde_json::json!([{"mid": "1", "direction": "recvonly"}, {"mid": "2", "direction": "sendonly", "label": "applicationsharing-video"}])
+        );
+        assert_eq!((own_mid(&layout, Label::Camera), own_mid(&layout, Label::Screen)), (Some("1"), Some("2")));
+
+        plain_answer(UP_FRONT_ANSWER, &mut layout).unwrap();
+        let slots: Vec<(u32, Label)> = video_slots(&layout).into_iter().map(|s| (s.stream_id, s.label)).collect();
+        assert_eq!(
+            slots,
+            [(202, Label::Camera), (203, Label::Screen), (205, Label::Camera), (206, Label::Camera)],
+            "this side's own sections receive too"
+        );
+        let again = teams_offer(UP_FRONT_OFFER, Sending { camera: true, screen: true }, &mut layout);
+        assert!(section(&again, "1").contains("a=sendrecv"), "{again}");
+        assert!(section(&again, "2").contains("a=sendrecv"), "{again}");
+    }
+
+    #[test]
+    fn what_this_side_sends_is_told_one_change_at_a_time() {
+        let (off, camera) = (Sending::default(), Sending { camera: true, screen: false });
+        let both = Sending { camera: true, screen: true };
+        assert!(sending_steps(off, off).is_empty());
+        assert_eq!(sending_steps(off, camera), [(camera, Label::Camera)]);
+        assert_eq!(
+            sending_steps(camera, Sending { camera: false, screen: true }),
+            [(off, Label::Camera), (Sending { camera: false, screen: true }, Label::Screen)]
+        );
+        assert_eq!(sending_steps(both, camera), [(camera, Label::Screen)]);
+        assert!(own_mid(&Layout::default(), Label::Camera).is_none());
     }
 
     #[test]

@@ -61,6 +61,45 @@ pub fn renegotiate(caller: &Caller, offer: &str, media_leg: Option<&str>, modali
     }})
 }
 
+/// The first offer of a group call with every section that may send told as
+/// receiving only (`descriptions`, [`crate::sdp::media_descriptions`]), as
+/// Teams' web client sends it: the later `updateMediaDescriptions` go on from it.
+pub fn describe_media(body: &mut Value, descriptions: Value) {
+    if let Some(content) = body.pointer_mut("/callInvitation/mediaContent").and_then(Value::as_object_mut) {
+        content.insert("mediaDescriptions".into(), json!({"descriptions": descriptions, "requestId": 1}));
+    }
+}
+
+/// `updateMediaDescriptions`' body: what each section of a group call does now,
+/// once this side's camera or its screen (`screen`) started or stopped. Teams
+/// answers `Success.` and the roster then shows this side's stream so.
+pub fn update_media_descriptions(caller: &Caller, descriptions: Value, screen: bool, request: u32) -> Value {
+    json!({"UpdateMediaDescriptions": {"mediaDescriptions": {
+        "descriptions": descriptions,
+        "negotiationTag": format!("{};{}_1", caller.participant, if screen { "ss" } else { "v" }),
+        "requestId": request,
+    }}})
+}
+
+/// `applyChannelParameters`' body, as Teams' web client posts it before its
+/// camera first goes out: what the camera's section (`mid`) can send.
+pub fn camera_capabilities(mid: &str, sequence: u32) -> Value {
+    let caps = json!({"maxVideoSendCapabilities": {"caps": {"max-width": 1280, "max-height": 1280, "max-fps": 30,
+        "max-streams": 1, "max-layers": 1, "sequence-number": sequence}}});
+    json!({"applyChannelParameters": {"multiChannelParameter": {"mids": [mid], "mediaParameter": caps.to_string()}}})
+}
+
+/// `updateParticipantProperties`' body, as Teams' web client posts it when
+/// its screen share starts: this side's account named the sharer.
+pub fn screen_sharer(caller: &Caller, sequence: u32) -> Value {
+    json!({
+        "from": {"id": caller.mri, "endpointId": caller.endpoint, "participantId": caller.participant},
+        "to": [{"id": caller.mri, "propertyBag": {"screenSharerAttributes": {"sequenceNumber": sequence, "value": {"source": 1}}}}],
+        "links": {"updateParticipantPropertiesStatus": caller.callback("conversation/updateParticipantPropertiesStatus/")},
+        "operationId": random_id(),
+    })
+}
+
 /// What a push to a call's callback means.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CallEvent {
@@ -71,6 +110,10 @@ pub enum CallEvent {
         call_leg: Option<String>,
         /// Where this side's own new offers go (`renegotiate`).
         renegotiation: Option<String>,
+        /// Where a group call tells what this side sends ([`update_media_descriptions`]).
+        media_descriptions: Option<String>,
+        /// Where a group call tells what its camera can send ([`camera_capabilities`]).
+        channel_parameters: Option<String>,
         keep_alive_seconds: Option<u64>,
     },
     /// The call is over, with Teams' own wording when it gives one.
@@ -184,6 +227,8 @@ pub fn call_event(envelope: &Value) -> CallEvent {
                 .map(str::to_owned),
             call_leg: accepted.pointer("/links/callLeg").and_then(Value::as_str).map(str::to_owned),
             renegotiation: renegotiation_link(accepted),
+            media_descriptions: https_link(accepted, "/links/updateMediaDescriptions"),
+            channel_parameters: https_link(accepted, "/links/applyChannelParameters"),
             keep_alive_seconds: accepted.get("callKeepAliveInterval").and_then(Value::as_u64),
         };
     }
@@ -210,6 +255,11 @@ pub fn call_event(envelope: &Value) -> CallEvent {
         }
     }
     CallEvent::Other
+}
+
+/// A link of Teams' own calling stack, not one of this client's callbacks.
+fn https_link(doc: &Value, path: &str) -> Option<String> {
+    doc.pointer(path).and_then(Value::as_str).filter(|u| u.starts_with("https://")).map(str::to_owned)
 }
 
 /// Whether two links name the same conversation (`.../conv/<id>/...`), whichever
@@ -644,6 +694,67 @@ mod tests {
     }
 
     #[test]
+    fn a_group_call_tells_what_it_sends_on_the_links_its_acceptance_names() {
+        let caller = Caller {
+            mri: "8:orgid:me",
+            name: "Me",
+            endpoint: "ep",
+            participant: "p",
+            surl: "https://t/",
+            random: "r",
+            client: CLIENT,
+        };
+        let accepted = json!({"url": "https://x/callAgent/ep/r/call/acceptance/", "body": {"callAcceptance": {
+            "links": {"updateMediaDescriptions": "https://fp/ep/cc/v1/active/1/updateMediaDescriptions?i=1",
+                "applyChannelParameters": "https://fp/ep/cc/v1/mcProxy/1/applyChannelParameters?i=1"},
+            "mediaContent": {"blob": "v=0"}}}});
+        let CallEvent::Accepted { media_descriptions, channel_parameters, .. } = call_event(&accepted) else {
+            panic!("not an answer")
+        };
+        assert_eq!(media_descriptions.as_deref(), Some("https://fp/ep/cc/v1/active/1/updateMediaDescriptions?i=1"));
+        assert_eq!(channel_parameters.as_deref(), Some("https://fp/ep/cc/v1/mcProxy/1/applyChannelParameters?i=1"));
+        let callback = json!({"body": {"callAcceptance": {"links": {"updateMediaDescriptions": "wss://t/x"},
+            "mediaContent": {"blob": "v=0"}}}});
+        assert!(matches!(call_event(&callback), CallEvent::Accepted { media_descriptions: None, .. }));
+
+        let descriptions = json!([{"mid": "1", "direction": "sendrecv", "label": "main-video"}, {"mid": "2", "direction": "recvonly"}]);
+        let update = update_media_descriptions(&caller, descriptions.clone(), false, 2);
+        assert_eq!(
+            update,
+            json!({"UpdateMediaDescriptions": {"mediaDescriptions": {
+                "descriptions": descriptions, "negotiationTag": "p;v_1", "requestId": 2}}})
+        );
+        let share = update_media_descriptions(&caller, json!([]), true, 3);
+        assert_eq!(share["UpdateMediaDescriptions"]["mediaDescriptions"]["negotiationTag"], "p;ss_1");
+
+        let mut invitation = start_channel_call(&caller, "19:t@thread.tacv2", "v=0");
+        describe_media(&mut invitation, json!([{"mid": "1", "direction": "recvonly"}]));
+        assert_eq!(
+            invitation["callInvitation"]["mediaContent"]["mediaDescriptions"],
+            json!({"descriptions": [{"mid": "1", "direction": "recvonly"}], "requestId": 1})
+        );
+        assert_eq!(invitation["callInvitation"]["mediaContent"]["blob"], "v=0");
+
+        let caps = camera_capabilities("1", 1);
+        assert_eq!(caps["applyChannelParameters"]["multiChannelParameter"]["mids"], json!(["1"]));
+        let parameter = caps["applyChannelParameters"]["multiChannelParameter"]["mediaParameter"].as_str().unwrap();
+        let parameter: Value = serde_json::from_str(parameter).unwrap();
+        assert_eq!(parameter["maxVideoSendCapabilities"]["caps"]["max-streams"], 1);
+        assert_eq!(parameter["maxVideoSendCapabilities"]["caps"]["sequence-number"], 1);
+
+        let sharer = screen_sharer(&caller, 1);
+        assert_eq!(sharer["to"][0]["id"], "8:orgid:me");
+        assert_eq!(
+            sharer["to"][0]["propertyBag"]["screenSharerAttributes"],
+            json!({"sequenceNumber": 1, "value": {"source": 1}})
+        );
+        assert_eq!(
+            sharer["links"]["updateParticipantPropertiesStatus"],
+            "https://t/callAgent/ep/r/conversation/updateParticipantPropertiesStatus/"
+        );
+    }
+
+    #[test]
     fn a_conversation_is_known_through_its_proxy_and_query() {
         let direct = "https://conv-euno-05-prod-aks.conv.skype.com/conv/h5HP/";
         let proxied = "https://api.flightproxy.teams.microsoft.com/api/v2/ep/conv.skype.com/conv/h5HP?i=10";
@@ -698,6 +809,8 @@ mod tests {
                 acknowledge: Some("https://cc/ack".into()),
                 call_leg: None,
                 renegotiation: Some("https://cc/active/1/renegotiate".into()),
+                media_descriptions: None,
+                channel_parameters: None,
                 keep_alive_seconds: Some(2700),
             }
         );
