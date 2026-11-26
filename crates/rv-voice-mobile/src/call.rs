@@ -25,6 +25,10 @@ enum Command {
     Muted(bool),
     Video(LocalVideo),
     RemoteVideo { track: String, stream: String },
+    /// This side's screen capture is ready (a session of its own joins) or stopped (it is left).
+    Share(bool),
+    /// That session's offer, its candidates in it.
+    ShareOffer(String),
     Leave,
 }
 
@@ -62,7 +66,22 @@ pub fn local_json<S: CallSignaling>(session: &S) -> Value {
         "cameraStream": session.video_stream(VideoKind::Camera),
         "screenStream": session.video_stream(VideoKind::Screen),
         "offersLocalSections": session.offers_local_sections(),
+        "screenApart": session.screen_apart(),
     })
+}
+
+/// An event of the session that carries this side's screen, as the Kotlin side
+/// reads it apart from the call's own: its end ends the share, not the call.
+pub fn share_json(event: Value) -> Value {
+    json!({"type": "share", "event": event})
+}
+
+/// The next event of the screen's session, if there is one; never otherwise.
+async fn share_event<S: CallSignaling>(share: &mut Option<S>) -> Option<Event> {
+    match share {
+        Some(share) => share.next_event().await,
+        None => std::future::pending().await,
+    }
 }
 
 /// Whose and what a remote video track is, as its own ids say; `None` when
@@ -188,11 +207,12 @@ impl Call {
     }
 }
 
-async fn drive<S: CallSignaling + Send>(
+async fn drive<S: CallSignaling + Send + 'static>(
     mut session: S,
     mut commands: async_mpsc::UnboundedReceiver<Command>,
     events: mpsc::Sender<String>,
 ) {
+    let mut share: Option<S> = None;
     loop {
         tokio::select! {
             event = session.next_event() => match event {
@@ -204,6 +224,16 @@ async fn drive<S: CallSignaling + Send>(
                 }
                 None => break,
             },
+            event = share_event(&mut share) => {
+                let over = matches!(event, None | Some(Event::Ended(_) | Event::Over(_)));
+                let event = event.map_or_else(|| json!({"type": "ended", "reason": "gone"}), |e| event_json(&e));
+                if over {
+                    share = None;
+                }
+                if events.send(share_json(event).to_string()).is_err() {
+                    break;
+                }
+            }
             command = commands.recv() => match command {
                 Some(Command::Offer(sdp)) => {
                     if let Err(e) = session.offer(&sdp).await {
@@ -231,12 +261,35 @@ async fn drive<S: CallSignaling + Send>(
                         let _ = events.send(named.to_string());
                     }
                 }
+                Some(Command::Share(true)) => {
+                    if share.is_none() {
+                        share = session.screen_session();
+                        let event = share.as_ref().map_or_else(|| json!({"type": "ended", "reason": "not_apart"}), local_json);
+                        let _ = events.send(share_json(event).to_string());
+                    }
+                }
+                Some(Command::Share(false)) => {
+                    if let Some(mut stopped) = share.take() {
+                        tokio::spawn(async move { stopped.leave().await });
+                    }
+                }
+                Some(Command::ShareOffer(sdp)) => {
+                    if let Some(current) = &mut share
+                        && let Err(e) = current.offer(&sdp).await
+                    {
+                        share = None;
+                        let _ = events.send(share_json(json!({"type": "ended", "reason": e.to_string()})).to_string());
+                    }
+                }
                 Some(Command::Leave) | None => {
                     session.leave().await;
                     break;
                 }
             },
         }
+    }
+    if let Some(mut left) = share.take() {
+        left.leave().await;
     }
 }
 
@@ -455,6 +508,30 @@ pub extern "system" fn Java_com_rocketvibe_voice_JitsiCall_remoteVideo(
 }
 
 #[unsafe(no_mangle)]
+pub extern "system" fn Java_com_rocketvibe_voice_JitsiCall_share(
+    _env: JNIEnv,
+    _class: JClass,
+    handle: jlong,
+    on: jboolean,
+) {
+    if let Some(call) = call(handle) {
+        call.send(Command::Share(on != 0));
+    }
+}
+
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_com_rocketvibe_voice_JitsiCall_shareOffer(
+    mut env: JNIEnv,
+    _class: JClass,
+    handle: jlong,
+    sdp: JString,
+) {
+    if let (Some(call), Some(sdp)) = (call(handle), text(&mut env, &sdp)) {
+        call.send(Command::ShareOffer(sdp));
+    }
+}
+
+#[unsafe(no_mangle)]
 pub extern "system" fn Java_com_rocketvibe_voice_JitsiCall_leave(
     _env: JNIEnv,
     _class: JClass,
@@ -600,7 +677,7 @@ mod tests {
                 "type": "local", "id": "me", "dataChannel": "dc", "dataProtocol": "proto",
                 "canCamera": true, "canScreen": false,
                 "cameraStream": "me-camera", "screenStream": "me-screen",
-                "offersLocalSections": false,
+                "offersLocalSections": false, "screenApart": false,
             })
         );
     }
