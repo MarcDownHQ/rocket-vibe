@@ -832,14 +832,35 @@ goes out as this side's video.
   keeps `main-video` under its mid, `inactive`, its msid and sources kept. Video is H.264 (several
   profiles) and AV1 only, no VP8 or VP9. `callModalities` say `Audio` plus `Video` while the camera is on,
   `ScreenSharer` while sharing; the answers say `audio`, `screenViewer`.
-- **What a group call showed** (the `video2` HAR, no websocket frames): the client's own offer lists ten
-  `main-video` sections (mid 1 its camera with a range of 100 sources, 2 to 6 `sendrecv`, 7 to 10
-  `recvonly`), `applicationsharing-video` mid 11 and `data` mid 12. Turning the camera or a share on or off
-  is no renegotiation there: the client posts `updateMediaDescriptions {UpdateMediaDescriptions
-  {mediaDescriptions {descriptions [{mid, direction, label}], negotiationTag, requestId}}}` with every
-  section's direction (`sendrecv` and `main-video` on mid 1 for the camera, `sendonly` and
-  `applicationsharing-video` on mid 11 for a share), and `applyChannelParameters` on its `mcProxy` link
-  with `maxVideoSendCapabilities`.
+- **What a group call showed** (the `video2` HAR, no websocket frames; the `video3` meeting the same, with
+  its Trouter frames): the client's own offer lists ten `main-video` sections (mid 1 its camera with a range
+  of 100 sources, 2 to 6 `sendrecv`, 7 to 10 `recvonly`), `applicationsharing-video` mid 11 and `data` mid
+  12. Before any camera is on, mid 1 and 11 are already `sendrecv` transceivers with no track (`a=msid:-
+  <track>`, sources and `FID` groups listed; mid 1's source line is Teams' `fake_attribute`), and the
+  invitation's `mediaContent` carries `mediaDescriptions {descriptions: [mids 1 to 6 and 11, each
+  recvonly], requestId: 1}` (the `recvonly` sections 7 to 10, audio and data are never listed) and
+  `applyChannelParameters {multiChannelParameter {mids: ["*"], mediaParameter: "{sendSideBWSeed}"}}`. The
+  media server answers every one of them `sendrecv` (no direction line), with its own range and
+  `x-source-streamid` (mid 1 is 202, mid 11 is 212). The pushed `callAcceptance` (gzip, `call/acceptance/`)
+  carries the links: `updateMediaDescriptions` (`{cc}/cc/v1/active/<call>/.../updateMediaDescriptions`,
+  through the flight proxy), `applyChannelParameters` and `controlVideoStreaming` (`{cc}/cc/v1/mcProxy/...`).
+  Turning the camera or a share on or off is no renegotiation: the client posts `updateMediaDescriptions
+  {UpdateMediaDescriptions {mediaDescriptions {descriptions [{mid, direction, label?}], negotiationTag,
+  requestId}}}` with the same seven mids, `sendrecv` and `label: main-video` on mid 1 while the camera is
+  on, `sendonly` and `label: applicationsharing-video` on mid 11 while sharing, `recvonly` and no label
+  otherwise; the tag is `<participantId>;v_1` for a camera change, `;ss_1` for a share's, and `requestId`
+  counts on from the invitation's 1. Teams answers 200 `{code: 0, phrase: "Success."}` and pushes nothing
+  for it but the next `rosterUpdate`, where this side's own endpoint shows `main-video` 202 or
+  `applicationsharing-video` 212 `sendrecv` / `sendonly`, then `recvonly` again. Just before its camera
+  first goes out (once a call) the client posts `applyChannelParameters {multiChannelParameter {mids:
+  ["1"], mediaParameter: "{maxVideoSendCapabilities {caps {max-width 1280, max-height 1280, max-fps 30,
+  max-streams 3, max-layers 3, sequence-number}}}"}}` (202, empty), and before a share starts
+  `conv/<id>/updateParticipantProperties` with `screenSharerAttributes {sequenceNumber, value {source:
+  1}}` on its own account (202). On the data channel, once this side's camera or share goes out, the
+  server sends `vdclc {sourceId: <its section's stream id>, fmtParamsList: ["KeyFrame=1;max-br=..;
+  max-fps=..;max-fs=..;rid=..;ssrc=.."]}` (what it wants of that stream, the first with a keyframe, the
+  camera's at 320x180 for a small tile), again as that changes, and the client sends `ssbwe {BwMessage
+  [{streamMsid, bw}]}`.
 - **What a meeting's data channel showed** (the 2026-11-24 `video3` HAR with its socket frames, and
   `teams-datachannel.json` from a script wrapping `RTCPeerConnection.createDataChannel`, two accounts):
   the browser opens one in-band channel `main-channel` (id 0, no protocol) for the `x-data` section, which
@@ -890,15 +911,26 @@ goes out as this side's video.
   other side's videos by stream, whose (the one other person in the roster) and which kind.
   `ConnectExternal {data_channel, receive_videos}` opens a data channel by its label and adds that many
   receive-only video sections (then the first of them is the camera's); `SendData` sends a binary message
-  on it once open, and what arrives comes back as `Event::Data`.
+  on it once open, and what arrives comes back as `Event::Data`. `ConnectExternal {video_up_front}`
+  (`CallSignaling::video_up_front`) puts a camera and a screen section, both `sendrecv` with no track
+  (`Videos::prepare`), in the first offer, before the receivers: a capture starting swaps its track in
+  (`set_track`), a stop swaps in the track that sends nothing, and neither asks for an offer.
 - **rv-core** (`teams_call.rs` `drive`): each new local offer (`VoiceController::local_offers`) goes through
   `renegotiate` once the call is answered; a `mediaAnswer` push answers it while it waits
   (`Layout::offering`), and an offer of Teams' meanwhile withdraws it. GTK and SwiftUI need no change: the
   window shows the camera and screen buttons from `CallVideo`, as for Jitsi. A channel or meeting call
-  (`join_thread_call`) opens `main-channel` with five receiving sections (four cameras, one screen); once
-  answered it sends `syn`, a heartbeat every second, and (rv-teams `datachannel.rs` `Routing`) asks for each
-  roster source turning live on a free section of its kind and for nothing there when it stops, the
-  videos then named after whose source each section carries. A fifth camera is not shown.
+  (`join_thread_call`) opens `main-channel` with five receiving sections (four cameras, one screen: this
+  side's own camera and screen sections, offered up front, and three receive-only ones); once answered it
+  sends `syn`, a heartbeat every second, and (rv-teams `datachannel.rs` `Routing`) asks for each roster
+  source turning live on a free section of its kind and for nothing there when it stops, the videos then
+  named after whose source each section carries. A fifth camera is not shown. This side's own camera and
+  share there go as the web client's do: the group `Layout` keeps the own sections' directions as
+  libwebrtc offers them and records the sections that may send; the invitation carries their
+  `mediaDescriptions`, all `recvonly` (`calling::describe_media`); and once accepted, each change of what
+  the sidecar sends (its own participant's `camera` / `screen`) is posted one at a time to the
+  acceptance's `updateMediaDescriptions` link (`sdp::media_descriptions`, `sending_steps`), after
+  `applyChannelParameters` before the camera first goes out (one stream, one layer, 1280x1280 at 30) and
+  `updateParticipantProperties` before each share. A 1:1 call keeps `renegotiate`.
 - **Checked** (2026-11-23): the translation against SDP shaped like the HARs' (camera and screen received,
   a renumbered screen section, this side's share taking the label over, a stopped camera), the external
   signalling's offers, and the controller's new offers and `RemoteVideos` against the fake sidecar. The real
@@ -912,8 +944,13 @@ goes out as this side's video.
   gets a track that sends nothing. **Not run
   against Teams**: a group call's channel and requests (the real sidecar's offer went through the
   translation and a Teams-shaped answer outside the repo: the data channel and five slots, stream ids
-  202 to 207); this side's own camera or share in a group call, still offered through `renegotiate` where
-  the web client posts `updateMediaDescriptions`; whether Teams takes `renegotiate` from this client, whether it minds a stopped share
+  202 to 207); this side's own camera or share in a group call (the up-front sections were checked on
+  the real libwebrtc offer in the sidecar's tests, `sendrecv` with `msid`, sources and `FID` like the web
+  client's, and the requests against the capture's shapes): whether the media server forwards this
+  side's video without honouring `vdclc` (the sidecar ignores it: no keyframe on demand, no resolution
+  asked, no `ssbwe`), whether `applyChannelParameters` matters to it, whether it takes a one-source range
+  where the web client reserves 100, and the made-up `sequence-number` 1 of the camera's capabilities; a
+  group chat's call (placed by `epconv` with its people) still goes the 1:1 way, no data channel; whether Teams takes `renegotiate` from this client, whether it minds a stopped share
   told as `inactive` on its mid where its web client goes back to the placeholder, whether Teams' native
   clients renegotiate as its web client does, and the codec the two sides settle on. Android owes the
   whole of it.
@@ -957,6 +994,9 @@ Teams meetings and video last.
 - crates/rv-teams/src/sdp.rs, crates/rv-teams/src/calling.rs, apps/desktop/crates/rv-core/src/teams_call.rs
   (Teams' video), Teams' web calling bundle `calling-pluginless-*.js` in `teams.cloud.microsoft.har`,
   `teams.cloud.microsoft_screenshare.har`, Microslop's `crates/ost-microsoft/src/calling/rtcp.rs`
+- crates/rv-teams/src/datachannel.rs, crates/rv-call/src/lib.rs (`video_up_front`), captures 2026-11-23/24
+  `teams.cloud.microsoft_video2.har`, `teams.cloud.microsoft_video3.har`, `teams-datachannel.json`
+  (a group call's and a meeting's own camera and share)
 - https://github.com/aws/amazon-chime-sdk-js/blob/main/protocol/SignalingProtocol.proto
 - https://github.com/aws/amazon-chime-sdk-js/blob/main/src/signalingclient/DefaultSignalingClient.ts
 - https://github.com/aws/amazon-chime-sdk-js/blob/main/src/sdp/ZLIBTextCompressor.ts
