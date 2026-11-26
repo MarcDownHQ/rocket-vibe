@@ -517,14 +517,7 @@ internal class JitsiSession(
         outbox.add(event.getString("text").toByteArray() to false)
         flush()
       }
-      "ice" -> {
-        val servers = event.optJSONArray("servers")
-        iceServers = (0 until (servers?.length() ?: 0)).map { i ->
-          val s = servers!!.getJSONObject(i)
-          val urls = s.getJSONArray("urls").let { a -> (0 until a.length()).map { a.getString(it) } }
-          PeerConnection.IceServer.builder(urls).setUsername(s.optString("username")).setPassword(s.optString("credential")).createIceServer()
-        }
-      }
+      "ice" -> iceServers = iceServersOf(event)
       "offer" -> offer(event.getString("sdp"))
       "offerWanted" -> {
         relayOnly = event.optBoolean("relayOnly")
@@ -577,13 +570,7 @@ internal class JitsiSession(
       .setVideoDecoderFactory(DefaultVideoDecoderFactory(egl))
       .createPeerConnectionFactory()
     audio = adm; factory = f
-    val config = PeerConnection.RTCConfiguration(iceServers).apply {
-      sdpSemantics = PeerConnection.SdpSemantics.UNIFIED_PLAN
-      bundlePolicy = PeerConnection.BundlePolicy.MAXBUNDLE
-      rtcpMuxPolicy = PeerConnection.RtcpMuxPolicy.REQUIRE
-      if (relayOnly) iceTransportsType = PeerConnection.IceTransportsType.RELAY
-    }
-    val created = f.createPeerConnection(config, observer) ?: return null
+    val created = f.createPeerConnection(rtcConfiguration(iceServers, relayOnly), observer) ?: return null
     val track = f.createAudioTrack("${localId}-a0", f.createAudioSource(MediaConstraints()))
     track.setEnabled(VoiceEngine.microphone && !VoiceEngine.deafened)
     created.addTrack(track, listOf(localId))
@@ -616,6 +603,23 @@ internal class JitsiSession(
       runCatching { p.addTransceiver(MediaStreamTrack.MediaType.MEDIA_TYPE_VIDEO, init) }.getOrNull()?.let { senders[kind] = it.sender }
         ?: Log.w("RocketVibeVoice", "jitsi: $kind sender refused")
     }
+  }
+
+  /** The servers of an `ice` event. */
+  private fun iceServersOf(event: JSONObject): List<PeerConnection.IceServer> {
+    val servers = event.optJSONArray("servers")
+    return (0 until (servers?.length() ?: 0)).map { i ->
+      val s = servers!!.getJSONObject(i)
+      val urls = s.getJSONArray("urls").let { a -> (0 until a.length()).map { a.getString(it) } }
+      PeerConnection.IceServer.builder(urls).setUsername(s.optString("username")).setPassword(s.optString("credential")).createIceServer()
+    }
+  }
+
+  private fun rtcConfiguration(servers: List<PeerConnection.IceServer>, relay: Boolean) = PeerConnection.RTCConfiguration(servers).apply {
+    sdpSemantics = PeerConnection.SdpSemantics.UNIFIED_PLAN
+    bundlePolicy = PeerConnection.BundlePolicy.MAXBUNDLE
+    rtcpMuxPolicy = PeerConnection.RtcpMuxPolicy.REQUIRE
+    if (relay) iceTransportsType = PeerConnection.IceTransportsType.RELAY
   }
 
   /** Receive-only video sections up to [receivers], none ever removed. */
