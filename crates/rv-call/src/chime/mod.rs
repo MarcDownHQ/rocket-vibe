@@ -58,9 +58,25 @@ impl Config {
             "{base}?X-Chime-Control-Protocol-Version=3&X-Amzn-Chime-Send-Close-On-Error=1&X-Amzn-Version={SDK_VERSION}&X-Amzn-User-Agent=rocket-vibe"
         ))
     }
+
+    /// The attendee sharing this one's screen: the same credentials with
+    /// `#content` after the id and the token.
+    pub fn content(&self) -> Config {
+        Config {
+            attendee_id: format!("{}{}", self.attendee_id, video::CONTENT),
+            join_token: format!("{}{}", self.join_token, video::CONTENT),
+            ..self.clone()
+        }
+    }
+
+    pub(crate) fn is_content(&self) -> bool {
+        self.attendee_id.ends_with(video::CONTENT)
+    }
 }
 
-pub(crate) fn join(timestamp: u64, audio_session_id: u32) -> Vec<u8> {
+/// The JOIN; a `content` attendee's asks for no adaptation and no periodic
+/// key frame, as the SDK's content share does.
+pub(crate) fn join(timestamp: u64, audio_session_id: u32, content: bool) -> Vec<u8> {
     let details = Writer::default()
         .string(5, "rocket-vibe")
         .string(6, env!("CARGO_PKG_VERSION"))
@@ -74,13 +90,31 @@ pub(crate) fn join(timestamp: u64, audio_session_id: u32) -> Vec<u8> {
         .uint(3, 2)
         .message(4, details)
         .uint(6, u64::from(audio_session_id))
-        .bool(7, true)
+        .bool(7, true);
+    let body = if content {
+        body.uint(10, 1).bool(12, false).bool(13, true)
+    } else {
         // BANDWIDTH_PROBING_AND_VIDEO_QUALITY_ADAPTION, and the three supported
-        .uint(10, 4)
-        .uint(11, 2)
-        .uint(11, 3)
-        .uint(11, 4);
+        body.uint(10, 4).uint(11, 2).uint(11, 3).uint(11, 4)
+    };
     proto::signal(timestamp, kind::JOIN, frame::JOIN, body)
+}
+
+/// What Slack's web client sends on the main socket as its screen share
+/// starts: two `data-channel` messages, the second naming the attendee as a
+/// `browser:content` sharer.
+pub(crate) fn share_announced(timestamp: u64, attendee_id: &str) -> Vec<Vec<u8>> {
+    let content = Writer::default().string(1, "browser:content").string(2, attendee_id);
+    [
+        Writer::default().string(4, attendee_id).bytes(5, &[]),
+        Writer::default().string(4, attendee_id).message(15, content),
+    ]
+    .into_iter()
+    .map(|data| {
+        let payload = Writer::default().string(1, "data-channel").bytes(2, &data.finish());
+        proto::signal(timestamp, kind::DATA_MESSAGE, frame::DATA_MESSAGE, Writer::default().message(1, payload))
+    })
+    .collect()
 }
 
 /// The SUBSCRIBE carrying the offer: the microphone, the `video` sent if any,
@@ -198,7 +232,7 @@ impl Roster {
             let Some(id) = stream.int(1) else { continue };
             let attendee = stream.string(2);
             let muted = stream.int(3).map(|m| m != 0);
-            if attendee.as_deref() == Some(self.me.as_str()) {
+            if attendee.as_deref().is_some_and(|a| a == self.me || a.ends_with(video::CONTENT)) {
                 continue;
             }
             if stream.int(5).is_some_and(|d| d != 0) {
@@ -329,7 +363,7 @@ mod tests {
 
     #[test]
     fn the_join_matches_the_captured_one() {
-        let b = join(7, 42);
+        let b = join(7, 42, false);
         let (kind, m) = proto::received(&b).unwrap();
         assert_eq!(b[0], proto::CLIENT_FRAME);
         assert_eq!(kind, kind::JOIN);

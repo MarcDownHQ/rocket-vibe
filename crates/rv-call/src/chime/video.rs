@@ -8,7 +8,7 @@ use super::proto::Message;
 use crate::{RemoteVideo, VideoKind};
 
 /// The suffix of the second attendee a client joins as to share its screen.
-const CONTENT: &str = "#content";
+pub(crate) const CONTENT: &str = "#content";
 
 /// A remote video the server sends, by the attendee sending it.
 #[derive(Debug, Clone, PartialEq, Eq)]

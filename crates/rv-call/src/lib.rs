@@ -212,6 +212,22 @@ pub trait CallSignaling {
     fn set_video(&mut self, _video: LocalVideo) -> impl Future<Output = Result<(), Error>> + Send {
         async { Ok(()) }
     }
+    /// Whether this side's screen goes as a session of its own, from
+    /// [`CallSignaling::screen_session`], rather than on this one's peer
+    /// connection.
+    fn screen_apart(&self) -> bool {
+        false
+    }
+    /// A session of its own for this side's screen (Chime's `#content`
+    /// attendee), joining as it is made: a peer connection of its own sends the
+    /// screen alone, what it receives unused, and it is left when the share
+    /// stops. [`CallSignaling::set_video`] tells this session once it sends.
+    fn screen_session(&self) -> Option<Self>
+    where
+        Self: Sized,
+    {
+        None
+    }
 }
 
 /// An SDP with these gathered candidates in their media sections, for a

@@ -180,6 +180,7 @@ pub mod kind {
     pub const AUDIO_STREAM_ID_INFO: u64 = 18;
     pub const PING_PONG: u64 = 19;
     pub const AUDIO_STATUS: u64 = 20;
+    pub const DATA_MESSAGE: u64 = 22;
     pub const REMOTE_VIDEO_UPDATE: u64 = 24;
 }
 
@@ -199,6 +200,7 @@ pub mod frame {
     pub const AUDIO_STREAM_ID_INFO: u32 = 19;
     pub const PING_PONG: u32 = 20;
     pub const AUDIO_STATUS: u32 = 21;
+    pub const DATA_MESSAGE: u32 = 23;
     pub const REMOTE_VIDEO_UPDATE: u32 = 25;
 }
 

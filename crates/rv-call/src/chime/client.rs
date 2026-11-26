@@ -35,7 +35,7 @@ enum End {
 enum Command {
     Offer(String),
     Muted(bool),
-    Camera(bool),
+    Video(LocalVideo),
     Leave(oneshot::Sender<()>),
 }
 
@@ -47,6 +47,8 @@ pub struct Session {
     /// How many remote videos the offers must receive, and whether any ever did.
     receiving: Arc<AtomicUsize>,
     received: Arc<AtomicBool>,
+    /// The attendee this one's screen joins as; `None` for that attendee itself.
+    content: Option<Config>,
 }
 
 type Socket = tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>;
@@ -62,12 +64,13 @@ pub async fn join(config: Config) -> Result<Session, Error> {
     let (event_tx, events) = mpsc::unbounded_channel();
     let (commands, command_rx) = mpsc::unbounded_channel();
     let attendee = config.attendee_id.clone();
+    let content = Some(config.content());
     let receiving = Arc::new(AtomicUsize::new(0));
     let received = Arc::new(AtomicBool::new(false));
     let mut state = State::new(config, video_limit, receiving.clone(), received.clone(), event_tx);
     state.started(servers);
     tokio::spawn(async move { state.run(socket, command_rx).await });
-    Ok(Session { events, commands, attendee, receiving, received })
+    Ok(Session { events, commands, attendee, receiving, received, content })
 }
 
 /// The socket joined: its TURN servers and the most videos it may receive.
@@ -87,7 +90,7 @@ async fn connect(config: &Config) -> Result<(Socket, Vec<crate::IceServer>, usiz
 
     let mut audio_session = [0u8; 4];
     let _ = getrandom::fill(&mut audio_session);
-    send(&mut socket, super::join(now_ms(), u32::from_le_bytes(audio_session))).await?;
+    send(&mut socket, super::join(now_ms(), u32::from_le_bytes(audio_session), config.is_content())).await?;
     loop {
         let incoming = tokio::time::timeout(std::time::Duration::from_secs(10), socket.next())
             .await
@@ -168,7 +171,34 @@ impl CallSignaling for Session {
     }
 
     async fn set_video(&mut self, video: LocalVideo) -> Result<(), Error> {
-        self.commands.send(Command::Camera(video.camera)).map_err(|_| Error::new("session ended"))
+        self.commands.send(Command::Video(video)).map_err(|_| Error::new("session ended"))
+    }
+
+    fn screen_apart(&self) -> bool {
+        self.content.is_some()
+    }
+
+    fn screen_session(&self) -> Option<Self> {
+        let config = self.content.clone()?;
+        let (event_tx, events) = mpsc::unbounded_channel();
+        let (commands, command_rx) = mpsc::unbounded_channel();
+        let attendee = config.attendee_id.clone();
+        let (receiving, received) = (Arc::new(AtomicUsize::new(0)), Arc::new(AtomicBool::new(false)));
+        let (receiving_state, received_state) = (receiving.clone(), received.clone());
+        tokio::spawn(async move {
+            match connect(&config).await {
+                Ok((socket, servers, limit)) => {
+                    let mut state = State::new(config, limit, receiving_state, received_state, event_tx);
+                    state.started(servers);
+                    state.run(socket, command_rx).await;
+                }
+                Err(e) => {
+                    debug(&format!("content: {e}"));
+                    let _ = event_tx.send(Event::Ended(e.0));
+                }
+            }
+        });
+        Some(Session { events, commands, attendee, receiving, received, content: None })
     }
 }
 
@@ -177,6 +207,8 @@ struct State {
     roster: Roster,
     muted: bool,
     camera: bool,
+    /// Whether this side's screen was told sent, from its own attendee.
+    screen: bool,
     last_answer: String,
     videos: Subscriptions,
     receiving: Arc<AtomicUsize>,
@@ -200,6 +232,7 @@ impl State {
             config,
             muted: false,
             camera: false,
+            screen: false,
             last_answer: String::new(),
             videos: Subscriptions::new(video_limit.min(VIDEO_LIMIT)),
             receiving,
@@ -245,7 +278,11 @@ impl State {
                         Command::Offer(sdp) => {
                             let placed = self.videos.place(&sdp);
                             let _ = self.events.send(Event::Videos(self.videos.remote()));
-                            let video = (self.camera && video::sends_video(&sdp)).then_some(VideoKind::Camera);
+                            let video = if self.config.is_content() {
+                                Some(VideoKind::Screen)
+                            } else {
+                                (self.camera && video::sends_video(&sdp)).then_some(VideoKind::Camera)
+                            };
                             let deflated = miniz_oxide::deflate::compress_to_vec(sdp.as_bytes(), 6);
                             let subscribe = super::subscribe(now_ms(), &self.config, &deflated, self.muted, video, &placed);
                             self.subscribing = true;
@@ -253,9 +290,17 @@ impl State {
                                 break End::Lost("connection_lost".to_owned());
                             }
                         }
-                        Command::Camera(camera) => {
-                            self.camera = camera;
-                            self.subscribe_again();
+                        Command::Video(video) => {
+                            if video.screen && !self.screen {
+                                for frame in super::share_announced(now_ms(), &self.config.attendee_id) {
+                                    let _ = send(&mut socket, frame).await;
+                                }
+                            }
+                            self.screen = video.screen;
+                            if video.camera != self.camera {
+                                self.camera = video.camera;
+                                self.subscribe_again();
+                            }
                         }
                         Command::Muted(muted) => {
                             self.muted = muted;
@@ -322,6 +367,7 @@ impl State {
                     self.subscribe_again();
                 }
             }
+            kind::INDEX | kind::AUDIO_STREAM_ID_INFO | kind::AUDIO_METADATA if self.config.is_content() => {}
             kind::INDEX => {
                 let sources = video::index_sources(&message.message(frame::INDEX)?, &self.config.attendee_id);
                 if let Some(freed) = self.videos.index(sources) {
