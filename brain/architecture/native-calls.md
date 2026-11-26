@@ -433,8 +433,7 @@ Built (desktop):
   through the call's video list (`shown()` matches it by stream); the camera goes on a send-only
   section of its own, as for Mattermost. The call screen needed nothing: its camera button follows
   `canCamera`, true for Chime since the shared code's `can_send(Camera)`.
-- **Not built**: this side's screen share on Android (the `#content` attendee, built on the desktop:
-  `rv-voice-mobile` runs no second session nor peer connection); PAUSE/RESUME of a group. **Not run** against a
+- **Not built**: PAUSE/RESUME of a group. **Not run** against a
   live huddle: the capture, unit tests and the sidecar's offer test only; Android by compiling (the
   Android cross-compile, `:voice:compileDebugKotlin`) and rv-voice-mobile's tests only.
 
@@ -492,8 +491,25 @@ Built (desktop):
   call goes on. A main session lost or over leaves its share; a rejoin opens a new one while the
   capture runs. The windows needed nothing (`Event::CallVideo` shows the button); SwiftUI shares
   through the same sidecar, whose screen capture works on macOS.
-- **Not run** against a live huddle: whether Chime takes a microphone that sends no frame; whether the
-  others' Slack clients show the share as they do Chrome's. Checked: the frames against the capture and the sidecar's offer, in unit tests.
+- **Android** (2026-11-26): `rv-voice-mobile` (`call.rs`) adds `screenApart` (the session's
+  `screen_apart`) to the `local` event; `Share(true)` from the Kotlin side opens the session
+  `screen_session` gives inside the drive, whose events reach Kotlin wrapped as `{type: "share", event}`
+  (its `local` first, so its end never ends the call), `shareOffer` passes it the offer, and `Share(false)`,
+  or the call's end, leaves it. `JitsiSession` (`JitsiCall.kt`) keeps the screen off the call's peer
+  connection; once the capture runs and the call's peer connection exists, `syncVideo` asks for the
+  screen's session and its `offerWanted` opens a `Share`: a peer connection of its own from the same
+  factory, a microphone track kept disabled (libwebrtc then sends silence; the phone's audio device is
+  shared, so a source given no frames is not to be had) and the screen on a `sendrecv` transceiver, both on
+  stream `<attendee>#content`, the capture's frames moved to its source; the offer goes once gathering
+  completed, as the call's does. Connected, the call's session is told the screen is sent (`video`); the
+  capture stopping closes it. A share failing (its session ended, an answer refused before it connected,
+  its peer connection failed) stops the capture, tells the call screen `screenUnavailable` (a notice,
+  "Couldn't share the screen") when nothing was sent yet, and the call goes on. A rejoin drops it with the
+  media and opens a new one while the capture runs.
+- **Not run** against a live huddle: whether Chime takes a microphone that sends no frame (Android's
+  sends silence); whether the others' Slack clients show the share as they do Chrome's. Checked: the frames
+  against the capture and the sidecar's offer, in unit tests; Android by compiling (`:voice:compileDebugKotlin`)
+  and rv-voice-mobile's test of the screen's session (asked once, offered, left, ending without the call).
 
 ### Teams calls placed from a chat, audio (2026-11-06)
 
@@ -754,7 +770,7 @@ then run on the bench. kChat has no such plugin: its calls stay kMeet's.
   the Vibez voice screen), camera and screen buttons only where the call can send them, and a chat button
   opening the call's room over the call. Checked by compiling only (Kotlin, TypeScript, rv-voice-mobile
   tests), not run on a device.
-- **Owed**: Chime on Android (this side's screen share, the `#content` socket); the plugin's `MediaMap`. WhatsApp's
+- **Owed**: the plugin's `MediaMap`. WhatsApp's
   video has its own path, below; Teams' is after it.
 
 ### WhatsApp 1:1 calls, audio (2026-11-11)
@@ -1011,9 +1027,17 @@ goes out as this side's video.
   `drive` does. The Kotlin call adds the receive-only transceivers before its first offer (the camera's
   `addTrack` then reuses the first) and opens the channel ordered and in-band; `sendData` queues until it is
   open and what arrives reaches JS as the `data` event (bytes as a number array). **Checked**: compiled and
-  unit-tested only, not run on a device nor against Teams. **Owed**: this side's camera and share in a
-  group call still go through `renegotiate`, where the desktop now offers them up front and posts
-  `updateMediaDescriptions`.
+  unit-tested only, not run on a device nor against Teams. This side's camera and share in a group call
+  (2026-11-26) go as on the desktop: `joinThreadCall` starts the engine with `videoUpFront` and three
+  receivers, the Kotlin call adding a camera and a screen transceiver, `sendrecv` with no track, before
+  them (`prepareVideo`) and swapping their tracks with no new offer; the invitation carries
+  `mediaDescriptions` (`describeMedia`, all `recvonly`); `runCall`, once accepted with the
+  `updateMediaDescriptions` link, posts each change the engine reports (`ExternalCallEngine.sent`, the call
+  screen reading the local member's camera and screen) one at a time (`sendingSteps`,
+  `updateMediaDescriptionsBody`), after `applyChannelParameters` (`cameraCapabilitiesBody`, its parameter
+  in serde_json's sorted keys) before the camera first goes out and `updateParticipantProperties`
+  (`screenSharerBody`) before each share. 1:1 calls keep `renegotiate`. Compiled and unit-tested only
+  (rv-teams' tests ported, and the run against a fake engine).
 
 ## Order
 

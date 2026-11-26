@@ -67,7 +67,7 @@ Mattermost's Calls plugin a screen, and a camera where the plugin enables video.
 until turned on; a video call is answered in the app. A Teams call carried natively shows the other
 person's camera and shared screen, and sends this side's camera and screen (GTK, SwiftUI and Android, not
 yet run against Teams); in a channel's or meeting's call, up to four people's cameras and a shared
-screen, asked of Teams' media server (GTK, SwiftUI and Android), and this side's camera and screen there go as Teams' web client sends them (GTK and SwiftUI; Android still renegotiates). A Slack huddle shows the others' cameras and screens and sends this side's camera (GTK and Android) and screen (GTK and SwiftUI). A header button opens the chat of the call's room beside the
+screen, asked of Teams' media server (GTK, SwiftUI and Android), and this side's camera and screen there go as Teams' web client sends them (GTK, SwiftUI and Android). A Slack huddle shows the others' cameras and screens and sends this side's camera (GTK and Android) and screen (GTK, SwiftUI and Android, as a session of its own). A header button opens the chat of the call's room beside the
 call. Android's call screen (`app/call/[callId].tsx`) does the same with its stage and strip, and its chat
 button opens the call's room over the call while it goes on. Mechanism:
 [native calls](../architecture/native-calls.md#video-in-native-calls-2026-11-12), for WhatsApp
@@ -109,6 +109,8 @@ Start, join, call card with Join, profile Call: both apps ([parity](../parity.md
 
 - apps/desktop/crates/rv-gtk/src/native_call.rs, apps/desktop/crates/rv-gtk/src/call_chat.rs
 - crates/rv-call/src/chime/video.rs, crates/rv-call/src/chime/client.rs, apps/desktop/voice/src/call.rs (huddle video and screen share)
+- crates/rv-voice-mobile/src/call.rs, apps/mobile/modules/voice/android/src/main/java/com/rocketvibe/voice/JitsiCall.kt (Android's huddle screen share and Teams group sending)
+- packages/provider-teams/src/calling.ts
 - apps/desktop/macos/Sources/RocketVibe/NativeCallWindow.swift
 - apps/desktop/crates/rv-core/src/supervisor.rs
 - apps/desktop/crates/rv-gtk/src/window.rs
