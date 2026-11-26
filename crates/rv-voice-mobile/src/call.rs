@@ -584,6 +584,12 @@ mod tests {
         fn video_stream(&self, kind: VideoKind) -> String {
             format!("me-{}", kind_name(kind))
         }
+        fn receive_videos(&self) -> usize {
+            2
+        }
+        fn offers_to_receive_video(&self) -> bool {
+            true
+        }
     }
 
     #[test]
@@ -597,6 +603,15 @@ mod tests {
                 "offersLocalSections": false,
             })
         );
+    }
+
+    #[test]
+    fn an_offer_wanted_says_how_many_sections_receive_video() {
+        assert_eq!(
+            session_event_json(&Fake, &Event::OfferWanted { relay_only: true }),
+            json!({"type": "offerWanted", "relayOnly": true, "receiveVideos": 2, "receiveVideo": true})
+        );
+        assert_eq!(session_event_json(&Fake, &Event::MediaEnded), json!({"type": "media_ended"}));
     }
 
     #[test]
