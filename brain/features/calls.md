@@ -51,7 +51,7 @@ The desktop applies the same exception with the same bounds (2026-09-30), and th
 
 ## Slack huddles
 
-A huddle runs natively first, in the same call window as a native Jitsi call: `rooms.join` hands out Amazon Chime credentials and the voice engine joins (GTK, SwiftUI through the `rv-voice` sidecar, Android over JNI). No sidecar, or a join that fails, opens the huddle's page as before ([Slack session](../architecture/slack-session.md#people-emoji-and-huddles)). Chime mixes the audio, so a person's own volume cannot be set. On the desktop the others' cameras and shared screens show (GTK, and SwiftUI through the same sidecar); GTK sends this side's camera, and both share this side's screen, as Slack's web client does, under a second attendee on a socket and peer connection of its own; Android huddles stay audio only. Video and the screen share were built from a capture and are not yet run against a live huddle. Mechanism and what was run live: [native calls](../architecture/native-calls.md#slack-huddles-over-chime-audio-2026-11-06), its video [here](../architecture/native-calls.md#slack-huddles-over-chime-video-2026-11-24).
+A huddle runs natively first, in the same call window as a native Jitsi call: `rooms.join` hands out Amazon Chime credentials and the voice engine joins (GTK, SwiftUI through the `rv-voice` sidecar, Android over JNI). No sidecar, or a join that fails, opens the huddle's page as before ([Slack session](../architecture/slack-session.md#people-emoji-and-huddles)). Chime mixes the audio, so a person's own volume cannot be set. The others' cameras and shared screens show (GTK, SwiftUI through the same sidecar, and Android) and GTK and Android send this side's camera; sharing this side's screen in a huddle is not built. Video was built from a capture and is not yet run against a live huddle. Mechanism and what was run live: [native calls](../architecture/native-calls.md#slack-huddles-over-chime-audio-2026-11-06), its video [here](../architecture/native-calls.md#slack-huddles-over-chime-video-2026-11-24).
 
 ## Teams
 
@@ -67,7 +67,7 @@ Mattermost's Calls plugin a screen, and a camera where the plugin enables video.
 until turned on; a video call is answered in the app. A Teams call carried natively shows the other
 person's camera and shared screen, and sends this side's camera and screen (GTK, SwiftUI and Android, not
 yet run against Teams); in a channel's or meeting's call, up to four people's cameras and a shared
-screen, asked of Teams' media server (GTK and SwiftUI). A Slack huddle shows the others' cameras and screens and sends this side's camera, not its screen (GTK and SwiftUI; Android owes it). A header button opens the chat of the call's room beside the
+screen, asked of Teams' media server (GTK and SwiftUI). A Slack huddle shows the others' cameras and screens and sends this side's camera, not its screen (GTK, SwiftUI and Android). A header button opens the chat of the call's room beside the
 call. Android's call screen (`app/call/[callId].tsx`) does the same with its stage and strip, and its chat
 button opens the call's room over the call while it goes on. Mechanism:
 [native calls](../architecture/native-calls.md#video-in-native-calls-2026-11-12), for WhatsApp

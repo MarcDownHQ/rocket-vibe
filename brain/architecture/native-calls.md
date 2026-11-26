@@ -425,10 +425,18 @@ Built (desktop):
   `offers_carry_the_receiving_sections_asked_and_keep_them`).
 - **Windows**: nothing huddle-specific; GTK shows the camera button from `Event::CallVideo`, the
   others' cameras in tiles and a screen on the stage as for Jitsi.
-- **Not built**: PAUSE/RESUME of a group; Android
-  (`rv-voice-mobile`'s offers carry no video section, so nothing is subscribed, and its peer
-  connection offers again on each change of the others' videos). **Not run** against a live huddle:
-  the capture, unit tests and the sidecar's offer test only.
+- **Android** (2026-11-26): `rv-voice-mobile`'s `offerWanted` event carries `receiveVideos` and
+  `receiveVideo` (the session's `receive_videos` and `offers_to_receive_video`, read as it goes
+  out, `session_event_json`); `JitsiSession` (`JitsiCall.kt`) keeps the most asked for in the session,
+  adds receive-only video transceivers up to it before each offer (`addReceivers`, none removed) and
+  sets `OfferToReceiveVideo` once video was wanted. The answer's `v_<mid>` streams name each track
+  through the call's video list (`shown()` matches it by stream); the camera goes on a send-only
+  section of its own, as for Mattermost. The call screen needed nothing: its camera button follows
+  `canCamera`, true for Chime since the shared code's `can_send(Camera)`.
+- **Not built**: this side's screen share (`can_send(Screen)` stays false: it needs the `#content`
+  attendee's socket and a second peer connection); PAUSE/RESUME of a group. **Not run** against a
+  live huddle: the capture, unit tests and the sidecar's offer test only; Android by compiling (the
+  Android cross-compile, `:voice:compileDebugKotlin`) and rv-voice-mobile's tests only.
 
 ### Slack huddles over Chime, screen share (2026-11-26)
 
@@ -746,8 +754,7 @@ then run on the bench. kChat has no such plugin: its calls stay kMeet's.
   the Vibez voice screen), camera and screen buttons only where the call can send them, and a chat button
   opening the call's room over the call. Checked by compiling only (Kotlin, TypeScript, rv-voice-mobile
   tests), not run on a device.
-- **Owed**: Chime (this side's screen share, the `#content` socket; huddle video on Android, whose
-  rv-voice-mobile offers carry no video section); the plugin's `MediaMap`. WhatsApp's
+- **Owed**: Chime (this side's screen share, the `#content` socket); the plugin's `MediaMap`. WhatsApp's
   video has its own path, below; Teams' is after it.
 
 ### WhatsApp 1:1 calls, audio (2026-11-11)
