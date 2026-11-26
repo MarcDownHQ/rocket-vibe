@@ -114,6 +114,11 @@ pub enum Command {
         /// for a server that sends each video it is asked for on a section of its own.
         #[serde(default, skip_serializing_if = "is_zero")]
         receive_videos: usize,
+        /// With `video`: the first offer carries the camera's and the screen's
+        /// sections, sending nothing yet and receiving, and a start or stop
+        /// only changes what they send, with no new offer.
+        #[serde(default, skip_serializing_if = "is_false")]
+        video_up_front: bool,
     },
     /// A binary message on an external call's data channel, sent once it is open.
     SendData {
@@ -635,6 +640,7 @@ mod tests {
                     video: true,
                     data_channel: None,
                     receive_videos: 0,
+                    video_up_front: false,
                 },
                 json!({"type":"connect_external","identity":"e","answering":false,"video":true}),
             ),
@@ -644,9 +650,10 @@ mod tests {
                     answering: false,
                     video: true,
                     data_channel: Some("main-channel".into()),
-                    receive_videos: 4,
+                    receive_videos: 3,
+                    video_up_front: true,
                 },
-                json!({"type":"connect_external","identity":"e","answering":false,"video":true,"data_channel":"main-channel","receive_videos":4}),
+                json!({"type":"connect_external","identity":"e","answering":false,"video":true,"data_channel":"main-channel","receive_videos":3,"video_up_front":true}),
             ),
             (Command::SendData { data: vec![16, 0] }, json!({"type":"send_data","data":[16,0]})),
             (

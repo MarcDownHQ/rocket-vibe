@@ -201,6 +201,13 @@ pub trait CallSignaling {
     fn receive_videos(&self) -> usize {
         0
     }
+    /// Whether the first offer carries this side's camera and screen sections,
+    /// both sending and receiving, before either has a track: a capture
+    /// starting or stopping then only swaps its track, with no new offer, the
+    /// app telling the provider what is sent its own way (a Teams group call).
+    fn video_up_front(&self) -> bool {
+        false
+    }
     /// The stream id a local video track carries; the microphone's by default.
     fn video_stream(&self, _kind: VideoKind) -> String {
         self.local_id().to_owned()

@@ -645,14 +645,15 @@ async fn set_answer(call: &Call, sdp: &str) -> Result<(), String> {
 /// The signalling of a call the app speaks itself: this side offers, and the
 /// app answers through the window's commands, or the app's offer comes first
 /// (`answering`). With `video` the other side takes this side's camera and
-/// screen, and each start or stop is offered anew. It cannot be joined again
-/// from here.
+/// screen, and each start or stop is offered anew, unless `video_up_front`
+/// put their sections in the first offer. It cannot be joined again from here.
 pub struct External {
     identity: String,
     answering: bool,
     video: bool,
     data_channel: Option<String>,
     receive_videos: usize,
+    video_up_front: bool,
     started: u8,
     offer_wanted: bool,
 }
@@ -664,8 +665,18 @@ impl External {
         video: bool,
         data_channel: Option<String>,
         receive_videos: usize,
+        video_up_front: bool,
     ) -> Self {
-        External { identity, answering, video, data_channel, receive_videos, started: 0, offer_wanted: false }
+        External {
+            identity,
+            answering,
+            video,
+            data_channel,
+            receive_videos,
+            video_up_front: video && video_up_front,
+            started: 0,
+            offer_wanted: false,
+        }
     }
 }
 
@@ -729,6 +740,10 @@ impl CallSignaling for External {
         self.receive_videos
     }
 
+    fn video_up_front(&self) -> bool {
+        self.video_up_front
+    }
+
     fn can_send(&self, _kind: VideoKind) -> bool {
         self.video
     }
@@ -753,7 +768,7 @@ impl CallSignaling for External {
     }
 
     async fn set_video(&mut self, _video: LocalVideo) -> Result<(), rv_call::Error> {
-        self.offer_wanted = self.video;
+        self.offer_wanted = self.video && !self.video_up_front;
         Ok(())
     }
 }
@@ -1025,6 +1040,9 @@ impl Call {
                     error("publish_failed");
                 }
                 if let Some(video) = &mut self.video {
+                    if session.video_up_front() {
+                        video.prepare(&pc, &|kind| session.video_stream(kind));
+                    }
                     video
                         .attach(&pc, factory, &|kind| session.video_stream(kind), &|kind| session.reuses_section(kind));
                 }
@@ -1298,6 +1316,27 @@ impl Videos {
                 if self.slot(source).take().is_some() {
                     error(code);
                 }
+            }
+        }
+    }
+
+    /// A sender for the camera and one for the screen, with no track yet, on
+    /// sections that both send and receive.
+    fn prepare(&mut self, pc: &PeerConnection, streams: &dyn Fn(VideoKind) -> String) {
+        for source in [Source::Camera, Source::Screen] {
+            if self.senders.contains_key(&source) {
+                continue;
+            }
+            let init = livekit::webrtc::rtp_transceiver::RtpTransceiverInit {
+                direction: livekit::webrtc::rtp_transceiver::RtpTransceiverDirection::SendRecv,
+                stream_ids: vec![streams(kind_of(source))],
+                send_encodings: Vec::new(),
+            };
+            match pc.add_transceiver_for_media(livekit::webrtc::MediaType::Video, init) {
+                Ok(transceiver) => {
+                    self.senders.insert(source, (transceiver.sender(), false));
+                }
+                Err(e) => diagnose(&format!("call: video sender: {e:?}")),
             }
         }
     }
@@ -1609,7 +1648,7 @@ mod tests {
 
     #[tokio::test]
     async fn an_external_call_offers_once_however_often_it_is_asked() {
-        let mut session = External::new("me".into(), false, false, None, 0);
+        let mut session = External::new("me".into(), false, false, None, 0, false);
         assert!(matches!(next(&mut session).await, Some(Some(CallEvent::IceServers(_)))));
         assert!(matches!(next(&mut session).await, Some(Some(CallEvent::OfferWanted { .. }))));
         for _ in 0..1000 {
@@ -1619,7 +1658,7 @@ mod tests {
 
     #[tokio::test]
     async fn an_answering_call_never_offers() {
-        let mut session = External::new("me".into(), true, false, None, 0);
+        let mut session = External::new("me".into(), true, false, None, 0, false);
         assert!(matches!(next(&mut session).await, Some(Some(CallEvent::IceServers(_)))));
         for _ in 0..1000 {
             assert!(next(&mut session).await.is_none());
@@ -1628,7 +1667,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_video_call_offers_again_for_each_change_of_what_it_sends() {
-        let mut session = External::new("me".into(), true, true, None, 0);
+        let mut session = External::new("me".into(), true, true, None, 0, false);
         assert!(matches!(next(&mut session).await, Some(Some(CallEvent::IceServers(_)))));
         assert!(next(&mut session).await.is_none());
         assert!(session.can_send(VideoKind::Camera) && session.can_send(VideoKind::Screen));
@@ -1638,7 +1677,7 @@ mod tests {
         session.set_video(LocalVideo { camera: true, screen: false }).await.unwrap();
         assert!(matches!(next(&mut session).await, Some(Some(CallEvent::OfferWanted { relay_only: false }))));
         assert!(next(&mut session).await.is_none(), "once per change");
-        let mut audio = External::new("me".into(), false, false, None, 0);
+        let mut audio = External::new("me".into(), false, false, None, 0, false);
         audio.set_video(LocalVideo { camera: true, screen: false }).await.unwrap();
         assert!(!audio.can_send(VideoKind::Camera) && !audio.offers_to_receive_video());
         assert!(matches!(next(&mut audio).await, Some(Some(CallEvent::IceServers(_)))));
@@ -1668,7 +1707,7 @@ mod tests {
         let factory = PeerConnectionFactory::default();
         let screen = || Some(NativeVideoSource::new(VideoResolution { width: 16, height: 16 }, true));
         let wanted = || ShareNews::Event(Some(CallEvent::OfferWanted { relay_only: false }));
-        let mut share = Share::new(External::new("me".into(), false, true, None, 0));
+        let mut share = Share::new(External::new("me".into(), false, true, None, 0, false));
         let servers = ShareNews::Event(Some(CallEvent::IceServers(Vec::new())));
         assert!(matches!(share.step(servers, &factory, screen()).await, Step::Going));
         assert!(matches!(share.step(wanted(), &factory, screen()).await, Step::Going));
@@ -1688,7 +1727,7 @@ mod tests {
         assert!(matches!(share.step(ended, &factory, None).await, Step::Failed));
         share.close();
 
-        let mut bare = Share::new(External::new("me".into(), false, true, None, 0));
+        let mut bare = Share::new(External::new("me".into(), false, true, None, 0, false));
         assert!(matches!(bare.step(wanted(), &factory, None).await, Step::Failed), "no screen, no share");
         assert!(matches!(bare.step(ShareNews::Event(None), &factory, None).await, Step::Failed));
     }
@@ -1727,6 +1766,50 @@ mod tests {
             ["a=inactive", "a=inactive", "a=inactive"],
             "the legacy option takes receiving away from every video section"
         );
+    }
+
+    #[tokio::test]
+    async fn a_call_with_video_up_front_offers_its_sections_once_and_swaps_their_tracks() {
+        let session = External::new("me".into(), false, true, None, 1, true);
+        assert!(session.video_up_front());
+        assert!(!External::new("me".into(), false, false, None, 0, true).video_up_front(), "an audio call has none");
+        let factory = PeerConnectionFactory::default();
+        let (tx, _rx) = mpsc::unbounded_channel();
+        let (internal, _news) = mpsc::unbounded_channel();
+        let mut videos = Videos::new(VideoOut { frames: None, fake: true }, internal);
+        let mut call = Call::new(audio::Mix::new());
+        let pc = open(&factory, Vec::new(), false, tx).unwrap();
+        videos.prepare(&pc, &|kind| session.video_stream(kind));
+        videos.prepare(&pc, &|kind| session.video_stream(kind));
+        call.pc = Some(pc);
+        call.add_receivers(session.receive_videos());
+        let first = offer(call.pc.as_ref().unwrap(), true).await.unwrap();
+        assert_eq!(receiving(&first), ["a=sendrecv", "a=sendrecv", "a=recvonly"], "{first}");
+        for stream in ["a=msid:me-camera ", "a=msid:me-screen "] {
+            assert!(first.contains(stream), "{stream}: {first}");
+        }
+        assert_eq!(videos.sending(), LocalVideo::default());
+
+        let pc = call.pc.as_ref().unwrap();
+        let streams = |kind| session.video_stream(kind);
+        videos.want(Source::Camera, true, None, None);
+        videos.news(Internal::CameraReady);
+        videos.attach(pc, &factory, &streams, &|kind| session.reuses_section(kind));
+        assert_eq!(videos.sending(), LocalVideo { camera: true, screen: false });
+        let on = offer(pc, true).await.unwrap();
+        assert_eq!(receiving(&on), ["a=sendrecv", "a=sendrecv", "a=recvonly"], "no section added: {on}");
+        videos.want(Source::Camera, false, None, None);
+        videos.attach(pc, &factory, &streams, &|kind| session.reuses_section(kind));
+        assert_eq!(videos.sending(), LocalVideo::default());
+    }
+
+    #[tokio::test]
+    async fn a_call_with_video_up_front_never_offers_again_for_its_video() {
+        let mut session = External::new("me".into(), false, true, None, 0, true);
+        assert!(matches!(next(&mut session).await, Some(Some(CallEvent::IceServers(_)))));
+        assert!(matches!(next(&mut session).await, Some(Some(CallEvent::OfferWanted { .. }))));
+        session.set_video(LocalVideo { camera: true, screen: true }).await.unwrap();
+        assert!(next(&mut session).await.is_none());
     }
 }
 

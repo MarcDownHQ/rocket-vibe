@@ -589,6 +589,7 @@ impl VoiceController {
             video: true,
             data_channel: data_channel.map(str::to_owned),
             receive_videos,
+            video_up_front: false,
         };
         self.start(label.to_owned(), true, None, None, connect).await
     }
@@ -603,6 +604,7 @@ impl VoiceController {
             video: true,
             data_channel: None,
             receive_videos: 0,
+            video_up_front: false,
         };
         self.start(label.to_owned(), true, None, None, connect).await
     }

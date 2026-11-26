@@ -162,14 +162,30 @@ async fn run() {
                     }
                     return call::run_pcm(address, voice.fake, voice.video_out(), &mut commands).await;
                 }
-                Some(Ok(Command::ConnectExternal { identity, answering, video, data_channel, receive_videos })) => {
+                Some(Ok(Command::ConnectExternal {
+                    identity,
+                    answering,
+                    video,
+                    data_channel,
+                    receive_videos,
+                    video_up_front,
+                })) => {
                     if voice.room.is_some() {
                         error("already_connected");
                         continue;
                     }
                     let join = || {
                         let (identity, data_channel) = (identity.clone(), data_channel.clone());
-                        async move { Ok::<_, rv_call::Error>(call::External::new(identity, answering, video, data_channel, receive_videos)) }
+                        async move {
+                            Ok::<_, rv_call::Error>(call::External::new(
+                                identity,
+                                answering,
+                                video,
+                                data_channel,
+                                receive_videos,
+                                video_up_front,
+                            ))
+                        }
                     };
                     return call::run(join, voice.fake, voice.video_out(), &mut commands).await;
                 }
