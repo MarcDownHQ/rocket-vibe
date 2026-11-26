@@ -158,6 +158,8 @@ internal class JitsiSession(
   private var external = false
   /** That call takes this side's camera and screen, each start or stop offered anew. */
   private var externalVideo = false
+  /** Their sections come in the first offer, sending nothing yet: a start or stop only swaps the track. */
+  private var videoUpFront = false
   var onLocalOffer: ((String) -> Unit)? = null
   private var relayOnly = false
 
@@ -314,11 +316,14 @@ internal class JitsiSession(
    * and offers anew after each start or stop once the last offer was answered.
    * `dataChannel` names a data channel the offer opens, its messages going to
    * [onData]; `receiveVideos` receive-only video sections go in every offer, the
-   * camera taking the first. Needs no library: nothing here crosses JNI. Called on the main thread.
+   * camera taking the first. With `videoUpFront` the first offer carries a camera
+   * and a screen section, both sending and receiving with no track yet, and a start
+   * or stop swaps the track with no new offer. Needs no library: nothing here crosses JNI. Called on the main thread.
    */
-  fun startExternal(identity: String, answering: Boolean, video: Boolean, dataChannel: String? = null, receiveVideos: Int = 0) {
+  fun startExternal(identity: String, answering: Boolean, video: Boolean, dataChannel: String? = null, receiveVideos: Int = 0, videoUpFront: Boolean = false) {
     external = true
     externalVideo = video
+    this.videoUpFront = video && videoUpFront
     channelLabel = dataChannel?.takeIf { it.isNotEmpty() }
     channelProtocol = ""
     receivers = receiveVideos.coerceAtLeast(0)
@@ -595,11 +600,22 @@ internal class JitsiSession(
         })
       }
     }
+    if (videoUpFront) prepareVideo(created)
     addReceivers(created)
     microphone = track
     pc = created
     attachVideo()
     return created
+  }
+
+  /** A sender for the camera and one for the screen, with no track yet, on sections that both send and receive. */
+  private fun prepareVideo(p: PeerConnection) {
+    for (kind in listOf(CAMERA, SCREEN)) {
+      if (senders.containsKey(kind)) continue
+      val init = RtpTransceiver.RtpTransceiverInit(RtpTransceiver.RtpTransceiverDirection.SEND_RECV, listOf(streams[kind] ?: localId))
+      runCatching { p.addTransceiver(MediaStreamTrack.MediaType.MEDIA_TYPE_VIDEO, init) }.getOrNull()?.let { senders[kind] = it.sender }
+        ?: Log.w("RocketVibeVoice", "jitsi: $kind sender refused")
+    }
   }
 
   /** Receive-only video sections up to [receivers], none ever removed. */
@@ -676,7 +692,7 @@ internal class JitsiSession(
     if (now != told) {
       told = now
       if (handle != 0L) JitsiCall.video(handle, now.first, now.second)
-      else if (external && externalVideo) offerInTurn()
+      else if (external && externalVideo && !videoUpFront) offerInTurn()
     }
     onChange()
   }

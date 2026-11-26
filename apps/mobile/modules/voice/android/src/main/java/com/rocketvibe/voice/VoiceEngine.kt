@@ -567,13 +567,13 @@ object VoiceEngine {
   /**
    * A call whose signalling the app speaks itself (Teams), with `video` its camera
    * and screen too: each offer arrives through [onLocalOffer], the rest through
-   * the `remote*` functions.
+   * the `remote*` functions. `videoUpFront`: their sections come in the first offer.
    */
-  fun connectExternal(callId: String, identity: String, title: String, answering: Boolean, video: Boolean, dataChannel: String? = null, receiveVideos: Int = 0): Boolean =
+  fun connectExternal(callId: String, identity: String, title: String, answering: Boolean, video: Boolean, dataChannel: String? = null, receiveVideos: Int = 0, videoUpFront: Boolean = false): Boolean =
     connectNative(callId, title) { session ->
       session.onLocalOffer = { sdp -> onLocalOffer?.invoke(sdp) }
       session.onData = { data -> onData?.invoke(data) }
-      session.startExternal(identity, answering, video, dataChannel, receiveVideos)
+      session.startExternal(identity, answering, video, dataChannel, receiveVideos, videoUpFront)
       true
     }
 

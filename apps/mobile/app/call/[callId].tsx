@@ -225,7 +225,7 @@ function Call({
         });
         const engine: ExternalCallEngine = {
           start: async (identity, options) => {
-            if (!await voice.connectExternal(callId, identity, title, false, true, options?.dataChannel ?? null, options?.receiveVideos ?? 0)) throw new Error('voice_unavailable');
+            if (!await voice.connectExternal(callId, identity, title, false, true, options?.dataChannel ?? null, options?.receiveVideos ?? 0, options?.videoUpFront === true)) throw new Error('voice_unavailable');
           },
           offer: () => offered,
           answer: (sdp) => voice.remoteAnswer(sdp),
@@ -297,7 +297,7 @@ function Call({
         await requestMicrophone();
         const engine: ExternalCallEngine = {
           start: async (identity, options) => {
-            if (!await voice.connectExternal(callId, identity, title, true, true, options?.dataChannel ?? null, options?.receiveVideos ?? 0)) throw new Error('voice_unavailable');
+            if (!await voice.connectExternal(callId, identity, title, true, true, options?.dataChannel ?? null, options?.receiveVideos ?? 0, options?.videoUpFront === true)) throw new Error('voice_unavailable');
           },
           offer: () => Promise.reject(new Error('answering')),
           answer: (sdp) => voice.remoteAnswer(sdp),
@@ -511,7 +511,7 @@ async function toggleCamera(on: boolean, t: T): Promise<void> {
 }
 
 /** The voice engine's video, for a call whose signalling the app speaks (Teams): its later offers, what this side sends, whose the other side's videos are, and its data channel. */
-function externalVideo(voice: NonNullable<typeof VoiceNative>): Pick<ExternalCallEngine, 'offers' | 'sending' | 'videos' | 'sendData' | 'data'> {
+function externalVideo(voice: NonNullable<typeof VoiceNative>): Pick<ExternalCallEngine, 'offers' | 'sending' | 'sent' | 'videos' | 'sendData' | 'data'> {
   return {
     offers: (listener) => {
       const sub = voice.addListener('localOffer', ({ sdp }) => listener(sdp));
@@ -520,6 +520,16 @@ function externalVideo(voice: NonNullable<typeof VoiceNative>): Pick<ExternalCal
     sending: () => {
       const now = voice.snapshot();
       return { camera: now.camera === true, screen: now.sharing === true };
+    },
+    sent: (listener) => {
+      let last = '';
+      const sub = voice.addListener('change', (next) => {
+        const local = next.participants.find((p) => p.local);
+        const now = { camera: local?.camera === true, screen: local?.screen === true };
+        const key = `${now.camera} ${now.screen}`;
+        if (key !== last) { last = key; listener(now); }
+      });
+      return () => sub.remove();
     },
     videos: (videos) => voice.remoteVideos(videos),
     sendData: (data) => voice.sendData(Array.from(data)),

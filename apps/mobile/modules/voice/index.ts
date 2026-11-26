@@ -53,9 +53,10 @@ type Bridge={
    * ([`remoteOffer`]), no local offer. `video`: it takes this side's camera and screen, each
    * start or stop offered anew (streams `<identity>-camera`, `<identity>-screen`). `dataChannel`:
    * a data channel the offer opens, what arrives on it coming on `data`. `receiveVideos`: receive-only
-   * video sections every offer carries, the camera taking the first.
+   * video sections every offer carries, the camera taking the first. `videoUpFront`: the first offer
+   * carries the camera's and the screen's sections, sending nothing yet, and a start or stop makes no new offer.
    */
-  connectExternal(callId:string,identity:string,title:string,answering:boolean,video:boolean,dataChannel:string|null,receiveVideos:number):Promise<boolean>;
+  connectExternal(callId:string,identity:string,title:string,answering:boolean,video:boolean,dataChannel:string|null,receiveVideos:number,videoUpFront:boolean):Promise<boolean>;
   /** A binary message on such a call's data channel, sent once it opens (bytes 0 to 255). */
   sendData(data:number[]):Promise<void>;
   /**

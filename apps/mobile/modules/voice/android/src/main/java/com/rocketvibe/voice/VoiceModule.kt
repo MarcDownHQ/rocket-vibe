@@ -82,8 +82,8 @@ class VoiceModule : Module() {
     AsyncFunction("connectMattermost") { callId: String, server: String, token: String, channelId: String, userId: String, iceServers: String, title: String, sends: MattermostSends ->
       VoiceEngine.connectMattermost(callId, MattermostCall(server, token, channelId, userId, iceServers, sends.screen, sends.camera), title)
     }.runOnQueue(Queues.MAIN)
-    AsyncFunction("connectExternal") { callId: String, identity: String, title: String, answering: Boolean, video: Boolean, dataChannel: String?, receiveVideos: Int ->
-      VoiceEngine.connectExternal(callId, identity, title, answering, video, dataChannel, receiveVideos)
+    AsyncFunction("connectExternal") { callId: String, identity: String, title: String, answering: Boolean, video: Boolean, dataChannel: String?, receiveVideos: Int, videoUpFront: Boolean ->
+      VoiceEngine.connectExternal(callId, identity, title, answering, video, dataChannel, receiveVideos, videoUpFront)
     }.runOnQueue(Queues.MAIN)
     AsyncFunction("sendData") { data: List<Int> ->
       VoiceEngine.sendData(ByteArray(data.size) { data[it].toByte() })

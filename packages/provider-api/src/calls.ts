@@ -22,8 +22,11 @@ export type MattermostCallCredentials={server:string;token:string;channelId:stri
 
 /** The voice engine, for a call whose signalling the provider speaks itself. */
 export type ExternalCallEngine={
-  /** Opens the session under this identity; `dataChannel` names a data channel the offer opens, `receiveVideos` the receive-only video sections it carries (the camera taking the first). */
-  start:(identity:string,options?:{dataChannel?:string;receiveVideos?:number})=>Promise<void>;
+  /**
+   * Opens the session under this identity; `dataChannel` names a data channel the offer opens, `receiveVideos` the receive-only video sections it carries (the camera taking the first).
+   * With `videoUpFront` the first offer carries the camera's and the screen's sections, sending nothing yet, and a start or stop makes no new offer.
+   */
+  start:(identity:string,options?:{dataChannel?:string;receiveVideos?:number;videoUpFront?:boolean})=>Promise<void>;
   /** The local offer, once its candidates are gathered. */
   offer:()=>Promise<string>;
   answer:(sdp:string)=>Promise<void>;
@@ -38,6 +41,8 @@ export type ExternalCallEngine={
   offers?:(listener:(sdp:string)=>void)=>()=>void;
   /** What this side sends now, as the call screen asked. */
   sending?:()=>{camera:boolean;screen:boolean};
+  /** Tells each change of what this side's video sections send, their track on; returns its unsubscribe. */
+  sent?:(listener:(now:{camera:boolean;screen:boolean})=>void)=>()=>void;
   /** Every video the other side sends now, by the stream id its section carries: whose, and whether a shared screen. */
   videos?:(videos:{stream:string;member:string;screen:boolean}[])=>Promise<void>;
   /** A binary message on the data channel `start` opened, sent once it is open. */
