@@ -54,6 +54,10 @@ internal object JitsiCall {
   @JvmStatic external fun video(handle: Long, camera: Boolean, screen: Boolean)
   /** A remote video track arrived: a `named` event follows when its own ids say whose it is. */
   @JvmStatic external fun remoteVideo(handle: Long, track: String, stream: String)
+  /** This side's screen capture is ready, a session of its own then joining, or stopped, that session left. */
+  @JvmStatic external fun share(handle: Long, on: Boolean)
+  /** That session's offer, its candidates in it. */
+  @JvmStatic external fun shareOffer(handle: Long, sdp: String)
   @JvmStatic external fun leave(handle: Long)
   @JvmStatic external fun free(handle: Long)
 }
@@ -120,6 +124,12 @@ internal class JitsiSession(
   private val streams = HashMap<String, String>()
   /** The kinds whose local track goes on the first unused section, the provider's offers carrying this side's (Jitsi), else on a section of its own. */
   private var reused = emptySet<String>()
+  /** The screen goes on a session of its own (Chime's `#content` attendee), whose peer connection sends it alone; [shared] once that one connected. */
+  private var screenApart = false
+  private var share: Share? = null
+  private var shared = false
+  /** Called when the screen's own session failed before it sent anything: the capture is already off. */
+  var onScreenUnavailable: (() -> Unit)? = null
   /** This side's captures, kept across media sessions; their tracks and senders, for the current peer connection. */
   private val captures = HashMap<String, LocalCapture>()
   private val localTracks = HashMap<String, Pair<VideoSource, VideoTrack>>()
@@ -492,6 +502,7 @@ internal class JitsiSession(
         streams[CAMERA] = event.optString("cameraStream", localId)
         streams[SCREEN] = event.optString("screenStream", localId)
         reused = if (event.optBoolean("offersLocalSections")) setOf(CAMERA, SCREEN) else emptySet()
+        screenApart = event.optBoolean("screenApart")
         receivers = 0
         receiveVideo = false
         // A capture the provider does not take ends (a rejoin keeps what it still takes).
@@ -526,6 +537,7 @@ internal class JitsiSession(
         localOffer()
       }
       "answer" -> remoteAnswerOfProvider(event.getString("sdp"))
+      "share" -> handleShare(event.getJSONObject("event"))
       "levels" -> {
         val list = event.getJSONArray("levels")
         val now = SystemClock.elapsedRealtime()
@@ -653,7 +665,7 @@ internal class JitsiSession(
   private fun attachVideo() {
     val p = pc ?: return
     val f = factory ?: return
-    for (kind in listOf(CAMERA, SCREEN)) {
+    for (kind in if (screenApart) listOf(CAMERA) else listOf(CAMERA, SCREEN)) {
       val capture = captures[kind]
       val current = localTracks[kind]
       if (capture != null && current == null) {
@@ -684,15 +696,24 @@ internal class JitsiSession(
     }
   }
 
-  /** This side's video on the peer connection, then the provider told what is sent. */
+  /** This side's video on the peer connection, or the screen on a session of its own, then the provider told what is sent. */
   private fun syncVideo() {
     pcmVideo?.let { video ->
       video.send(captures[SCREEN] ?: captures[CAMERA], captures[SCREEN] != null)
       return onChange()
     }
     if (pc == null) return onChange()
+    if (screenApart) {
+      val screen = captures[SCREEN]
+      val current = share
+      if (screen == null) closeShare()
+      else if (current == null && handle != 0L) {
+        share = Share()
+        JitsiCall.share(handle, true)
+      } else current?.source?.let { if (screen.target == null) screen.target = it.capturerObserver }
+    }
     attachVideo()
-    val now = (localTracks[CAMERA] != null) to (localTracks[SCREEN] != null)
+    val now = (localTracks[CAMERA] != null) to (if (screenApart) shared else localTracks[SCREEN] != null)
     if (now != told) {
       told = now
       if (handle != 0L) JitsiCall.video(handle, now.first, now.second)
@@ -713,6 +734,148 @@ internal class JitsiSession(
     if (!deferred || making || pc?.signalingState() != PeerConnection.SignalingState.STABLE) return
     deferred = false
     localOffer()
+  }
+
+  /**
+   * This side's screen on a session of its own and a peer connection that sends
+   * it alone, with a microphone that sends silence, as Chime's web client does.
+   */
+  private inner class Share {
+    var id = ""
+    var ice: List<PeerConnection.IceServer> = emptyList()
+    var relayOnly = false
+    var pc: PeerConnection? = null
+    var source: VideoSource? = null
+    var track: VideoTrack? = null
+    var offering = false
+    var connected = false
+
+    fun close() {
+      val screen = source?.capturerObserver
+      captures[SCREEN]?.let { if (screen != null && it.target === screen) it.target = null }
+      pc?.close(); pc?.dispose(); pc = null
+      track?.dispose(); source?.dispose()
+      track = null; source = null
+    }
+  }
+
+  private fun handleShare(event: JSONObject) {
+    val s = share ?: return
+    when (event.optString("type")) {
+      "local" -> s.id = event.optString("id")
+      "ice" -> s.ice = iceServersOf(event)
+      "offerWanted" -> {
+        s.relayOnly = event.optBoolean("relayOnly")
+        offerShare(s)
+      }
+      "answer" -> s.pc?.setRemoteDescription(object : Sdp() {
+        override fun onSetFailure(error: String?) {
+          super.onSetFailure(error)
+          main.post { if (share === s && !s.connected) failShare() }
+        }
+      }, SessionDescription(SessionDescription.Type.ANSWER, event.getString("sdp")))
+      "ended", "over" -> failShare()
+    }
+  }
+
+  /** The share's peer connection: the silent microphone, then the screen on a section that also receives, as Chrome offers it. */
+  private fun openShare(s: Share): PeerConnection? {
+    val f = factory ?: return null
+    val screen = captures[SCREEN] ?: return null
+    val id = s.id.ifEmpty { "$localId#content" }
+    val p = f.createPeerConnection(rtcConfiguration(s.ice, s.relayOnly), shareObserver(s)) ?: return null
+    val silence = f.createAudioTrack("$id-a0", f.createAudioSource(MediaConstraints()))
+    silence.setEnabled(false)
+    val source = f.createVideoSource(true)
+    val track = f.createVideoTrack("$id-$SCREEN", source)
+    s.pc = p; s.source = source; s.track = track
+    val added = runCatching {
+      p.addTrack(silence, listOf(id))
+      p.addTransceiver(track, RtpTransceiver.RtpTransceiverInit(RtpTransceiver.RtpTransceiverDirection.SEND_RECV, listOf(id)))
+    }.isSuccess
+    if (!added) return null
+    screen.target = source.capturerObserver
+    return p
+  }
+
+  private fun offerShare(s: Share) {
+    val p = s.pc ?: openShare(s) ?: return failShare()
+    val failed = { main.post { if (share === s) failShare() } }
+    p.createOffer(object : Sdp() {
+      override fun onCreateSuccess(offer: SessionDescription) {
+        p.setLocalDescription(object : Sdp() {
+          override fun onSetFailure(error: String?) { super.onSetFailure(error); failed() }
+          override fun onSetSuccess() {
+            main.post {
+              if (closed || share !== s) return@post
+              s.offering = true
+              if (s.connected) return@post sendShareOffer(s)
+              main.postDelayed({ sendShareOffer(s) }, GATHERING_MS)
+              if (p.iceGatheringState() == PeerConnection.IceGatheringState.COMPLETE) sendShareOffer(s)
+            }
+          }
+        }, offer)
+      }
+      override fun onCreateFailure(error: String?) { super.onCreateFailure(error); failed() }
+    }, MediaConstraints())
+  }
+
+  private fun sendShareOffer(s: Share) {
+    if (closed || share !== s || !s.offering) return
+    val sdp = s.pc?.localDescription?.description ?: return
+    s.offering = false
+    if (handle != 0L) JitsiCall.shareOffer(handle, sdp)
+  }
+
+  private fun shareObserver(s: Share) = object : PeerConnection.Observer {
+    override fun onIceCandidate(c: IceCandidate) {
+      if (s.relayOnly) main.postDelayed({ sendShareOffer(s) }, FIRST_CANDIDATE_MS)
+    }
+    override fun onConnectionChange(state: PeerConnection.PeerConnectionState) {
+      main.post {
+        if (closed || share !== s) return@post
+        when (state) {
+          PeerConnection.PeerConnectionState.CONNECTED -> if (!s.connected) {
+            s.connected = true
+            shared = true
+            syncVideo()
+          }
+          PeerConnection.PeerConnectionState.FAILED -> failShare()
+          else -> {}
+        }
+      }
+    }
+    override fun onIceGatheringChange(state: PeerConnection.IceGatheringState) {
+      if (state == PeerConnection.IceGatheringState.COMPLETE) main.post { sendShareOffer(s) }
+    }
+    override fun onSignalingChange(state: PeerConnection.SignalingState) {}
+    override fun onIceConnectionChange(state: PeerConnection.IceConnectionState) {}
+    override fun onIceConnectionReceivingChange(receiving: Boolean) {}
+    override fun onIceCandidatesRemoved(candidates: Array<out IceCandidate>) {}
+    override fun onAddStream(stream: MediaStream) {}
+    override fun onRemoveStream(stream: MediaStream) {}
+    override fun onDataChannel(channel: DataChannel) {}
+    override fun onRenegotiationNeeded() {}
+    override fun onAddTrack(receiver: RtpReceiver, streams: Array<out MediaStream>) {}
+  }
+
+  /** The screen's session left and its peer connection closed; the capture goes on. */
+  private fun closeShare() {
+    val s = share ?: return
+    share = null
+    shared = false
+    if (handle != 0L) JitsiCall.share(handle, false)
+    s.close()
+  }
+
+  /** The screen's session failed: the capture stops and the call goes on, told unavailable when nothing was sent yet. */
+  private fun failShare() {
+    val s = share ?: return
+    val started = s.connected
+    closeShare()
+    captures.remove(SCREEN)?.let { it.stop(); onScreenStopped?.invoke() }
+    if (!started) onScreenUnavailable?.invoke()
+    syncVideo()
   }
 
   /** Called when the screen's capture ends without being asked (Android ended the projection, the provider refused it). */
@@ -989,6 +1152,7 @@ internal class JitsiSession(
 
   /** One session's media: the peer connection, its tracks, who was heard. */
   private fun dropMedia() {
+    share?.close(); share = null; shared = false
     channel?.dispose(); channel = null
     outbox.clear()
     captures.values.forEach { it.target = null }

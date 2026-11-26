@@ -119,6 +119,9 @@ object VoiceEngine {
   private val videoDeclinedListeners = CopyOnWriteArraySet<() -> Unit>()
   fun listenVideoDeclined(listener: () -> Unit) { videoDeclinedListeners.add(listener) }
   fun unlistenVideoDeclined(listener: () -> Unit) { videoDeclinedListeners.remove(listener) }
+  private val screenUnavailableListeners = CopyOnWriteArraySet<() -> Unit>()
+  fun listenScreenUnavailable(listener: () -> Unit) { screenUnavailableListeners.add(listener) }
+  fun unlistenScreenUnavailable(listener: () -> Unit) { screenUnavailableListeners.remove(listener) }
   private val mainThread = android.os.Handler(android.os.Looper.getMainLooper())
   private val mutedMonitor = MutedMonitor { mainThread.post { mutedSpeechListeners.forEach { it() } } }
 
@@ -615,6 +618,9 @@ object VoiceEngine {
         unproject()
         changed()
       }
+    }
+    session.onScreenUnavailable = {
+      if (jitsi === session) screenUnavailableListeners.forEach { it() }
     }
     session.onVideoRefused = {
       if (jitsi === session) {

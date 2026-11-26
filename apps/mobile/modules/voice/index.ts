@@ -115,6 +115,8 @@ type Bridge={
   addListener(event:'level',listener:(event:{level:number})=>void):{remove:()=>void};
   /** The other side of a WhatsApp call refused, or let lapse, the switch to video this side asked for: camera and screen are off. */
   addListener(event:'videoDeclined',listener:()=>void):{remove:()=>void};
+  /** A native call's screen share failed before anything was sent (a Slack huddle's own session for it): the screen is off, the call goes on. */
+  addListener(event:'screenUnavailable',listener:()=>void):{remove:()=>void};
 };
 /**
  * LiveKit audio in a microphone foreground service (Android). Absent from a

@@ -38,6 +38,7 @@ class VoiceModule : Module() {
   private val levelListener: (Double) -> Unit = { level -> sendEvent("level", mapOf("level" to level)) }
   private val mutedSpeechListener: () -> Unit = { sendEvent("mutedSpeech", emptyMap<String, Any>()) }
   private val videoDeclinedListener: () -> Unit = { sendEvent("videoDeclined", emptyMap<String, Any>()) }
+  private val screenUnavailableListener: () -> Unit = { sendEvent("screenUnavailable", emptyMap<String, Any>()) }
   private val hangUpListener: () -> Unit = { sendEvent("hangUp", emptyMap<String, Any>()) }
   private val offerListener: (String) -> Unit = { sdp -> sendEvent("localOffer", mapOf("sdp" to sdp)) }
   private val dataListener: (ByteArray) -> Unit = { data -> sendEvent("data", mapOf("data" to data.map { it.toInt() and 0xff })) }
@@ -45,13 +46,14 @@ class VoiceModule : Module() {
 
   override fun definition() = ModuleDefinition {
     Name("Voice")
-    Events("change", "level", "hangUp", "localOffer", "data", "mutedSpeech", "videoDeclined")
+    Events("change", "level", "hangUp", "localOffer", "data", "mutedSpeech", "videoDeclined", "screenUnavailable")
     OnCreate {
       VoiceEngine.attach(appContext.reactContext ?: throw IllegalStateException("No React context"))
       VoiceEngine.listen(listener)
       VoiceEngine.listenLevel(levelListener)
       VoiceEngine.listenMutedSpeech(mutedSpeechListener)
       VoiceEngine.listenVideoDeclined(videoDeclinedListener)
+      VoiceEngine.listenScreenUnavailable(screenUnavailableListener)
       CallService.listen(hangUpListener)
       VoiceEngine.onLocalOffer = offerListener
       VoiceEngine.onData = dataListener
@@ -61,6 +63,7 @@ class VoiceModule : Module() {
       VoiceEngine.unlistenLevel(levelListener)
       VoiceEngine.unlistenMutedSpeech(mutedSpeechListener)
       VoiceEngine.unlistenVideoDeclined(videoDeclinedListener)
+      VoiceEngine.unlistenScreenUnavailable(screenUnavailableListener)
       CallService.unlisten(hangUpListener)
       VoiceEngine.onLocalOffer = null
       VoiceEngine.onData = null
