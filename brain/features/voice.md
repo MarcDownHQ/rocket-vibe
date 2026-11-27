@@ -236,8 +236,9 @@ On Windows with the actual Cairo renderer, GTK uses finite zero-blur green speak
   `RV_VOICE_FAKE_AUDIO=sine` replaces the devices for tests; LiveKit's per-participant
   encryption state goes to stderr (a key mismatch silences someone without another trace).
 - **Video in the sidecar** (`voice/src/video.rs`): the camera through `nokhwa` (V4L2 on
-  Linux, Media Foundation on Windows; none on macOS, whose camera permission belongs to an
-  app bundle), MJPEG decoded by `image`'s pure-Rust JPEG; the screen through libwebrtc's
+  Linux, Media Foundation on Windows, AVFoundation on macOS after `nokhwa_initialize` asks the
+  permission, which belongs to the SwiftUI app bundle that ships the sidecar; the first of MJPEG,
+  NV12, YUYV the camera has), MJPEG decoded by `image`'s pure-Rust JPEG; the screen through libwebrtc's
   desktop capturer: `ListScreens` names the screens and the titled windows (ids
   `screen:<n>`, `window:<handle>`) and sends each one's thumbnail on the frame stream
   (identity `thumbnail:<id>`); `StartScreenShare` takes one (the portal's picker on Wayland,
@@ -362,8 +363,8 @@ On Windows with the actual Cairo renderer, GTK uses finite zero-blur green speak
   `AppModel.createRoom`, opened once listed) and the "Voice channel" switch in a room's edit
   form (`NativeRoomControls.swift`; rv-ffi's `NativeRoomFields.voice` is Some only for an
   owner of a room that is not direct on a server announcing voice, None leaves the flag as
-  it is). No camera button: the sidecar captures
-  none on macOS; others' cameras show. Sounds: `scripts/package.sh` renders the WAV masters
+  it is). A camera button (`toggleCamera`), the
+  sidecar capturing through AVFoundation. Sounds: `scripts/package.sh` renders the WAV masters
   (`scripts/sounds/generate.mjs`) and encodes them to AAC in `Resources/sounds` for
   `AVAudioPlayer`; the bundle carries `rv-voice` in `Contents/MacOS`, signed with the app's
   entitlements. Checked by the macOS CI build only.

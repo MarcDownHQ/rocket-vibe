@@ -729,8 +729,8 @@ then run on the bench. kChat has no such plugin: its calls stay kMeet's.
   with it hidden.
 - **Windows**: GTK `native_call.rs` (camera and screen buttons where the provider takes them, a camera
   in its tile, a shared screen, someone else's first, on a stage above the people); SwiftUI
-  `NativeCallWindow.swift` over rv-ffi `JitsiCallSession` (`frame`, `set_camera`, screen share; no camera
-  button, the sidecar capturing no camera on macOS), macOS CI build only.
+  `NativeCallWindow.swift` over rv-ffi `JitsiCallSession` (`frame`, `set_camera` behind a camera button
+  where `can_camera`, screen share); built and tested on a Mac (2026-11-24), not run in a call there.
 - **The room's chat beside the call**: GTK `call_chat.rs` (the room's latest messages from the store,
   redrawn on its changes, and a composer posting through the outbox) behind a header button
   (`native_call::Opened::chat`); SwiftUI the room's `MessageList` and `Composer` on a `RoomModel` of
@@ -793,13 +793,17 @@ goes out as this side's video.
   camera, 1.2 a screen, a keyframe every 3 s and on request). The codecs are libwebrtc's own: its
   static library links OpenH264 2.6's encoder and FFmpeg's H.264 decoder on Linux, Windows and macOS
   (not Android's), called directly with their structs laid out from the shipped headers (sizes checked at
-  compile time). The peer's pictures are decoded, turned by their orientation (quarter turns, clockwise)
+  compile time). macOS's FFmpeg has no H.264 decoder (`avcodec_find_decoder` finds none), so there
+  `h264::Decoder` is VideoToolbox's (`videotoolbox.rs`): the Annex-B unit split into NAL units, a new
+  SPS/PPS pair opening a new decompression session, the rest sent as one length-prefixed sample, decoded
+  synchronously into NV12 and copied out as I420. The peer's pictures are decoded, turned by their orientation (quarter turns, clockwise)
   and shown as their camera; a failing decoder asks for a keyframe at most once a second.
   `video_declined` turns the captures off and rv-core's camera and screen wishes with them.
 - **SwiftUI**: the same sidecar through rv-ffi's `JitsiCallSession`, shown in `NativeCallWindow` (the
   peer's camera in their tile, the screen button); `WhatsAppChat::call_answerable` and `background.rs`
-  `phone_only` send only a group's call to the phone. No camera goes out: the sidecar captures none on
-  macOS. Checked by the macOS CI build only.
+  `phone_only` send only a group's call to the phone. The camera goes out since the sidecar captures one
+  on macOS, and the peer's camera is decoded by VideoToolbox (2026-11-24; the `h264` round trip passes on
+  a Mac, CI never runs it there). Built on a Mac, not run in a call.
 - **Checked** (2026-11-21): the encoder's output decoded back at its size (`h264` tests); the real
   sidecar against a stand-in engine echoing its pictures as the peer's (`~/.cache/rvtest/pcm-harness.py`,
   outside the repo): about 15 pictures a second out, sending on then off, the echo decoded, turned and

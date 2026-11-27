@@ -9,12 +9,13 @@ section here.
 
 ### Added
 
-- Calls inside the app (Rocket.Chat's Jitsi, kChat's kMeet, Mattermost's Calls plugin) show the others' cameras and shared screens: a camera fills its person's tile, a shared screen takes the window's stage with the people below it. Your camera (Linux, Windows) and your screen go out too, where the server takes them (Mattermost: a screen, and a camera when the plugin enables video).
+- macOS: your camera in voice rooms and in calls inside the app (the app asks for the camera the first time).
+- Calls inside the app (Rocket.Chat's Jitsi, kChat's kMeet, Mattermost's Calls plugin) show the others' cameras and shared screens: a camera fills its person's tile, a shared screen takes the window's stage with the people below it. Your camera and your screen go out too, where the server takes them (Mattermost: a screen, and a camera when the plugin enables video).
 - The call window opens the chat of the call's room beside the call, from a button in its header (GTK, macOS).
-- Teams (experimental): video in calls inside the app: the other person's camera and shared screen show, and your camera (Linux, Windows) and your screen go out. In group calls and meetings, up to four people's cameras and a shared screen show. Not yet tried in a call with Teams.
+- Teams (experimental): video in calls inside the app: the other person's camera and shared screen show, and your camera and your screen go out. In group calls and meetings, up to four people's cameras and a shared screen show. Not yet tried in a call with Teams.
 - Teams (experimental): in group calls and meetings, your camera and your screen go out the way Teams' web client sends them, without renegotiating the call each time. Not yet tried in a call with Teams.
-- WhatsApp (experimental): video in 1:1 calls inside the app. A video call is answered there too, your camera off until you turn it on; the other person's camera shows, and your camera (Linux, Windows) or your screen goes out, asking them to switch to video first in a voice call. Group calls stay on the phone.
-- Slack (experimental): video in huddles inside the app: the others' cameras and shared screens show, and your camera (Linux, Windows) and your screen go out. Not yet tried in a live huddle.
+- WhatsApp (experimental): video in 1:1 calls inside the app. A video call is answered there too, your camera off until you turn it on; the other person's camera shows, and your camera or your screen goes out, asking them to switch to video first in a voice call. Group calls stay on the phone.
+- Slack (experimental): video in huddles inside the app: the others' cameras and shared screens show, and your camera and your screen go out. Not yet tried in a live huddle.
 
 ### Fixed
 

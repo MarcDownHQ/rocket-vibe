@@ -1,7 +1,8 @@
 //! H.264 for a call whose media this side encodes itself (WhatsApp's carries
 //! access units, not a peer connection). libwebrtc already links OpenH264's
 //! encoder and FFmpeg's H.264 decoder on every desktop platform; this calls
-//! them directly. The layouts are OpenH264 2.6's `codec_app_def.h` and
+//! them directly, but for the decoder on macOS, whose FFmpeg has none
+//! (videotoolbox.rs). The layouts are OpenH264 2.6's `codec_app_def.h` and
 //! FFmpeg's `AVPacket` / `AVFrame` as libwebrtc ships them.
 #![allow(unsafe_code)]
 
@@ -87,20 +88,34 @@ const OPTION_IDR_INTERVAL: i32 = 1;
 const OPTION_TRACE_LEVEL: i32 = 25;
 const WELS_LOG_QUIET: i32 = 0;
 
+#[cfg(not(target_os = "macos"))]
 const AV_CODEC_ID_H264: i32 = 27;
+#[cfg(not(target_os = "macos"))]
 const AV_PIX_FMT_YUV420P: i32 = 0;
+#[cfg(not(target_os = "macos"))]
 const AV_PIX_FMT_YUVJ420P: i32 = 12;
+#[cfg(not(target_os = "macos"))]
 const AV_LOG_QUIET: i32 = -8;
+#[cfg(not(target_os = "macos"))]
 const PACKET_DATA: usize = 24;
+#[cfg(not(target_os = "macos"))]
 const PACKET_SIZE: usize = 32;
+#[cfg(not(target_os = "macos"))]
 const FRAME_LINESIZE: usize = 64;
+#[cfg(not(target_os = "macos"))]
 const FRAME_WIDTH: usize = 104;
+#[cfg(not(target_os = "macos"))]
 const FRAME_HEIGHT: usize = 108;
+#[cfg(not(target_os = "macos"))]
 const FRAME_FORMAT: usize = 116;
 
 unsafe extern "C" {
     fn WelsCreateSVCEncoder(encoder: *mut *mut Encoder_) -> i32;
     fn WelsDestroySVCEncoder(encoder: *mut Encoder_);
+}
+
+#[cfg(not(target_os = "macos"))]
+unsafe extern "C" {
     fn avcodec_find_decoder(id: i32) -> *const c_void;
     fn avcodec_alloc_context3(codec: *const c_void) -> *mut c_void;
     fn avcodec_open2(context: *mut c_void, codec: *const c_void, options: *mut *mut c_void) -> i32;
@@ -208,15 +223,21 @@ impl Drop for Encoder {
     }
 }
 
+#[cfg(target_os = "macos")]
+pub use crate::videotoolbox::Decoder;
+
 /// FFmpeg's H.264 decoder: access units in, I420 pictures out.
+#[cfg(not(target_os = "macos"))]
 pub struct Decoder {
     context: *mut c_void,
     packet: *mut u8,
     frame: *mut u8,
 }
 
+#[cfg(not(target_os = "macos"))]
 unsafe impl Send for Decoder {}
 
+#[cfg(not(target_os = "macos"))]
 impl Decoder {
     pub fn new() -> Option<Self> {
         unsafe {
@@ -309,6 +330,7 @@ impl Decoder {
     }
 }
 
+#[cfg(not(target_os = "macos"))]
 impl Drop for Decoder {
     fn drop(&mut self) {
         self.release();

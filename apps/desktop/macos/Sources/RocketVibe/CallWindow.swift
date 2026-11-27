@@ -1,5 +1,6 @@
 import AppKit
 import RocketVibeCore
+import RocketVibeKit
 import WebKit
 
 /// A call in a window of the app, not a browser tab: the meeting page in

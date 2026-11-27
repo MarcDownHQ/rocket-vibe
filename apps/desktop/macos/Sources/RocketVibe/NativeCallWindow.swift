@@ -142,7 +142,13 @@ private struct NativeCallView: View {
                                        help: deafened ? "voice_session.undeafen" : "voice_session.deafen") {
                         Task { await call.setDeafened(deafened: !deafened) }
                     }
-                    // No camera button: the sidecar captures none on macOS, as on the voice page.
+                    if state?.canCamera == true {
+                        let camera = state?.camera ?? false
+                        VoiceControlButton(icon: camera ? "video.fill" : "video.slash.fill", on: camera,
+                                           help: camera ? "voice_session.camera_off" : "voice_session.camera_on") {
+                            Task { await call.setCamera(enabled: !camera) }
+                        }
+                    }
                     if state?.canScreen == true {
                         let sharing = state?.sharing ?? false
                         VoiceControlButton(icon: "rectangle.inset.filled.on.rectangle", on: sharing,
