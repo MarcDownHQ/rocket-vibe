@@ -33,16 +33,26 @@ async fn default_enabled(rest: &RestClient) -> bool {
     config.get("DefaultEnabled").and_then(Value::as_bool).unwrap_or(false)
 }
 
-/// The STUN and TURN servers the plugin hands its clients, TURN credentials included when it needs them.
-pub async fn ice_servers(rest: &RestClient) -> Vec<rv_voice_protocol::IceServerSpec> {
+/// What a call needs of the plugin's configuration.
+pub struct Media {
+    /// The STUN and TURN servers the plugin hands its clients, TURN credentials
+    /// included when it needs them.
+    pub ice_servers: Vec<rv_voice_protocol::IceServerSpec>,
+    /// Whether a member may share a screen (`AllowScreenSharing`), turn a camera on (`EnableVideo`).
+    pub screen: bool,
+    pub camera: bool,
+}
+
+pub async fn media(rest: &RestClient) -> Media {
     let config = rest.get(&format!("{PLUGIN}/config"), outside()).await.unwrap_or(Value::Null);
-    let mut servers = servers_of(config.get("ICEServersConfigs"));
+    let mut ice_servers = servers_of(config.get("ICEServersConfigs"));
     if config.get("NeedsTURNCredentials").and_then(Value::as_bool) == Some(true)
         && let Ok(turn) = rest.get(&format!("{PLUGIN}/turn-credentials"), outside()).await
     {
-        servers.extend(servers_of(Some(&turn)));
+        ice_servers.extend(servers_of(Some(&turn)));
     }
-    servers
+    let flag = |key: &str| config.get(key).and_then(Value::as_bool) == Some(true);
+    Media { ice_servers, screen: flag("AllowScreenSharing"), camera: flag("EnableVideo") }
 }
 
 fn servers_of(list: Option<&Value>) -> Vec<rv_voice_protocol::IceServerSpec> {

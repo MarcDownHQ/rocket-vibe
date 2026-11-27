@@ -8,6 +8,7 @@
 //! [`VoiceController::frame`].
 use rv_protocol::voice::VoiceGrant;
 use rv_voice_protocol::frames;
+pub use rv_voice_protocol::frames::LOCAL_PREVIEW;
 pub use rv_voice_protocol::frames::Source as VideoSource;
 use rv_voice_protocol::{Command, Event, VERSION};
 pub use rv_voice_protocol::{ConnectionState, Device, Participant, ScreenKind, ScreenQuality, ScreenSource, thumbnail};
@@ -228,6 +229,9 @@ pub struct Snapshot {
     /// and again when the sidecar reports it could not keep them.
     pub camera: bool,
     pub sharing: bool,
+    /// What a call carried natively lets this side send (camera, screen), once
+    /// joined; `None` for a Vibez room, which sends both.
+    pub call_video: Option<(bool, bool)>,
     pub ended: Option<Ended>,
     /// The last command failure the sidecar reported (`device_not_found`...).
     pub error: Option<String>,
@@ -246,6 +250,7 @@ impl Default for Snapshot {
             deafened: false,
             camera: false,
             sharing: false,
+            call_video: None,
             ended: None,
             error: None,
             muted_speech: 0,
@@ -351,6 +356,8 @@ struct Inner {
     local_offer: tokio::sync::watch::Sender<Option<String>>,
     /// Its local answers to the offers given to it, in order.
     local_answers: broadcast::Sender<String>,
+    /// What arrives on an external call's data channel.
+    data: broadcast::Sender<Vec<u8>>,
 }
 
 /// A Jitsi Meet call to carry natively: where its conference is and as whom.
@@ -420,6 +427,9 @@ pub struct MattermostCall {
     pub channel_id: String,
     pub user_id: String,
     pub ice_servers: Vec<rv_voice_protocol::IceServerSpec>,
+    /// What the plugin lets a member send besides the microphone.
+    pub screen: bool,
+    pub camera: bool,
 }
 
 impl std::fmt::Debug for MattermostCall {
@@ -482,6 +492,7 @@ impl VoiceController {
                 input_level: AtomicU32::new(0),
                 local_offer: tokio::sync::watch::channel(None).0,
                 local_answers: broadcast::channel(8).0,
+                data: broadcast::channel(64).0,
             }),
         }
     }
@@ -545,7 +556,8 @@ impl VoiceController {
         self.start(label.to_owned(), true, None, None, connect).await
     }
 
-    /// Joins an Amazon Chime meeting natively (a Slack huddle). Audio only.
+    /// Joins an Amazon Chime meeting natively (a Slack huddle): audio, the
+    /// others' cameras and screens, this side's camera.
     pub async fn connect_chime(&self, label: &str, call: &ChimeCall) -> Result<(), VoiceError> {
         let connect = Command::ConnectChime {
             signaling_url: call.signaling_url.clone(),
@@ -557,12 +569,31 @@ impl VoiceController {
         self.start(label.to_owned(), true, None, None, connect).await
     }
 
-    /// Starts a call whose signalling the app speaks itself (Teams), audio only:
-    /// the offer comes from [`Self::local_offer`], the rest goes through the
-    /// `remote_*` methods.
-    pub async fn connect_external(&self, label: &str, identity: &str) -> Result<(), VoiceError> {
+    /// Starts a call whose signalling the app speaks itself (Teams), camera and
+    /// screen included: the offer comes from [`Self::local_offer`], each later one
+    /// through [`Self::local_offers`], the rest goes through the `remote_*` methods.
+    /// `data_channel` names a data channel the offer opens, spoken through
+    /// [`Self::send_data`] and [`Self::data`]; `receive_videos` receive-only
+    /// video sections come with the camera's. With `video_up_front` the first
+    /// offer carries the camera's and the screen's sections, and starting or
+    /// stopping either makes no new offer.
+    pub async fn connect_external(
+        &self,
+        label: &str,
+        identity: &str,
+        data_channel: Option<&str>,
+        receive_videos: usize,
+        video_up_front: bool,
+    ) -> Result<(), VoiceError> {
         self.inner.local_offer.send_replace(None);
-        let connect = Command::ConnectExternal { identity: identity.to_owned(), answering: false };
+        let connect = Command::ConnectExternal {
+            identity: identity.to_owned(),
+            answering: false,
+            video: true,
+            data_channel: data_channel.map(str::to_owned),
+            receive_videos,
+            video_up_front,
+        };
         self.start(label.to_owned(), true, None, None, connect).await
     }
 
@@ -570,7 +601,14 @@ impl VoiceController {
     /// first (an incoming Teams call): no local offer, [`Self::answer_remote_offer`] answers.
     pub async fn connect_external_answering(&self, label: &str, identity: &str) -> Result<(), VoiceError> {
         self.inner.local_offer.send_replace(None);
-        let connect = Command::ConnectExternal { identity: identity.to_owned(), answering: true };
+        let connect = Command::ConnectExternal {
+            identity: identity.to_owned(),
+            answering: true,
+            video: true,
+            data_channel: None,
+            receive_videos: 0,
+            video_up_front: false,
+        };
         self.start(label.to_owned(), true, None, None, connect).await
     }
 
@@ -590,8 +628,29 @@ impl VoiceController {
         tokio::time::timeout(Duration::from_secs(15), answers.recv()).await.ok()?.ok()
     }
 
+    /// The external call's offers from now on: the sidecar offers again when this
+    /// side's camera or screen starts or stops.
+    pub fn local_offers(&self) -> tokio::sync::watch::Receiver<Option<String>> {
+        self.inner.local_offer.subscribe()
+    }
+
     pub async fn remote_answer(&self, sdp: &str) {
         self.command(Command::RemoteAnswer { sdp: sdp.to_owned() }).await;
+    }
+
+    /// A binary message on the external call's data channel, sent once it is open.
+    pub async fn send_data(&self, data: Vec<u8>) {
+        self.command(Command::SendData { data }).await;
+    }
+
+    /// What arrives on the external call's data channel from now on.
+    pub fn data(&self) -> broadcast::Receiver<Vec<u8>> {
+        self.inner.data.subscribe()
+    }
+
+    /// The videos the other side of an external call sends now.
+    pub async fn remote_videos(&self, videos: Vec<rv_voice_protocol::RemoteVideo>) {
+        self.command(Command::RemoteVideos { videos }).await;
     }
 
     /// Starts a call whose audio another process carries as raw PCM (a WhatsApp
@@ -610,7 +669,7 @@ impl VoiceController {
         self.command(Command::RemoteEnded { reason: reason.to_owned() }).await;
     }
 
-    /// Joins a Mattermost channel's call natively (the Calls plugin). Audio only.
+    /// Joins a Mattermost channel's call natively (the Calls plugin).
     pub async fn connect_mattermost(&self, label: &str, call: &MattermostCall) -> Result<(), VoiceError> {
         let connect = Command::ConnectMattermost {
             server: call.server.clone(),
@@ -618,6 +677,8 @@ impl VoiceController {
             channel_id: call.channel_id.clone(),
             user_id: call.user_id.clone(),
             ice_servers: call.ice_servers.clone(),
+            screen: call.screen,
+            camera: call.camera,
         };
         self.start(label.to_owned(), true, None, None, connect).await
     }
@@ -983,12 +1044,17 @@ impl Inner {
                         s.snapshot.muted_speech = s.snapshot.muted_speech.saturating_add(1);
                     }
                 }
+                Event::CallVideo { camera, screen } => s.snapshot.call_video = Some((camera, screen)),
                 Event::Disconnected { reason } => s.snapshot.end(Ended::from_reason(&reason)),
                 Event::Error { code } => {
                     // The sidecar gave up on a capture: the wish follows.
                     match code.as_str() {
                         "camera_unavailable" | "camera_ended" => s.snapshot.camera = false,
                         "screen_unavailable" | "screen_cancelled" | "screen_ended" => s.snapshot.sharing = false,
+                        "video_declined" => {
+                            s.snapshot.camera = false;
+                            s.snapshot.sharing = false;
+                        }
                         _ => {}
                     }
                     s.snapshot.error = Some(code);
@@ -998,6 +1064,9 @@ impl Inner {
                 }
                 Event::LocalAnswer { sdp } => {
                     let _ = self.local_answers.send(sdp);
+                }
+                Event::Data { data } => {
+                    let _ = self.data.send(data);
                 }
                 Event::Hello { .. } | Event::Devices { .. } | Event::Screens { .. } | Event::InputLevel { .. } => {}
             }

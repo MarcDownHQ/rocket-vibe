@@ -25,6 +25,10 @@ pub struct Config {
     pub channel_id: String,
     /// This account's user id, left out of the roster.
     pub user_id: String,
+    /// What the plugin lets a member send besides the microphone (`/config`
+    /// `AllowScreenSharing`, `EnableVideo`).
+    pub screen: bool,
+    pub camera: bool,
 }
 
 impl Config {
@@ -102,6 +106,19 @@ pub struct Person {
     pub session: String,
     pub user: String,
     pub muted: bool,
+}
+
+/// Whose and what a forwarded video track is: the SFU names it
+/// `<type>_<sender session>_<random>`, `screen` or `video`.
+pub fn video_of(track: &str) -> Option<(String, crate::VideoKind)> {
+    let (kind, rest) = track.split_once('_')?;
+    let (session, _) = rest.rsplit_once('_')?;
+    let kind = match kind {
+        "screen" => crate::VideoKind::Screen,
+        "video" => crate::VideoKind::Camera,
+        _ => return None,
+    };
+    Some((session.to_owned(), kind))
 }
 
 /// What a frame from the server means to the call.
@@ -224,6 +241,14 @@ mod tests {
     use super::*;
 
     const ME: &str = "conn1";
+
+    #[test]
+    fn a_forwarded_video_track_names_its_kind_and_sender() {
+        assert_eq!(video_of("screen_rw7epmnp_b39oxcjd"), Some(("rw7epmnp".into(), crate::VideoKind::Screen)));
+        assert_eq!(video_of("video_rw7epmnp_b39oxcjd"), Some(("rw7epmnp".into(), crate::VideoKind::Camera)));
+        assert_eq!(video_of("voice_rw7epmnp_b39oxcjd"), None);
+        assert_eq!(video_of("camera"), None);
+    }
     const CH: &str = "chan";
 
     #[test]
@@ -293,6 +318,8 @@ mod tests {
             token: String::new(),
             channel_id: String::new(),
             user_id: String::new(),
+            screen: false,
+            camera: false,
         };
         assert_eq!(
             config("https://mm.example/sub/").socket_url().as_deref(),

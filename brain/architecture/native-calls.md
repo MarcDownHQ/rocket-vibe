@@ -4,7 +4,7 @@ The goal: calls on Teams, Rocket.Chat (Jitsi), kChat (kMeet) and Slack (huddles)
 by the apps themselves, with no web page, no WebView and no browser: our own signalling
 client per provider, our own WebRTC media, the existing call UI. This page records what the
 research and the captures established, the architecture chosen, what is built ("Implementation
-status": Jitsi and kMeet, Slack huddles, Teams calls placed from a chat, Mattermost's Calls plugin, WhatsApp 1:1 calls), the order, and the captures still owed.
+status": Jitsi and kMeet, Slack huddles, Teams calls placed from a chat, Mattermost's Calls plugin, WhatsApp 1:1 calls, video, Teams' video), the order, and the captures still owed.
 The fallback (a call window on the provider's web page, Teams' one-time Microsoft sign-in) is in
 [../features/calls.md](../features/calls.md); the decision is in [../decisions.md](../decisions.md).
 
@@ -139,8 +139,9 @@ in `#caca`):
    peer connection is created with
    `iceTransportPolicy: relay`, `bundlePolicy: max-bundle` and that single TURN host
    (webrtc-internals): all media goes through Chime's TURN;
-5. **the SDP is compressed**: `deflateRaw` (pako) seeded with the previous SDP of the same
-   direction as dictionary, empty for the first offer and answer
+5. **the SDP is compressed**: `deflateRaw` (pako); the server seeds each answer after the
+   first on a socket with the previous answer as dictionary, the client's offers inflate
+   with none (third capture, below)
    ([ZLIBTextCompressor.ts](https://github.com/aws/amazon-chime-sdk-js/blob/main/src/sdp/ZLIBTextCompressor.ts));
 6. the SDP itself is plain WebRTC: client offer `setup:actpass`, server answer `passive`,
    `BUNDLE 0 1` (audio `sendrecv`, video `inactive` until a camera or share), `rtcp-mux`,
@@ -151,9 +152,9 @@ in `#caca`):
    A second offer/answer pair follows once connected (renegotiation).
 
 So the Slack side gives everything a native Chime client needs: credentials, signalling
-sequence, TURN, SDP; built, see "Slack huddles" under "Implementation status". Still unseen: a captured `LEAVE` (the SDK's own is what is sent), video subscription (another participant with a
-camera or a share: `SUBSCRIBE` with `receive_stream_ids` and the `INDEX` source list),
-and the screen-share path (`ScreenSharingUrl`, a separate WebSocket).
+sequence, TURN, SDP; built, see "Slack huddles" under "Implementation status". Video and
+the screen share were decoded from a third capture, see "Slack huddles over Chime, video".
+Still unseen: the main socket's `LEAVE` (the SDK's own is what is sent).
 
 Media is standard WebRTC with the client always offering. AWS publishes the signalling for
 custom media stacks: [amazon-chime-sdk-cpp signaling](https://github.com/aws/amazon-chime-sdk-cpp/blob/main/chime-sdk-signaling-cpp/README.md)
@@ -338,7 +339,8 @@ meetings with video (2 to 3 months more).
   socket: the join token as `Sec-WebSocket-Protocol: _aws_wt_session, <token>`, JOIN, JOIN_ACK's TURN
   servers, then the engine offers. The trait gained that direction: `Event::OfferWanted { relay_only }`,
   `CallSignaling::offer`, `Event::Answer`, as Chime's client always offers and takes no trickle. The
-  SDP is raw deflate (`miniz_oxide`), with no dictionary as this client sends one offer per session.
+  SDP is raw deflate (`miniz_oxide`); the server's answers after the first need the previous one as
+  dictionary (`inflate_answer`, see the video section).
   The server mixes everyone into one audio stream (`msid:audio audio`), so who speaks comes from
   AUDIO_METADATA, `Event::Levels` (minus decibels over the SDK's -42 to -14 dB); the volume of one
   person cannot be set.
@@ -372,6 +374,118 @@ meetings with video (2 to 3 months more).
   tone mode plays nothing, so a remote voice was seen as packets and levels, never heard here); a real
   microphone in a huddle; the GTK window on a signed-in Slack account (none on the test machine);
   SwiftUI (macOS CI only); Android on a device (Kotlin and the Android cross-compile only).
+
+### Slack huddles over Chime, video (2026-11-24)
+
+Decoded from `app.slack.com_huddle2.har` (2026-11-23: two attendees of one Slack user, each turning a
+camera on, then sharing a screen), both signalling sockets read frame by frame:
+
+- **INDEX** (type 5, field 8) lists every remote video source each time; one with no source means
+  none. Each: `stream_id`, `group_id`, `attendee_id`, `media_type` 2, `external_user_id`, width and
+  height, field 15 the base stream, field 17 a codec number (8 for a camera, 11 for a screen: VP9 and
+  AV1 by inference, the client offering those first). This client's own camera never appears in it.
+- **A shared screen is a second attendee**, `<attendee>#content`, on a second socket to the same
+  `SignalingUrl`. Its join token is the main one with `#content` appended, made by the client (no HTTP
+  call). It JOINs, SUBSCRIBEs duplex 3 sending video only (stream 2, 1500 kbps), receives nothing and
+  LEAVEs when the share stops. The main socket sees it in INDEX under the person's external id; with
+  the JOIN asking for every temporal layer (field 12, `wants_all_temporal_layers_in_index`) it comes
+  as three streams (base, layers 0 and 1, INDEX field 13). `ScreenSharingUrl` / `ScreenViewingUrl`
+  were not used. Frame by frame: "Slack huddles over Chime, screen share".
+- **Receiving**: SUBSCRIBE `receive_stream_ids` has one entry per video section of the offer, in
+  m-line order: the stream to receive, or 0 for a sending or spare section. Each received one gets a
+  `video_subscription_configuration` (mid, attendee, priority, target 600 kbps for a camera and
+  10000 for a screen, adaptation 2 or 3). SUBSCRIBE_ACK maps the stream to an SSRC labelled `v_<mid>`;
+  the answer's section is `sendonly`, `msid:v_<mid> track_<mid>`. A source gone: REMOTE_VIDEO_UPDATE
+  (type 24, field 25) with its mid removed, then a SUBSCRIBE with 0 there.
+- **Sending the camera**: duplex 3 and a second send stream (stream 2, group 2,
+  `AmazonChimeExpressVideo`, media_type 2, 15 fps, 1400 kbps); off, duplex 1 and the audio stream
+  alone. One encoding, no simulcast; dependency-descriptor and video-layers-allocation negotiated.
+- **Answers are deflated with the previous answer on the same socket as preset dictionary**, every
+  one after the first; the offers carry none.
+- **Slack itself moves nothing**: `rooms.join` gives `Capabilities` Video and Content `SendReceive`;
+  `sh_room_join`'s `participants_camera_on` and `participants_screenshare_on` stayed empty throughout.
+  A share announces itself only in Chime data messages (`data-channel`, `browser:content`).
+
+Built (desktop):
+
+- **rv-call** `chime/video.rs`: `index_sources` (one source per attendee, its base stream; this
+  attendee and its own `#content` left out), `Subscriptions` (the sources wanted, at most JOIN_ACK's
+  `video_subscription_limit` and 16, each kept on its receive-only section across offers; the receive
+  ids and configurations built from the offer's video sections; `remote` names each video by the
+  answer's stream id `v_<mid>`, as libwebrtc gives a receiver this side created a random track id).
+  `mod.rs`: `subscribe` (camera, receive ids, configurations), `remote_video_removed`,
+  `inflate_answer` (the dictionary as a stored deflate block before the answer, `miniz_oxide` having
+  no preset dictionary). `client.rs`: an INDEX change frees sections, sends `Event::Videos` and
+  `Event::OfferWanted`, one SUBSCRIBE in flight at a time; `can_send` the camera, `set_video` offers
+  again.
+- **The trait** gained `CallSignaling::receive_videos`; the sidecar (`call.rs` `Call::add_receivers`)
+  adds receive-only video transceivers up to it before each offer and never removes one. Chime's
+  `offers_to_receive_video` turns true once a video was wanted and stays so: libwebrtc's legacy offer
+  option at false makes every video section inactive (test
+  `offers_carry_the_receiving_sections_asked_and_keep_them`).
+- **Windows**: nothing huddle-specific; GTK shows the camera button from `Event::CallVideo`, the
+  others' cameras in tiles and a screen on the stage as for Jitsi.
+- **Not built**: PAUSE/RESUME of a group; Android
+  (`rv-voice-mobile`'s offers carry no video section, so nothing is subscribed, and its peer
+  connection offers again on each change of the others' videos). **Not run** against a live huddle:
+  the capture, unit tests and the sidecar's offer test only.
+
+### Slack huddles over Chime, screen share (2026-11-26)
+
+The `#content` socket of `app.slack.com_huddle2.har`, read frame by frame (a 5 s share):
+
+- **Socket**: the same `SignalingUrl` and query as the main one, subprotocol `_aws_wt_session,
+  <join token>#content`. A PING, then a JOIN like the main one but for `server_side_network_adaption`
+  1 (field 10) with no supported list (11), `wants_all_temporal_layers_in_index` false (12) and
+  `disable_periodic_keyframe_request_on_content_sender` true (13); the main JOIN has 12 and 13 at 1
+  (this client's sends neither). JOIN_ACK: TURN credentials of its own, `video_subscription_limit` 25.
+  Its INDEX lists no source.
+- **SUBSCRIBE**: first duplex 1 with an audio send stream (`AmazonChimeExpressAudio` under
+  `<attendee>#content`) and the video section inactive, then duplex 3 adding stream 2, 15 fps,
+  1500 kbps, `AmazonChimeExpressVideo`; `receive_stream_ids` one 0, no subscription configuration,
+  `audio_host`, not muted. The SDK sends it again, unchanged, on each INDEX (seven in 5 s).
+  SUBSCRIBE_ACK allocates the video stream 131 (group 4); BITRATES then names 131 to 133, the three
+  temporal layers.
+- **SDP**: `BUNDLE 0 1`, audio `sendrecv` with a track (the SDK's silent microphone), one video
+  section `sendrecv` with one track; AV1 offered first, then H264, VP8, VP9 with rtx, red, ulpfec; no
+  `rid`, no simulcast; the camera's header extensions. The answer: audio Opus and red, `msid:audio
+  audio`; video `sendrecv`, H264 first, then VP8, VP9, AV1 with rtx. Answers after the first are
+  deflated with the previous one as dictionary, as on the main socket.
+- **Otherwise**: it receives AUDIO_METADATA, AUDIO_STREAM_ID_INFO and Slack's `awareness-sync-channel`
+  broadcasts, and sends CLIENT_METRIC every second, one MEETING_SESSION_TIMING (type 43) and PINGs.
+  LEAVE (type 9, empty) is answered by LEAVE_ACK in 60 ms, then the socket closes.
+- **The main socket**: about 4.6 s before the content socket opens (the screen picker), the main
+  attendee sends two DATA_MESSAGEs on topic `data-channel`, Slack's own protobuf: `{4: attendee,
+  5: empty}` then `{4: attendee, 15: {1: "browser:content", 2: attendee}}`; the other attendee's
+  share began the same way. Nothing announces the stop. INDEX then lists `<attendee>#content`, and
+  AUDIO_STREAM_ID_INFO adds it as an audio stream under the person's external id until it leaves.
+  Both sharers' `awareness-sync-channel` carried `contentView` some seconds into the share (meaning
+  unknown; not sent here).
+
+Built (desktop):
+
+- **The trait**: `CallSignaling::screen_apart` and `screen_session` (false and `None` by default):
+  a provider taking this side's screen as a session of its own. Other providers are untouched.
+- **rv-call** `chime`: `Config::content` (`#content` after the attendee id and the token);
+  `Session::screen_session` answers at once with a session whose task connects (`client.rs`
+  `connect`) and JOINs as content (`join(.., content)`); its offers go in SUBSCRIBEs with the silent
+  microphone and the screen at 1500 kbps; it ignores INDEX, stream infos and levels; a failed
+  connection ends it with `Event::Ended`. `can_send(Screen)` is true on the main session, whose
+  `set_video` with the screen newly on sends the two `data-channel` messages (`share_announced`). The
+  roster drops every `#content` attendee: one counted as a person showed this side's share as another
+  participant, and its silence overwrote a sharer's level.
+- **Sidecar** (`call.rs`): `Videos.apart` keeps the screen off the main peer connection; once its
+  capture is ready and the main peer connection exists, `sync_video` opens a `Share`: the screen
+  session and a peer connection of its own from the same factory, a silent microphone (a
+  `NativeAudioSource` given no frames) and the screen on a `sendrecv` section as Chrome offers it
+  (whatever comes back on it is unused), offered after gathering as the main one is. Its peer connection connected, the main session is told the screen is sent.
+  Stopping the capture closes it (peer connection closed, `leave` in the background). A share failing
+  reports `screen_unavailable` before it connected and `screen_ended` after, stops the capture, and the
+  call goes on. A main session lost or over leaves its share; a rejoin opens a new one while the
+  capture runs. The windows needed nothing (`Event::CallVideo` shows the button); SwiftUI shares
+  through the same sidecar, whose screen capture works on macOS.
+- **Not run** against a live huddle: whether Chime takes a microphone that sends no frame; whether the
+  others' Slack clients show the share as they do Chrome's. Checked: the frames against the capture and the sidecar's offer, in unit tests.
 
 ### Teams calls placed from a chat, audio (2026-11-06)
 
@@ -569,6 +683,61 @@ then run on the bench. kChat has no such plugin: its calls stay kMeet's.
   (`drm_sched_entity_flush`, the video encoders' probe): the test ran with `/dev/dri` hidden
   (`unshare -rm`). A machine in that state cannot start any native call.
 
+### Video in native calls (2026-11-12)
+
+- **rv-call** names video: `Event::Videos` (the whole list of remote cameras and screens, by track or
+  stream id, whose, which kind), `can_send(kind)`, `video_stream(kind)` (the msid stream id of this
+  side's camera or screen track), `set_video(LocalVideo)` (told after a track was attached or
+  detached; the adapter renegotiates as its provider does), `offers_local_sections` (Jitsi: a local
+  track goes on the first unused transceiver, which its offer's own section created; otherwise a
+  fresh `SendOnly` transceiver, never one the server opened for someone else's track, which libwebrtc
+  then refused to answer), `video_of(track, stream)` (a provider naming tracks in their ids),
+  `data_channel` with `data_protocol` and `Event::DataMessage`.
+- **Sidecar** (`call.rs` `Videos`, `sync_video`): the camera and screen captures of `video.rs` (the
+  LiveKit path's) become tracks of the call's peer connection, made anew for each media session's
+  factory; remote video tracks go to the app's frame stream (`video::watch_rtc`) under the member's id,
+  this side's previews under `frames::LOCAL_PREVIEW`; `Event::CallVideo` says what the provider takes
+  (`Snapshot::call_video`). A renegotiation offer goes out at once on a connected call; when the
+  server's offer crosses it, this side rolls its own back, answers, offers again, and an answer it
+  cannot set is answered by offering again (at most 3) rather than by rejoining.
+- **Jitsi and kMeet**: the client announces `rtp:video`, `receive-multiple-video-streams`,
+  `http://jitsi.org/tcc`, `urn:ietf:rfc:4588` (rtx) and `dtls-sctp`. Without transport-cc Jicofo offers
+  no bandwidth feedback, and **without a bridge channel the bridge forwards no video at all**:
+  meet.barrut.me offers neither SCTP nor a colibri WebSocket, and Jitsi's web client adds a `data`
+  content to its `session-accept` itself (captured 2026-11-12); the client does the same (an
+  `m=application` section in the synthetic offer, the data channel "JVB data channel", protocol
+  `http://jitsi.org/protocols/colibri`) and sends `ReceiverVideoConstraints` (720 lines a camera, 1080
+  a screen) over it, or over the bridge's WebSocket when one is offered. Each remote camera or screen is
+  a receive section (`sdp.rs` `Stream`: a source name's SSRCs and groups; a simulcast camera received as
+  its first layer and that layer's rtx, which the bridge forwards every layer under); this side's
+  camera and screen go on two sections of their own (`video`, `screen`, VP8 first) and reach the focus
+  as `source-add` / `source-remove` (`<endpoint>-v0` camera, `-v1` desktop, with `videoType`), read from
+  libwebrtc's answer by their msid stream; `SourceInfo` in the presence says which are muted, and a
+  muted remote camera is dropped from `Videos`.
+- **Mattermost Calls plugin**: `/config` `AllowScreenSharing` and `EnableVideo` say what a member may
+  send (`MattermostCall::screen`, `camera`); `screen_on {screenStreamID}` / `video_on {videoStreamID}` go
+  before the offer carrying the track, `screen_off` / `video_off` after; the SFU names a forwarded track
+  `<screen|video>_<sender session>_<random>` (`mattermost::video_of`). The plugin's web client learns the
+  kind from a `MediaMap` data-channel message instead, not read here.
+- **Checked live (2026-11-12)**: two sidecars (`RV_VOICE_FAKE_VIDEO=pattern`) on meet.barrut.me each
+  decoded the other's camera (640x480) and screen (1280x720); Jitsi's web client in headless Chromium
+  decoded the sidecar's camera and screen, and the sidecar its simulcast camera; on the Mattermost bench
+  (`EnableVideo` off) screens both ways, a camera only in fits (the server does not carry them with
+  video off). The GTK window against a real Jitsi call (`RV_SMOKE_NATIVE_CALL`, Fedora image under
+  Xvfb): the peer's screen on the stage, both cameras in tiles. On this machine the sidecar's libwebrtc
+  hangs creating its video codecs while `/dev/dri` is reachable (the stuck GPU driver above): tests ran
+  with it hidden.
+- **Windows**: GTK `native_call.rs` (camera and screen buttons where the provider takes them, a camera
+  in its tile, a shared screen, someone else's first, on a stage above the people); SwiftUI
+  `NativeCallWindow.swift` over rv-ffi `JitsiCallSession` (`frame`, `set_camera`, screen share; no camera
+  button, the sidecar capturing no camera on macOS), macOS CI build only.
+- **The room's chat beside the call**: GTK `call_chat.rs` (the room's latest messages from the store,
+  redrawn on its changes, and a composer posting through the outbox) behind a header button
+  (`native_call::Opened::chat`); SwiftUI the room's `MessageList` and `Composer` on a `RoomModel` of
+  its own (`AppModel::callChat`).
+- **Owed**: Android (video and the chat button); Chime (this side's screen share, the `#content` socket);
+  the plugin's `MediaMap`. WhatsApp's video has its own path, below; Teams' is after it.
+
 ### WhatsApp 1:1 calls, audio (2026-11-11)
 
 Unlike every other provider, WhatsApp's call is not WebRTC the sidecar can join: whatsapp-rust
@@ -599,7 +768,192 @@ so a peer's standard Opus or CELT escape frames are not decoded). Its audio is P
   `WhatsAppChat.answerCall` / `startCall`), shown in `NativeCallWindow`; background accounts ring
   through `background.rs` `rings`, whose `phone_only` keeps "Answer on the phone".
 - **Not run**: a call with a phone, either way, on any app.
-  Group and video calls (built in the library) are not offered.
+  Group calls (built in the library) are not offered.
+
+### WhatsApp 1:1 calls, video (2026-11-21)
+
+whatsapp-rust carries video as H.264 access units (Annex-B, Constrained Baseline, RFC 6184 packets,
+FEC, PLI) and leaves the codec to its consumer (`src/voip/video.rs`). In a 1:1 call there is one
+picture each way: the library's screen-share signalling is for group calls only, so a shared screen
+goes out as this side's video.
+
+- **The engine** (`engine/src/call_video.rs`): the call's socket takes a second connection,
+  `<token> video` as its first line (the audio one stays the bare token), then messages of a kind byte,
+  a little-endian `u32` length and a payload. From the app: a picture (`u32` 90 kHz timestamp, one
+  access unit), sending on or off, a keyframe request. To the app: the peer's picture (keyframe and
+  orientation bytes, timestamp, access unit), the peer sending on or off, a keyframe request, a refused
+  switch. A video call is answered with the library's video endpoints, then this side's direction is
+  stopped; the peer's switch to video (`UpgradeRequestV2`) is accepted the same way, so their picture
+  shows while the camera stays off. Sending on resumes this side's direction (`resume_video`) or asks the
+  peer to switch (`start_video`, state 11); a refusal or a lapse (`UpgradeReject`, `RejectByTimeout`)
+  comes back as refused. The call frames and rv-core are unchanged: the app knows the socket already.
+- **Desktop** (`voice/src/pcm_video.rs`, `h264.rs`): `run_pcm` opens the video connection and says
+  `CallVideo {camera, screen}`; the captures of `video.rs` hand their pictures to a tap (`Capture::tap`),
+  the screen's while shared, else the camera's, encoded at up to 1280x720 and 15 a second (0.8 Mb/s a
+  camera, 1.2 a screen, a keyframe every 3 s and on request). The codecs are libwebrtc's own: its
+  static library links OpenH264 2.6's encoder and FFmpeg's H.264 decoder on Linux, Windows and macOS
+  (not Android's), called directly with their structs laid out from the shipped headers (sizes checked at
+  compile time). The peer's pictures are decoded, turned by their orientation (quarter turns, clockwise)
+  and shown as their camera; a failing decoder asks for a keyframe at most once a second.
+  `video_declined` turns the captures off and rv-core's camera and screen wishes with them.
+- **SwiftUI**: the same sidecar through rv-ffi's `JitsiCallSession`, shown in `NativeCallWindow` (the
+  peer's camera in their tile, the screen button); `WhatsAppChat::call_answerable` and `background.rs`
+  `phone_only` send only a group's call to the phone. No camera goes out: the sidecar captures none on
+  macOS. Checked by the macOS CI build only.
+- **Checked** (2026-11-21): the encoder's output decoded back at its size (`h264` tests); the real
+  sidecar against a stand-in engine echoing its pictures as the peer's (`~/.cache/rvtest/pcm-harness.py`,
+  outside the repo): about 15 pictures a second out, sending on then off, the echo decoded, turned and
+  shown under the peer's id. **Not run with a phone**: the orientation's direction, and what a phone
+  makes of the stream, are unverified.
+
+### Teams call video (2026-11-23)
+
+- **What Teams does** (the 2026-11-02 HARs, and Teams' web calling bundle `calling-pluginless-*.js` the
+  main HAR holds): a call's offer has `main-audio`, `main-video` (the cameras), `applicationsharing-video`
+  (a shared screen) and the `data` (`m=x-data`, SCTP) sections, named by `a=label`. Teams' web client
+  rebuilds its browser's SDP by label and renumbers the `a=mid`s between offers (its share went from mid 2
+  to 4, the other side's to 5). In a 1:1 call (not `multiParty`), a camera or a screen starting is a
+  renegotiation: the side starting it posts `renegotiate {mediaNegotiation {callModalities, sender, links
+  {mediaAnswer, rejection}, mediaContent {blob, mediaLegId, negotiationTag}}}` (the tag is
+  `<participantId>;v_1` for a camera, `;ss_1` for a screen), Teams answers on the `mediaAnswer` callback,
+  and the answer is acknowledged by a POST on its `links.mediaAcknowledgement` (the web client's is empty, this client sends `{}`) (a `callAcceptance`'s
+  is `links.acknowledgement`); the other side's renegotiation comes as `mediaNegotiation` (the hold path
+  above), answered on its `links.mediaAnswer`, and Teams then pushes `mediaAcknowledgement`. The `renegotiate` link is `links.mediaRenegotiation` of a
+  pushed `callAcceptance` on a placed call, and `callAcceptanceAcknowledgement.links.mediaRenegotiation`
+  of the acceptance's own answer on a call answered here (`call_in` HAR). A call through Teams' media
+  server (`multiParty`: group calls, meetings) sends no one's video until the client asks for a source
+  (`controlVideoStreaming {controlInfo {sourceId, streamMsid, fmtParams}}`, over the data channel or the
+  signalling), and Microslop's RTCP video source request (`PSFB` `AFB` type 1) is the native clients' form
+  of it: the data channel's form is built (below), the RTCP one is not.
+- **What a 1:1 call between two web clients showed** (the 2026-11-23 `video1` HAR): Teams never reuses a
+  mid. Its first offer lists `applicationsharing-video` open under mid 2 (`inactive`); the web client
+  answers it with port 0 and no mid, and its shares later took mids 6 and 5 (data being 3). A stopped share
+  goes back to the placeholder `m=video 0 RTP/SAVP 34` with only its label, no mid; a camera turned off
+  keeps `main-video` under its mid, `inactive`, its msid and sources kept. Video is H.264 (several
+  profiles) and AV1 only, no VP8 or VP9. `callModalities` say `Audio` plus `Video` while the camera is on,
+  `ScreenSharer` while sharing; the answers say `audio`, `screenViewer`.
+- **What a group call showed** (the `video2` HAR, no websocket frames; the `video3` meeting the same, with
+  its Trouter frames): the client's own offer lists ten `main-video` sections (mid 1 its camera with a range
+  of 100 sources, 2 to 6 `sendrecv`, 7 to 10 `recvonly`), `applicationsharing-video` mid 11 and `data` mid
+  12. Before any camera is on, mid 1 and 11 are already `sendrecv` transceivers with no track (`a=msid:-
+  <track>`, sources and `FID` groups listed; mid 1's source line is Teams' `fake_attribute`), and the
+  invitation's `mediaContent` carries `mediaDescriptions {descriptions: [mids 1 to 6 and 11, each
+  recvonly], requestId: 1}` (the `recvonly` sections 7 to 10, audio and data are never listed) and
+  `applyChannelParameters {multiChannelParameter {mids: ["*"], mediaParameter: "{sendSideBWSeed}"}}`. The
+  media server answers every one of them `sendrecv` (no direction line), with its own range and
+  `x-source-streamid` (mid 1 is 202, mid 11 is 212). The pushed `callAcceptance` (gzip, `call/acceptance/`)
+  carries the links: `updateMediaDescriptions` (`{cc}/cc/v1/active/<call>/.../updateMediaDescriptions`,
+  through the flight proxy), `applyChannelParameters` and `controlVideoStreaming` (`{cc}/cc/v1/mcProxy/...`).
+  Turning the camera or a share on or off is no renegotiation: the client posts `updateMediaDescriptions
+  {UpdateMediaDescriptions {mediaDescriptions {descriptions [{mid, direction, label?}], negotiationTag,
+  requestId}}}` with the same seven mids, `sendrecv` and `label: main-video` on mid 1 while the camera is
+  on, `sendonly` and `label: applicationsharing-video` on mid 11 while sharing, `recvonly` and no label
+  otherwise; the tag is `<participantId>;v_1` for a camera change, `;ss_1` for a share's, and `requestId`
+  counts on from the invitation's 1. Teams answers 200 `{code: 0, phrase: "Success."}` and pushes nothing
+  for it but the next `rosterUpdate`, where this side's own endpoint shows `main-video` 202 or
+  `applicationsharing-video` 212 `sendrecv` / `sendonly`, then `recvonly` again. Just before its camera
+  first goes out (once a call) the client posts `applyChannelParameters {multiChannelParameter {mids:
+  ["1"], mediaParameter: "{maxVideoSendCapabilities {caps {max-width 1280, max-height 1280, max-fps 30,
+  max-streams 3, max-layers 3, sequence-number}}}"}}` (202, empty), and before a share starts
+  `conv/<id>/updateParticipantProperties` with `screenSharerAttributes {sequenceNumber, value {source:
+  1}}` on its own account (202). On the data channel, once this side's camera or share goes out, the
+  server sends `vdclc {sourceId: <its section's stream id>, fmtParamsList: ["KeyFrame=1;max-br=..;
+  max-fps=..;max-fs=..;rid=..;ssrc=.."]}` (what it wants of that stream, the first with a keyframe, the
+  camera's at 320x180 for a small tile), again as that changes, and the client sends `ssbwe {BwMessage
+  [{streamMsid, bw}]}`.
+- **What a meeting's data channel showed** (the 2026-11-24 `video3` HAR with its socket frames, and
+  `teams-datachannel.json` from a script wrapping `RTCPeerConnection.createDataChannel`, two accounts):
+  the browser opens one in-band channel `main-channel` (id 0, no protocol) for the `x-data` section, which
+  is a plain SCTP channel (`a=x-data-protocol:sctp`, no `sctp-port`). The media server's answer names every
+  section by `a=x-source-streamid` (201 for mid 0 to 213 for the data, in m-line order), and each
+  `rosterUpdate` push lists an endpoint's `call.mediaStreams` with its own ids the same way (`main-audio`
+  414, `main-video` 415, `applicationsharing-video` 425, `data` 426) and `direction` `sendrecv` while that
+  video is on, `recvonly` while off. Every message is a frame: `0x10`, the header's remaining length
+  (`0x0f`, `0x13` for two receivers), the kind (`0x92` JSON; `0x80`, `0x81` carry the client's own events
+  and a handshake with the other endpoint, not needed), `0x00`, a little-endian frame counter, the
+  sender's stream id, the receivers' count and ids (big-endian; the server is `0xfffffffc`), `0x01`, then
+  a JSON array. The client sends `syn {client_capabilities}` (answered `ack`), a `heartbeat {state: 0}`
+  every second as the server does, and, a second after a remote video turns `sendrecv`, `sr
+  {controlVideoStreaming {sequenceNumber, controlInfo {sourceId: 415, streamMsid: 202, fmtParams
+  [{max-fs, max-mbps, max-fps, profile-level-id: 64001f}]}}}` putting that camera on its mid 1; a share
+  went on its `applicationsharing-video` section (212), and `sourceId: -1` when the video stopped. The
+  server answers `sr_res {result: ok, sequenceNumber}`, and sends `bwe`, `dsh` (dominant speakers' audio
+  ids) and `vdclc` (what it wants of this side's own sending, a keyframe flag included).
+- **The translation** (rv-teams `sdp.rs`): a `Layout` per call holds the plain sections libwebrtc
+  negotiated, in their order. The audio keeps its section whatever mid Teams gives it (as before); a video
+  section keeps its plain mid equal to Teams' own, since the other side's packets carry it (`sdes:mid`), so a
+  video section under a mid the call has not seen becomes a new plain section after the others and the
+  section Teams stopped listing is refused (port 0); `m=x-data` is refused, as Microslop does. Every
+  section of Teams' libwebrtc takes no media on (the data section, a refused one) stays in the plain offer
+  refused under its mid (`m=application 0` for the data), so libwebrtc never gives this side's new screen
+  section a mid Teams already uses: before, the share took mid 3, Teams' data section. Each video
+  section the other side sends gets `a=msid:teams-<mid>` (its own msid and `a=ssrc` msids dropped) and is
+  named camera or screen by its label. This side's offer is labelled by the stream ids the sidecar gives
+  its tracks (`<endpoint>-camera`, `<endpoint>-screen`); a section of its own takes the label over from one
+  that only received, and a capture stopped is told as `recvonly` or `inactive`, its track gone.
+  `modalities` fills `callModalities` (`Video`, `ScreenSharer`, `ScreenViewer`) in the accept, the answers
+  and `renegotiate`. libwebrtc's `m=application` data section goes out as `m=x-data ... 127` with
+  `x-data-protocol:sctp` and a made-up source range, and Teams' comes back as `UDP/DTLS/SCTP
+  webrtc-datachannel` on port 5000; the stream id of each section is kept (`video_slots`, `data_stream`). A
+  group call's `Layout::group` offers every receiving video section rather than one per label, the last one
+  not labelled yet as the shared screen's; a receive-only section names the range `1-1`, as the web
+  client's do.
+- **The sidecar** (`call.rs` `External`, `ConnectExternal {video}`): it takes the camera and the screen;
+  the camera goes on the first unused video section (the one receiving the other side's camera,
+  `reuses_section`), the screen on a new send-only section, as the web client's share does. Each start or stop
+  is offered anew (`set_video` asks for `OfferWanted`), and an offer waits for the last one's answer
+  (`offers_in_turn`, `Call::deferred`). Its offers receive video (`offers_to_receive_video`): LiveKit's
+  binding passes libwebrtc's legacy `offer_to_receive_video` as 0 unless told, which takes receiving out
+  of every video section offered (the camera's section went send-only and the other side's camera
+  stopped); with it, a placed call's first offer also carries a receive-only camera section, as the web
+  client's does. An offer of Teams' crossing this side's rolls it back, answers, then
+  offers again; a late answer to a new offer no longer ends a running call. `Command::RemoteVideos` names the
+  other side's videos by stream, whose (the one other person in the roster) and which kind.
+  `ConnectExternal {data_channel, receive_videos}` opens a data channel by its label and adds that many
+  receive-only video sections (then the first of them is the camera's); `SendData` sends a binary message
+  on it once open, and what arrives comes back as `Event::Data`. `ConnectExternal {video_up_front}`
+  (`CallSignaling::video_up_front`) puts a camera and a screen section, both `sendrecv` with no track
+  (`Videos::prepare`), in the first offer, before the receivers: a capture starting swaps its track in
+  (`set_track`), a stop swaps in the track that sends nothing, and neither asks for an offer.
+- **rv-core** (`teams_call.rs` `drive`): each new local offer (`VoiceController::local_offers`) goes through
+  `renegotiate` once the call is answered; a `mediaAnswer` push answers it while it waits
+  (`Layout::offering`), and an offer of Teams' meanwhile withdraws it. GTK and SwiftUI need no change: the
+  window shows the camera and screen buttons from `CallVideo`, as for Jitsi. A channel or meeting call
+  (`join_thread_call`) opens `main-channel` with five receiving sections (four cameras, one screen: this
+  side's own camera and screen sections, offered up front, and three receive-only ones); once answered it
+  sends `syn`, a heartbeat every second, and (rv-teams `datachannel.rs` `Routing`) asks for each roster
+  source turning live on a free section of its kind and for nothing there when it stops, the videos then
+  named after whose source each section carries. A fifth camera is not shown. This side's own camera and
+  share there go as the web client's do: the group `Layout` keeps the own sections' directions as
+  libwebrtc offers them and records the sections that may send; the invitation carries their
+  `mediaDescriptions`, all `recvonly` (`calling::describe_media`); and once accepted, each change of what
+  the sidecar sends (its own participant's `camera` / `screen`) is posted one at a time to the
+  acceptance's `updateMediaDescriptions` link (`sdp::media_descriptions`, `sending_steps`), after
+  `applyChannelParameters` before the camera first goes out (one stream, one layer, 1280x1280 at 30) and
+  `updateParticipantProperties` before each share. A 1:1 call keeps `renegotiate`.
+- **Checked** (2026-11-23): the translation against SDP shaped like the HARs' (camera and screen received,
+  a renumbered screen section, this side's share taking the label over, a stopped camera), the external
+  signalling's offers, and the controller's new offers and `RemoteVideos` against the fake sidecar. The real
+  sidecar (`RV_VOICE_FAKE_VIDEO=pattern`) driven with Teams' web offer from `_call_out` made plain, the other
+  side's camera turned on, through a script outside the repo: libwebrtc took every translated offer and
+  answer, the other side's camera track came up under its stream and was shown on its member, the camera
+  went out `sendrecv` on `main-video`, the screen on a new `applicationsharing-video` section, and each
+  stop was offered anew as `inactive` (run again after the reserved mids on 2026-11-24: the share took mid 4
+  and offered H.264 and AV1). That run also found that taking a stopped capture off its sender
+  crashed the sidecar in every native call (webrtc-sys dereferences the track it is given): the sender now
+  gets a track that sends nothing. **Not run
+  against Teams**: a group call's channel and requests (the real sidecar's offer went through the
+  translation and a Teams-shaped answer outside the repo: the data channel and five slots, stream ids
+  202 to 207); this side's own camera or share in a group call (the up-front sections were checked on
+  the real libwebrtc offer in the sidecar's tests, `sendrecv` with `msid`, sources and `FID` like the web
+  client's, and the requests against the capture's shapes): whether the media server forwards this
+  side's video without honouring `vdclc` (the sidecar ignores it: no keyframe on demand, no resolution
+  asked, no `ssbwe`), whether `applyChannelParameters` matters to it, whether it takes a one-source range
+  where the web client reserves 100, and the made-up `sequence-number` 1 of the camera's capabilities; a
+  group chat's call (placed by `epconv` with its people) still goes the 1:1 way, no data channel; whether Teams takes `renegotiate` from this client, whether it minds a stopped share
+  told as `inactive` on its mid where its web client goes back to the placeholder, whether Teams' native
+  clients renegotiate as its web client does, and the codec the two sides settle on. Android owes the
+  whole of it.
 
 ## Order
 
@@ -612,15 +966,15 @@ Teams meetings and video last.
 
 - **kMeet**: one live call in `#testtest` from the kChat app itself (the `/conferences`
   answer's `url` shape, the XMPP `session-initiate`, the TURN servers from XEP-0215).
-- **Slack**: nothing blocking (the second capture has credentials, signalling, TURN and SDP).
-  Useful later: a huddle with a second participant's camera or a screen share (video
-  subscription, the `ScreenSharingUrl` socket) and a `LEAVE`. A huddle opens in its own
+- **Slack**: nothing blocking (the second capture has credentials, signalling, TURN and SDP, the
+  third cameras and screen shares). Useful later: the main socket's `LEAVE`. A huddle opens in its own
   window: Chrome's DevTools setting "Auto-open DevTools for popups" catches it from the start.
-- **Teams**: what `callKeepAliveInterval` wants of a call past 45 minutes; a webrtc-internals
-  dump of a Teams call (the `x-data` channel's messages); the pushes of a meeting join (the HARs of
+- **Teams**: what `callKeepAliveInterval` wants of a call past 45 minutes; the
+  `mediaAnswer` push answering this side's `renegotiate`; the pushes of a meeting join (the HARs of
   2026-11-18 hold its requests, not the socket). The outgoing call's answer was read live
   (2026-11-06), the auth audience, its creating request and screen sharing captured (2026-11-02),
-  a meeting join and a channel call (2026-11-18).
+  a meeting join and a channel call (2026-11-18), a meeting's data channel and roster sources
+  (2026-11-24).
 
 ## Sources
 
@@ -628,12 +982,21 @@ Teams meetings and video last.
 - apps/mobile/modules/voice, crates/rv-voice-mobile
 - crates/rv-voice-protocol
 - docs/MATTERMOST.md (kMeet conferences)
+- apps/desktop/voice/src/call.rs, apps/desktop/voice/src/video.rs, crates/rv-call/src/jitsi/sdp.rs,
+  apps/desktop/crates/rv-gtk/src/native_call.rs, apps/desktop/crates/rv-gtk/src/call_chat.rs,
+  apps/desktop/macos/Sources/RocketVibe/NativeCallWindow.swift
 - crates/rv-call/src/mattermost, apps/desktop/crates/rv-core/src/mattermost/calls.rs,
   apps/mobile/providers/mattermost/pluginCalls.ts
 - The Calls plugin 1.12.3 (`mattermost-plugin-calls-v1.12.3-linux-amd64.tar.gz`, its webapp
   bundle) and https://github.com/mattermost/rtcd (`service/rtc/sfu.go`, `session.go`, `dc.go`)
 - brain/features/calls.md, brain/architecture/teams.md, brain/architecture/slack-session.md
 - crates/rv-teams/examples/teams-ic3.rs (ic3 token probe), crates/rv-teams/examples/teams-foci.rs
+- crates/rv-teams/src/sdp.rs, crates/rv-teams/src/calling.rs, apps/desktop/crates/rv-core/src/teams_call.rs
+  (Teams' video), Teams' web calling bundle `calling-pluginless-*.js` in `teams.cloud.microsoft.har`,
+  `teams.cloud.microsoft_screenshare.har`, Microslop's `crates/ost-microsoft/src/calling/rtcp.rs`
+- crates/rv-teams/src/datachannel.rs, crates/rv-call/src/lib.rs (`video_up_front`), captures 2026-11-23/24
+  `teams.cloud.microsoft_video2.har`, `teams.cloud.microsoft_video3.har`, `teams-datachannel.json`
+  (a group call's and a meeting's own camera and share)
 - https://github.com/aws/amazon-chime-sdk-js/blob/main/protocol/SignalingProtocol.proto
 - https://github.com/aws/amazon-chime-sdk-js/blob/main/src/signalingclient/DefaultSignalingClient.ts
 - https://github.com/aws/amazon-chime-sdk-js/blob/main/src/sdp/ZLIBTextCompressor.ts
@@ -642,4 +1005,6 @@ Teams meetings and video last.
   `teams.cloud.microsoft*.har` (incl. `_call_out`, `_call_in`, `_group_call`, `_group_call2`)
 - https://github.com/jbg/gst-meet, https://docs.rs/crate/lib-gst-meet/latest
 - https://github.com/aws/amazon-chime-sdk-cpp, https://github.com/aws/amazon-chime-sdk-js
+- crates/rv-call/src/chime/video.rs, crates/rv-call/src/chime/client.rs, crates/rv-call/src/chime/mod.rs,
+  crates/rv-call/src/lib.rs, apps/desktop/voice/src/call.rs (huddle video and screen share); capture 2026-11-23 `app.slack.com_huddle2.har` (both Chime sockets, camera and share)
 - https://github.com/brandonp2412/microslop

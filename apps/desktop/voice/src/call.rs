@@ -1,31 +1,52 @@
 //! A call carried natively for a provider other than LiveKit: rv-call speaks the
 //! provider's signalling (Jitsi Meet, Chime), this drives one libwebrtc peer
 //! connection with it, and the audio goes through the same chain as LiveKit's
-//! (audio.rs: devices, echo canceller, noise remover, per-person mix). Audio only.
+//! (audio.rs: devices, echo canceller, noise remover, per-person mix). Video goes
+//! through video.rs as LiveKit's does: this side's camera and screen captures as
+//! tracks of the peer connection, the remote ones to the app's frame stream.
 
 use std::collections::HashMap;
+use std::sync::Arc;
 use std::time::Duration;
 
+use livekit::webrtc::audio_source::AudioSourceOptions;
+use livekit::webrtc::audio_source::native::NativeAudioSource;
 use livekit::webrtc::ice_candidate::IceCandidate;
 use livekit::webrtc::media_stream_track::MediaStreamTrack;
 use livekit::webrtc::peer_connection::{
-    AnswerOptions, IceGatheringState, OfferOptions, PeerConnection, PeerConnectionState,
+    AnswerOptions, IceGatheringState, OfferOptions, PeerConnection, PeerConnectionState, SignalingState,
 };
 use livekit::webrtc::peer_connection_factory::native::PeerConnectionFactoryExt;
 use livekit::webrtc::peer_connection_factory::{IceServer, IceTransportsType, PeerConnectionFactory, RtcConfiguration};
+use livekit::webrtc::rtp_sender::RtpSender;
 use livekit::webrtc::session_description::{SdpType, SessionDescription};
 use livekit::webrtc::stats::RtcStats;
-use rv_call::{CallSignaling, Candidate, Event as CallEvent, Member as CallMember};
-use rv_voice_protocol::{Command, ConnectionState as State, Event, Participant};
+use livekit::webrtc::video_source::VideoResolution;
+use livekit::webrtc::video_source::native::NativeVideoSource;
+use livekit::webrtc::video_track::RtcVideoTrack;
+use rv_call::{CallSignaling, Candidate, Event as CallEvent, LocalVideo, Member as CallMember, RemoteVideo, VideoKind};
+use rv_voice_protocol::frames::Source;
+use rv_voice_protocol::{Command, ConnectionState as State, Event, Participant, ScreenQuality};
 use tokio::sync::mpsc;
 
+use crate::pcm_video::{self, PcmVideo};
+use crate::video::{self, Capture, Frames, Internal};
 use crate::{audio, diagnose, emit, error, level, report};
+
+/// Where a call's video goes: the app's frame stream, once it said, and
+/// whether captures are the test pattern (`RV_VOICE_FAKE_VIDEO=pattern`).
+#[derive(Clone)]
+pub struct VideoOut {
+    pub frames: Option<Arc<Frames>>,
+    pub fake: bool,
+}
 
 enum Peer {
     Candidate(IceCandidate),
     State(PeerConnectionState),
     Gathered,
     Track { stream: String, id: String, track: livekit::webrtc::audio_track::RtcAudioTrack },
+    Video { stream: String, id: String, track: RtcVideoTrack },
 }
 
 /// How long an offer waits for ICE gathering before it goes with what was found.
@@ -56,9 +77,13 @@ enum Stop {
 /// replaced the session) is joined again with a new peer connection while the
 /// window shows `Reconnecting`, keeping the microphone and deafen choices; it is
 /// reported ended only when every rejoin failed, with the last reason.
-pub async fn run<S, J, F>(join: J, fake: bool, commands: &mut mpsc::UnboundedReceiver<Result<Command, ()>>)
-where
-    S: CallSignaling,
+pub async fn run<S, J, F>(
+    join: J,
+    fake: bool,
+    video_out: VideoOut,
+    commands: &mut mpsc::UnboundedReceiver<Result<Command, ()>>,
+) where
+    S: CallSignaling + Send + 'static,
     J: Fn() -> F,
     F: std::future::Future<Output = Result<S, rv_call::Error>>,
 {
@@ -76,10 +101,14 @@ where
     let (mut sound, input, output) = audio::Audio::start(mix.clone(), fake, "", "");
     report((input, output));
     let (mut factory, mut microphone) = media(&sound);
+    let (internal, mut captures) = mpsc::unbounded_channel();
     let mut call = Call::new(mix);
+    call.video = Some(Videos { apart: session.screen_apart(), ..Videos::new(video_out, internal) });
+    emit(Event::CallVideo { camera: session.can_send(VideoKind::Camera), screen: session.can_send(VideoKind::Screen) });
     let mut tries = 0;
     let reason = loop {
-        let stop = joined(&mut session, &mut factory, &mut microphone, &mut sound, &mut call, commands).await;
+        let stop =
+            joined(&mut session, &mut factory, &mut microphone, &mut sound, &mut call, commands, &mut captures).await;
         call.reset();
         let reason = match stop {
             Stop::Left => break "client_initiated".to_owned(),
@@ -96,7 +125,7 @@ where
         let Some(delay) = REJOIN_DELAYS.get(tries) else { break reason };
         tries += 1;
         emit(Event::State { state: State::Reconnecting });
-        if !wait(Duration::from_secs(*delay), commands, &mut call, &microphone, &mut sound).await {
+        if !wait(Duration::from_secs(*delay), commands, &mut call, &microphone, &mut sound, &mut captures).await {
             break "client_initiated".to_owned();
         }
         match join().await {
@@ -114,6 +143,7 @@ where
             }
         }
     };
+    call.video = None;
     drop(sound);
     diagnose(&format!("call: ended ({reason})"));
     emit(Event::State { state: State::Disconnected });
@@ -128,6 +158,7 @@ async fn wait(
     call: &mut Call,
     microphone: &livekit::webrtc::audio_track::RtcAudioTrack,
     sound: &mut audio::Audio,
+    captures: &mut mpsc::UnboundedReceiver<Internal>,
 ) -> bool {
     let deadline = tokio::time::sleep(delay);
     tokio::pin!(deadline);
@@ -138,6 +169,11 @@ async fn wait(
                 None | Some(Ok(Command::Disconnect)) => return false,
                 Some(command) => local(command, call, microphone, sound),
             },
+            Some(news) = captures.recv() => {
+                if let Some(video) = &mut call.video {
+                    video.news(news);
+                }
+            }
         }
     }
 }
@@ -171,18 +207,59 @@ fn local(
         Ok(Command::SetInputVolume { volume }) => call.mix.set_input_volume(volume),
         Ok(Command::SetOutputVolume { volume }) => call.mix.set_output_volume(volume),
         Ok(Command::SetNoiseSuppression { enabled }) => call.mix.set_denoise(enabled),
+        Ok(Command::ListScreens) => {
+            if let Some(video) = &call.video {
+                video::list_screens(video.out.fake, video.out.frames.clone());
+            }
+        }
+        Ok(Command::SetCamera { enabled }) => {
+            if let Some(video) = &mut call.video {
+                video.want(Source::Camera, enabled, None, None);
+            }
+        }
+        Ok(Command::StartScreenShare { source, quality, .. }) => {
+            if let Some(video) = &mut call.video {
+                video.want(Source::Screen, true, source, quality);
+            }
+        }
+        Ok(Command::StopScreenShare) => {
+            if let Some(video) = &mut call.video {
+                video.want(Source::Screen, false, None, None);
+            }
+        }
+        Ok(Command::RemoteVideos { .. } | Command::SendData { .. }) => {}
         Ok(_) => error("unsupported"),
     }
 }
 
-/// One joined session, until it stops.
-async fn joined<S: CallSignaling>(
+/// One joined session, until it stops; this side's screen shared apart goes with it.
+async fn joined<S: CallSignaling + Send + 'static>(
     session: &mut S,
     factory: &mut PeerConnectionFactory,
     microphone: &mut livekit::webrtc::audio_track::RtcAudioTrack,
     sound: &mut audio::Audio,
     call: &mut Call,
     commands: &mut mpsc::UnboundedReceiver<Result<Command, ()>>,
+    captures: &mut mpsc::UnboundedReceiver<Internal>,
+) -> Stop {
+    let mut share = None;
+    let stop = session_loop(session, factory, microphone, sound, call, commands, captures, &mut share).await;
+    if let Some(share) = share {
+        share.close();
+    }
+    stop
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn session_loop<S: CallSignaling + Send + 'static>(
+    session: &mut S,
+    factory: &mut PeerConnectionFactory,
+    microphone: &mut livekit::webrtc::audio_track::RtcAudioTrack,
+    sound: &mut audio::Audio,
+    call: &mut Call,
+    commands: &mut mpsc::UnboundedReceiver<Result<Command, ()>>,
+    captures: &mut mpsc::UnboundedReceiver<Internal>,
+    share: &mut Option<Share<S>>,
 ) -> Stop {
     let (peer_tx, mut peer_rx) = mpsc::unbounded_channel();
     let mut activity = tokio::time::interval(Duration::from_millis(100));
@@ -199,18 +276,41 @@ async fn joined<S: CallSignaling>(
                     local(Ok(Command::SetMicrophone { enabled }), call, microphone, sound);
                     let _ = session.set_muted(!enabled).await;
                 }
+                Some(Ok(command @ (Command::SetCamera { .. } | Command::StartScreenShare { .. } | Command::StopScreenShare))) => {
+                    let (kind, starting) = match &command {
+                        Command::SetCamera { enabled } => (VideoKind::Camera, *enabled),
+                        Command::StartScreenShare { .. } => (VideoKind::Screen, true),
+                        _ => (VideoKind::Screen, false),
+                    };
+                    if starting && !session.can_send(kind) {
+                        error(if kind == VideoKind::Camera { "camera_unavailable" } else { "screen_unavailable" });
+                        continue;
+                    }
+                    local(Ok(command), call, microphone, sound);
+                    sync_video(session, factory, call, share).await;
+                }
                 Some(Ok(Command::RemoteOffer { sdp })) => {
-                    if !call.ensure_pc(factory, false, &peer_tx, microphone, session.local_id(), session.data_channel()) {
+                    if !call.ensure_pc(factory, false, &peer_tx, microphone, &*session) {
                         session.leave().await;
                         return Stop::Over("connect_failed".to_owned());
                     }
                     let Some(pc) = &call.pc else { continue };
+                    let yielded = pc.signaling_state() == SignalingState::HaveLocalOffer;
                     match negotiate(pc, &sdp).await {
                         Ok(answer) => {
                             call.answering = Some((answer, tokio::time::Instant::now()));
                             // A new offer on a running call gathers nothing more.
                             if call.connected || pc.ice_gathering_state() == IceGatheringState::Complete {
                                 send_answer(call);
+                            }
+                            if yielded {
+                                debug("offers crossed: this side's goes again");
+                                call.offering = None;
+                                call.deferred = true;
+                            }
+                            sync_video(session, factory, call, share).await;
+                            if offer_deferred(session, call).await.is_err() {
+                                return Stop::Lost("other".to_owned());
                             }
                         }
                         Err(e) => {
@@ -225,9 +325,35 @@ async fn joined<S: CallSignaling>(
                 Some(Ok(Command::RemoteAnswer { sdp })) => {
                     if let Err(e) = set_answer(call, &sdp).await {
                         diagnose(&format!("call: answer: {e}"));
-                        session.leave().await;
-                        return Stop::Over("connect_failed".to_owned());
+                        // A late answer to a new offer leaves the running call as it was.
+                        if !call.connected {
+                            session.leave().await;
+                            return Stop::Over("connect_failed".to_owned());
+                        }
                     }
+                    sync_video(session, factory, call, share).await;
+                    if offer_deferred(session, call).await.is_err() {
+                        return Stop::Lost("other".to_owned());
+                    }
+                }
+                Some(Ok(Command::RemoteVideos { videos })) => {
+                    if let Some(video) = &mut call.video {
+                        video.remote = videos
+                            .into_iter()
+                            .map(|v| RemoteVideo {
+                                track: v.stream,
+                                member: v.member,
+                                kind: if v.screen { VideoKind::Screen } else { VideoKind::Camera },
+                            })
+                            .collect();
+                        video.listed = true;
+                        video.show();
+                    }
+                    call.publish(session.local_id());
+                }
+                Some(Ok(Command::SendData { data })) => {
+                    call.outbox.push((data, true));
+                    call.flush();
                 }
                 Some(Ok(Command::RemoteRoster { members })) => {
                     call.roster = members
@@ -254,15 +380,28 @@ async fn joined<S: CallSignaling>(
                 }
                 Some(CallEvent::OfferWanted { relay_only }) => {
                     call.relay_only = relay_only;
-                    if !call.ensure_pc(factory, relay_only, &peer_tx, microphone, session.local_id(), session.data_channel()) {
+                    if !call.ensure_pc(factory, relay_only, &peer_tx, microphone, &*session) {
                         session.leave().await;
                         return Stop::Lost("connect_failed".to_owned());
                     }
+                    if session.offers_in_turn()
+                        && call.pc.as_ref().is_some_and(|pc| pc.signaling_state() != SignalingState::Stable)
+                    {
+                        call.deferred = true;
+                        continue;
+                    }
+                    call.add_receivers(session.receive_videos());
                     let Some(pc) = &call.pc else { continue };
-                    match offer(pc).await {
+                    match offer(pc, session.offers_to_receive_video()).await {
                         Ok(sdp) => {
                             call.offering = Some((sdp, tokio::time::Instant::now()));
-                            if pc.ice_gathering_state() == IceGatheringState::Complete {
+                            // A renegotiation gathers nothing new: waiting would only
+                            // leave room for the server's own offer to cross it.
+                            if call.connected {
+                                if send_offer(session, call).await.is_err() {
+                                    return Stop::Lost("other".to_owned());
+                                }
+                            } else if pc.ice_gathering_state() == IceGatheringState::Complete {
                                 let _ = peer_tx.send(Peer::Gathered);
                             }
                         }
@@ -274,26 +413,54 @@ async fn joined<S: CallSignaling>(
                     }
                 }
                 Some(CallEvent::Answer { sdp }) => {
+                    // The answer to an offer rolled back when offers crossed comes too late.
+                    if call.connected && call.pc.as_ref().is_some_and(|pc| pc.signaling_state() == SignalingState::Stable) {
+                        debug("an answer to no offer, dropped");
+                        continue;
+                    }
                     if let Err(e) = set_answer(call, &sdp).await {
                         diagnose(&format!("call: answer: {e}"));
+                        if std::env::var("RV_CALL_DEBUG").as_deref() == Ok("2") {
+                            debug(&format!("offer {}\nanswer {}", media_lines(&call.sent), media_lines(&sdp)));
+                        }
+                        // An answer to an offer that crossed the server's: offering
+                        // again settles it, the call goes on meanwhile.
+                        if call.connected && call.reoffers < REOFFERS {
+                            call.reoffers += 1;
+                            if reoffer(session, call).await.is_err() {
+                                return Stop::Lost("other".to_owned());
+                            }
+                            continue;
+                        }
                         session.leave().await;
                         return Stop::Lost("connect_failed".to_owned());
                     }
+                    call.reoffers = 0;
+                    sync_video(session, factory, call, share).await;
                 }
                 Some(CallEvent::Levels(levels)) => {
                     call.levels = levels.into_iter().collect();
                 }
                 Some(CallEvent::Offer { sdp }) => {
-                    if !call.ensure_pc(factory, false, &peer_tx, microphone, session.local_id(), session.data_channel()) {
+                    if !call.ensure_pc(factory, false, &peer_tx, microphone, &*session) {
                         session.leave().await;
                         return Stop::Lost("connect_failed".to_owned());
                     }
                     let Some(pc) = &call.pc else { continue };
+                    let yielded = pc.signaling_state() == SignalingState::HaveLocalOffer;
                     match negotiate(pc, &sdp).await {
                         Ok(answer) => {
                             if session.answer(&answer).await.is_err() {
                                 return Stop::Lost("other".to_owned());
                             }
+                            if yielded {
+                                debug("offers crossed: this side's goes again");
+                                call.offering = None;
+                                if reoffer(session, call).await.is_err() {
+                                    return Stop::Lost("other".to_owned());
+                                }
+                            }
+                            sync_video(session, factory, call, share).await;
                         }
                         Err(e) => diagnose(&format!("call: negotiation: {e}")),
                     }
@@ -305,6 +472,18 @@ async fn joined<S: CallSignaling>(
                 }
                 Some(CallEvent::Roster(members)) => {
                     call.roster = members;
+                    call.publish(session.local_id());
+                }
+                Some(CallEvent::DataMessage(text)) => {
+                    call.outbox.push((text.into_bytes(), false));
+                    call.flush();
+                }
+                Some(CallEvent::Videos(videos)) => {
+                    if let Some(video) = &mut call.video {
+                        video.remote = videos;
+                        video.listed = true;
+                        video.show();
+                    }
                     call.publish(session.local_id());
                 }
                 Some(CallEvent::MediaEnded) => {
@@ -348,7 +527,49 @@ async fn joined<S: CallSignaling>(
                         old.abort();
                     }
                 }
+                Peer::Video { stream, id, track } => {
+                    debug(&format!("video track {id} of {stream}"));
+                    if let Some(video) = &mut call.video {
+                        if let Some((member, kind)) = session.video_of(&id, &stream) {
+                            video.named.insert(id.clone(), RemoteVideo { track: id.clone(), member, kind });
+                        }
+                        video.tracks.insert(id, (stream, track));
+                        video.show();
+                    }
+                    call.publish(session.local_id());
+                }
             },
+            Some(news) = captures.recv() => {
+                if let Some(video) = &mut call.video {
+                    video.news(news);
+                }
+                sync_video(session, factory, call, share).await;
+            }
+            news = share_news(share) => {
+                let Some(current) = share.as_mut() else { continue };
+                let screen = call.video.as_ref().and_then(|v| v.screen.as_ref()).map(|l| l.capture.source.clone());
+                match current.step(news, factory, screen).await {
+                    Step::Going => {}
+                    Step::Connected => {
+                        if let Some(video) = &mut call.video {
+                            video.shared = true;
+                        }
+                        sync_video(session, factory, call, share).await;
+                    }
+                    Step::Failed => {
+                        let started = current.connected;
+                        if let Some(share) = share.take() {
+                            share.close();
+                        }
+                        if let Some(video) = &mut call.video {
+                            video.shared = false;
+                            video.want(Source::Screen, false, None, None);
+                        }
+                        error(if started { "screen_ended" } else { "screen_unavailable" });
+                        sync_video(session, factory, call, share).await;
+                    }
+                }
+            }
             _ = stats.tick(), if debugging() => {
                 if let Some(pc) = &call.pc {
                     print_stats(pc).await;
@@ -366,8 +587,50 @@ async fn joined<S: CallSignaling>(
                 {
                     return Stop::Lost("other".to_owned());
                 }
+                if let Some(current) = share.as_mut()
+                    && current.offer_due()
+                    && current.send_offer().await.is_err()
+                {
+                    debug("screen: the offer could not go");
+                }
                 call.tick(session.local_id());
             }
+        }
+    }
+}
+
+fn media_lines(sdp: &str) -> String {
+    sdp.lines()
+        .filter(|l| {
+            l.starts_with("m=")
+                || l.starts_with("a=mid")
+                || matches!(*l, "a=sendrecv" | "a=sendonly" | "a=recvonly" | "a=inactive")
+                || l.starts_with("a=msid")
+        })
+        .collect::<Vec<_>>()
+        .join(" | ")
+}
+
+/// How many times in a row a refused answer is answered by offering again.
+const REOFFERS: u8 = 3;
+
+/// This side's offer anew, the one waiting rolled back first.
+async fn reoffer<S: CallSignaling>(session: &mut S, call: &mut Call) -> Result<(), rv_call::Error> {
+    call.add_receivers(session.receive_videos());
+    let Some(pc) = &call.pc else { return Ok(()) };
+    if pc.signaling_state() == SignalingState::HaveLocalOffer
+        && let Ok(rollback) = SessionDescription::parse("", SdpType::Rollback)
+    {
+        let _ = pc.set_local_description(rollback).await;
+    }
+    match offer(pc, session.offers_to_receive_video()).await {
+        Ok(sdp) => {
+            call.offering = Some((sdp, tokio::time::Instant::now()));
+            send_offer(session, call).await
+        }
+        Err(e) => {
+            diagnose(&format!("call: offer: {e}"));
+            Ok(())
         }
     }
 }
@@ -379,17 +642,41 @@ async fn set_answer(call: &Call, sdp: &str) -> Result<(), String> {
     pc.set_remote_description(answer).await.map_err(|e| format!("{e:?}"))
 }
 
-/// The signalling of a call the app speaks itself: this side only offers, and the
-/// app answers through the window's commands. It cannot be joined again from here.
+/// The signalling of a call the app speaks itself: this side offers, and the
+/// app answers through the window's commands, or the app's offer comes first
+/// (`answering`). With `video` the other side takes this side's camera and
+/// screen, and each start or stop is offered anew, unless `video_up_front`
+/// put their sections in the first offer. It cannot be joined again from here.
 pub struct External {
     identity: String,
     answering: bool,
+    video: bool,
+    data_channel: Option<String>,
+    receive_videos: usize,
+    video_up_front: bool,
     started: u8,
+    offer_wanted: bool,
 }
 
 impl External {
-    pub fn new(identity: String, answering: bool) -> Self {
-        External { identity, answering, started: 0 }
+    pub fn new(
+        identity: String,
+        answering: bool,
+        video: bool,
+        data_channel: Option<String>,
+        receive_videos: usize,
+        video_up_front: bool,
+    ) -> Self {
+        External {
+            identity,
+            answering,
+            video,
+            data_channel,
+            receive_videos,
+            video_up_front: video && video_up_front,
+            started: 0,
+            offer_wanted: false,
+        }
     }
 }
 
@@ -404,6 +691,10 @@ impl CallSignaling for External {
             }
             1 if !self.answering => {
                 self.started = 2;
+                Some(CallEvent::OfferWanted { relay_only: false })
+            }
+            _ if self.offer_wanted => {
+                self.offer_wanted = false;
                 Some(CallEvent::OfferWanted { relay_only: false })
             }
             _ => std::future::pending().await,
@@ -436,6 +727,60 @@ impl CallSignaling for External {
     fn rejoinable(&self) -> bool {
         false
     }
+
+    fn data_channel(&self) -> Option<&str> {
+        self.data_channel.as_deref()
+    }
+
+    fn forwards_data(&self) -> bool {
+        true
+    }
+
+    fn receive_videos(&self) -> usize {
+        self.receive_videos
+    }
+
+    fn video_up_front(&self) -> bool {
+        self.video_up_front
+    }
+
+    fn can_send(&self, _kind: VideoKind) -> bool {
+        self.video
+    }
+
+    fn video_stream(&self, kind: VideoKind) -> String {
+        match kind {
+            VideoKind::Camera => format!("{}-camera", self.identity),
+            VideoKind::Screen => format!("{}-screen", self.identity),
+        }
+    }
+
+    fn reuses_section(&self, kind: VideoKind) -> bool {
+        kind == VideoKind::Camera
+    }
+
+    fn offers_in_turn(&self) -> bool {
+        true
+    }
+
+    fn offers_to_receive_video(&self) -> bool {
+        self.video
+    }
+
+    async fn set_video(&mut self, _video: LocalVideo) -> Result<(), rv_call::Error> {
+        self.offer_wanted = self.video && !self.video_up_front;
+        Ok(())
+    }
+}
+
+/// The offer the provider wanted while the last one waited, once the
+/// connection is stable again.
+async fn offer_deferred<S: CallSignaling>(session: &mut S, call: &mut Call) -> Result<(), rv_call::Error> {
+    if !call.deferred || call.pc.as_ref().is_none_or(|pc| pc.signaling_state() != SignalingState::Stable) {
+        return Ok(());
+    }
+    call.deferred = false;
+    reoffer(session, call).await
 }
 
 /// The answer waiting for gathering, with the candidates found so far.
@@ -447,6 +792,7 @@ fn send_answer(call: &mut Call) {
 /// The offer waiting for gathering, with the candidates found so far.
 async fn send_offer<S: CallSignaling>(session: &mut S, call: &mut Call) -> Result<(), rv_call::Error> {
     let Some((sdp, _)) = call.offering.take() else { return Ok(()) };
+    call.sent = sdp.clone();
     session.offer(&rv_call::sdp_with_candidates(&sdp, &call.gathered)).await
 }
 
@@ -458,7 +804,7 @@ fn debug(what: &str) {
 }
 
 fn debugging() -> bool {
-    std::env::var("RV_CALL_DEBUG").as_deref() == Ok("1")
+    matches!(std::env::var("RV_CALL_DEBUG").as_deref(), Ok("1" | "2"))
 }
 
 /// `RV_CALL_DEBUG=1`: what the media is doing, to tell a lossy path from a local stall.
@@ -508,18 +854,25 @@ fn open(
         let _ = tx.send(Peer::State(state));
     })));
     pc.on_track(Some(Box::new(move |event| {
-        if let MediaStreamTrack::Audio(track) = event.track {
-            let stream = event.streams.first().map(|s| s.id()).unwrap_or_default();
-            let id = track.id();
-            let _ = events.send(Peer::Track { stream, id, track });
+        let stream = event.streams.first().map(|s| s.id()).unwrap_or_default();
+        match event.track {
+            MediaStreamTrack::Audio(track) => {
+                let id = track.id();
+                let _ = events.send(Peer::Track { stream, id, track });
+            }
+            MediaStreamTrack::Video(track) => {
+                let id = track.id();
+                let _ = events.send(Peer::Video { stream, id, track });
+            }
         }
     })));
     Ok(pc)
 }
 
 /// The local offer made and set: its SDP, which goes out once gathering completed.
-async fn offer(pc: &PeerConnection) -> Result<String, String> {
-    let options = OfferOptions { offer_to_receive_audio: true, ..OfferOptions::default() };
+async fn offer(pc: &PeerConnection, video: bool) -> Result<String, String> {
+    let options =
+        OfferOptions { offer_to_receive_audio: true, offer_to_receive_video: video, ..OfferOptions::default() };
     let offer = pc.create_offer(options).await.map_err(|e| format!("create: {e:?}"))?;
     let sdp = offer.to_string();
     pc.set_local_description(offer).await.map_err(|e| format!("local: {e:?}"))?;
@@ -535,8 +888,14 @@ fn media(sound: &audio::Audio) -> (PeerConnectionFactory, livekit::webrtc::audio
     (factory, microphone)
 }
 
-/// The remote offer set, and the local answer made and set: its SDP.
+/// The remote offer set, and the local answer made and set: its SDP. An
+/// offer of this side's own still waiting for its answer is rolled back first:
+/// this side yields when both offer at once, and offers again once answered.
 async fn negotiate(pc: &PeerConnection, offer: &str) -> Result<String, String> {
+    if pc.signaling_state() == SignalingState::HaveLocalOffer {
+        let rollback = SessionDescription::parse("", SdpType::Rollback).map_err(|e| format!("rollback: {e:?}"))?;
+        pc.set_local_description(rollback).await.map_err(|e| format!("rollback: {e:?}"))?;
+    }
     let offer = SessionDescription::parse(offer, SdpType::Offer).map_err(|e| format!("offer: {e:?}"))?;
     pc.set_remote_description(offer).await.map_err(|e| format!("remote: {e:?}"))?;
     let answer = pc.create_answer(AnswerOptions::default()).await.map_err(|e| format!("answer: {e:?}"))?;
@@ -553,10 +912,19 @@ struct Call {
     heard: HashMap<String, tokio::task::JoinHandle<()>>,
     /// Each member's loudness when the provider says it (Chime mixes the audio).
     levels: HashMap<String, f32>,
-    /// The data channel the provider wants open, kept for the call's life.
+    /// Answers refused in a row, each answered by offering again.
+    reoffers: u8,
+    /// The last offer sent, for the debug log.
+    sent: String,
+    /// The data channel the provider wants open, kept for the call's life,
+    /// and the messages waiting for it to open.
     channel: Option<livekit::webrtc::data_channel::DataChannel>,
+    /// Each message and whether it is binary.
+    outbox: Vec<(Vec<u8>, bool)>,
     /// An offer set, waiting for gathering to complete before it goes out, and since when.
     offering: Option<(String, tokio::time::Instant)>,
+    /// An offer the provider wanted while the last one waited for its answer.
+    deferred: bool,
     /// The same for an answer to an offer from the app.
     answering: Option<(String, tokio::time::Instant)>,
     /// The local candidates so far, which an offer that waited carries.
@@ -569,6 +937,12 @@ struct Call {
     connected: bool,
     input_level: f32,
     last: Option<Vec<Participant>>,
+    /// The call's video, where the app shows any (not a call carried as PCM).
+    video: Option<Videos>,
+    /// The receive-only video sections added for [`CallSignaling::receive_videos`].
+    receivers: usize,
+    /// A call carried as PCM: what its video shows.
+    pcm_video: Option<Arc<pcm_video::Flags>>,
 }
 
 impl Call {
@@ -580,8 +954,12 @@ impl Call {
             roster: Vec::new(),
             heard: HashMap::new(),
             levels: HashMap::new(),
+            reoffers: 0,
+            sent: String::new(),
             channel: None,
+            outbox: Vec::new(),
             offering: None,
+            deferred: false,
             answering: None,
             gathered: Vec::new(),
             relay_only: false,
@@ -591,6 +969,9 @@ impl Call {
             connected: false,
             input_level: 0.0,
             last: None,
+            video: None,
+            receivers: 0,
+            pcm_video: None,
         }
     }
 
@@ -609,36 +990,76 @@ impl Call {
         if let Some(pc) = self.pc.take() {
             pc.close();
         }
+        if let Some(video) = &mut self.video {
+            video.drop_media();
+        }
         self.levels.clear();
         self.stream = None;
         self.channel = None;
+        self.outbox.clear();
         self.offering = None;
+        self.deferred = false;
         self.answering = None;
         self.gathered.clear();
+        self.receivers = 0;
+    }
+
+    /// Receive-only video sections on the peer connection until there are `wanted`.
+    fn add_receivers(&mut self, wanted: usize) {
+        let Some(pc) = &self.pc else { return };
+        while self.receivers < wanted {
+            let init = livekit::webrtc::rtp_transceiver::RtpTransceiverInit {
+                direction: livekit::webrtc::rtp_transceiver::RtpTransceiverDirection::RecvOnly,
+                stream_ids: Vec::new(),
+                send_encodings: Vec::new(),
+            };
+            if let Err(e) = pc.add_transceiver_for_media(livekit::webrtc::MediaType::Video, init) {
+                diagnose(&format!("call: video receiver: {e:?}"));
+                return;
+            }
+            self.receivers += 1;
+        }
     }
 
     /// The peer connection, opened with the microphone on first need; false
     /// when it cannot be.
-    fn ensure_pc(
+    fn ensure_pc<S: CallSignaling>(
         &mut self,
         factory: &PeerConnectionFactory,
         relay_only: bool,
         events: &mpsc::UnboundedSender<Peer>,
         microphone: &livekit::webrtc::audio_track::RtcAudioTrack,
-        stream: &str,
-        channel: Option<&str>,
+        session: &S,
     ) -> bool {
         if self.pc.is_some() {
             return true;
         }
         match open(factory, self.ice.clone(), relay_only, events.clone()) {
             Ok(pc) => {
-                if pc.add_track(MediaStreamTrack::Audio(microphone.clone()), &[stream]).is_err() {
+                if pc.add_track(MediaStreamTrack::Audio(microphone.clone()), &[session.local_id()]).is_err() {
                     error("publish_failed");
                 }
-                if let Some(label) = channel {
-                    match pc.create_data_channel(label, livekit::webrtc::data_channel::DataChannelInit::default()) {
-                        Ok(dc) => self.channel = Some(dc),
+                if let Some(video) = &mut self.video {
+                    if session.video_up_front() {
+                        video.prepare(&pc, &|kind| session.video_stream(kind));
+                    }
+                    video
+                        .attach(&pc, factory, &|kind| session.video_stream(kind), &|kind| session.reuses_section(kind));
+                }
+                if let Some(label) = session.data_channel() {
+                    let init = livekit::webrtc::data_channel::DataChannelInit {
+                        protocol: session.data_protocol().to_owned(),
+                        ..Default::default()
+                    };
+                    match pc.create_data_channel(label, init) {
+                        Ok(dc) => {
+                            if session.forwards_data() {
+                                dc.on_message(Some(Box::new(|message| {
+                                    emit(Event::Data { data: message.data.to_vec() });
+                                })));
+                            }
+                            self.channel = Some(dc);
+                        }
                         Err(e) => diagnose(&format!("call: data channel: {e:?}")),
                     }
                 }
@@ -659,13 +1080,31 @@ impl Call {
         track.set_enabled(sending);
     }
 
+    /// The provider's messages, once its data channel is open.
+    fn flush(&mut self) {
+        let Some(channel) = &self.channel else { return };
+        if channel.state() != livekit::webrtc::data_channel::DataChannelState::Open {
+            return;
+        }
+        for (data, binary) in self.outbox.drain(..) {
+            if let Err(e) = channel.send(&data, binary) {
+                diagnose(&format!("call: data channel: {e:?}"));
+            }
+        }
+    }
+
     fn tick(&mut self, me: &str) {
+        self.flush();
         let level_now = (self.mix.input_level() * 50.0).round() / 50.0;
         if level_now != self.input_level {
             self.input_level = level_now;
             emit(Event::InputLevel { level: level_now });
         }
         self.publish(me);
+    }
+
+    fn pcm_flag(&self, flag: impl Fn(&pcm_video::Flags) -> &std::sync::atomic::AtomicBool) -> bool {
+        self.pcm_video.as_ref().is_some_and(|f| flag(f).load(std::sync::atomic::Ordering::SeqCst))
     }
 
     fn publish(&mut self, me: &str) {
@@ -678,8 +1117,8 @@ impl Call {
             deafened: self.deafened,
             speaking: speaking && !muted,
             level: if muted { 0.0 } else { level(loud) },
-            camera: false,
-            screen: false,
+            camera: self.video.as_ref().is_some_and(|v| v.told.camera) || self.pcm_flag(|f| &f.camera),
+            screen: self.video.as_ref().is_some_and(|v| v.told.screen) || self.pcm_flag(|f| &f.screen),
             name: None,
         }];
         for m in &self.roster {
@@ -700,8 +1139,9 @@ impl Call {
                 deafened: false,
                 speaking,
                 level: level(loud),
-                camera: false,
-                screen: false,
+                camera: self.video.as_ref().is_some_and(|v| v.shows(&m.id, Source::Camera))
+                    || self.pcm_flag(|f| &f.peer),
+                screen: self.video.as_ref().is_some_and(|v| v.shows(&m.id, Source::Screen)),
                 name: Some(m.name.clone()).filter(|n| !n.is_empty()),
             });
         }
@@ -709,6 +1149,492 @@ impl Call {
             self.last = Some(participants.clone());
             emit(Event::Participants { participants });
         }
+    }
+}
+
+/// A local video track on the peer connection: on the first unused section
+/// when `reuse` (the provider's offer carries this side's), else on one of its own.
+fn add_video(
+    pc: &PeerConnection,
+    track: RtcVideoTrack,
+    stream: String,
+    reuse: bool,
+) -> Result<RtpSender, livekit::webrtc::RtcError> {
+    if reuse {
+        return pc.add_track(MediaStreamTrack::Video(track), &[stream]);
+    }
+    let init = livekit::webrtc::rtp_transceiver::RtpTransceiverInit {
+        direction: livekit::webrtc::rtp_transceiver::RtpTransceiverDirection::SendOnly,
+        stream_ids: vec![stream],
+        send_encodings: Vec::new(),
+    };
+    pc.add_transceiver(MediaStreamTrack::Video(track), init).map(|t| t.sender())
+}
+
+/// This side's camera and screen on the peer connection, or the screen on a
+/// session of its own, then the provider told what is sent; the participants
+/// show the change.
+async fn sync_video<S: CallSignaling + Send + 'static>(
+    session: &mut S,
+    factory: &PeerConnectionFactory,
+    call: &mut Call,
+    share: &mut Option<Share<S>>,
+) {
+    let Call { video: Some(video), pc, .. } = call else { return };
+    let Some(pc) = pc.as_ref() else { return };
+    if video.apart {
+        let ready = video.screen.as_ref().is_some_and(|local| local.ready);
+        if ready && share.is_none() {
+            *share = session.screen_session().map(Share::new);
+        } else if video.screen.is_none()
+            && let Some(stopped) = share.take()
+        {
+            stopped.close();
+            video.shared = false;
+        }
+    }
+    video.attach(pc, factory, &|kind| session.video_stream(kind), &|kind| session.reuses_section(kind));
+    let now = video.sending();
+    if now != video.told {
+        video.told = now;
+        if let Err(e) = session.set_video(now).await {
+            diagnose(&format!("call: video: {e}"));
+        }
+    }
+    call.publish(session.local_id());
+}
+
+/// One of this side's captures: its frames start, then its track goes on the
+/// peer connection, made anew for each media session's factory.
+struct Local {
+    capture: Capture,
+    ready: bool,
+    track: Option<RtcVideoTrack>,
+    attached: bool,
+}
+
+struct Videos {
+    out: VideoOut,
+    internal: mpsc::UnboundedSender<Internal>,
+    camera: Option<Local>,
+    screen: Option<Local>,
+    /// The peer connection's senders of this side's video, kept across a
+    /// capture stopped and started again, and whether each carries a track.
+    senders: HashMap<Source, (RtpSender, bool)>,
+    /// What the provider was last told is sent.
+    told: LocalVideo,
+    /// Whether the screen goes on a session of its own
+    /// ([`CallSignaling::screen_apart`]), and whether that one sends.
+    apart: bool,
+    shared: bool,
+    /// The provider's remote videos, once it named any, and the tracks it
+    /// named by their own ids.
+    remote: Vec<RemoteVideo>,
+    listed: bool,
+    named: HashMap<String, RemoteVideo>,
+    /// Every remote video track received, by id: its stream and the track.
+    tracks: HashMap<String, (String, RtcVideoTrack)>,
+    /// The ones shown, by track id: the task, as what, and whose.
+    watched: HashMap<String, (tokio::task::JoinHandle<()>, Source, String)>,
+}
+
+fn source_of(kind: VideoKind) -> Source {
+    match kind {
+        VideoKind::Camera => Source::Camera,
+        VideoKind::Screen => Source::Screen,
+    }
+}
+
+fn kind_of(source: Source) -> VideoKind {
+    match source {
+        Source::Camera => VideoKind::Camera,
+        Source::Screen => VideoKind::Screen,
+    }
+}
+
+impl Videos {
+    fn new(out: VideoOut, internal: mpsc::UnboundedSender<Internal>) -> Self {
+        Videos {
+            out,
+            internal,
+            camera: None,
+            screen: None,
+            senders: HashMap::new(),
+            told: LocalVideo::default(),
+            apart: false,
+            shared: false,
+            remote: Vec::new(),
+            listed: false,
+            named: HashMap::new(),
+            tracks: HashMap::new(),
+            watched: HashMap::new(),
+        }
+    }
+
+    fn slot(&mut self, source: Source) -> &mut Option<Local> {
+        match source {
+            Source::Camera => &mut self.camera,
+            Source::Screen => &mut self.screen,
+        }
+    }
+
+    /// Starts or stops a capture; its track follows on the next `attach`.
+    /// The previews go under the local participant's identity.
+    fn want(&mut self, source: Source, on: bool, chosen: Option<String>, quality: Option<ScreenQuality>) {
+        if !on {
+            *self.slot(source) = None;
+            return;
+        }
+        if self.slot(source).is_some() {
+            return;
+        }
+        let (fake, frames, internal) = (self.out.fake, self.out.frames.clone(), self.internal.clone());
+        let identity = rv_voice_protocol::frames::LOCAL_PREVIEW.to_owned();
+        let capture = match source {
+            Source::Camera => video::camera(fake, frames, identity, internal),
+            Source::Screen => {
+                let quality = quality.unwrap_or(ScreenQuality::DEFAULT).clamped();
+                video::screen(fake, chosen, quality, frames, identity, internal)
+            }
+        };
+        *self.slot(source) = Some(Local { capture, ready: false, track: None, attached: false });
+    }
+
+    fn news(&mut self, news: Internal) {
+        match news {
+            Internal::CameraReady => {
+                if let Some(local) = &mut self.camera {
+                    local.ready = true;
+                }
+            }
+            Internal::ScreenReady => {
+                if let Some(local) = &mut self.screen {
+                    local.ready = true;
+                }
+            }
+            Internal::Failed(source, code) => {
+                if self.slot(source).take().is_some() {
+                    error(code);
+                }
+            }
+        }
+    }
+
+    /// A sender for the camera and one for the screen, with no track yet, on
+    /// sections that both send and receive.
+    fn prepare(&mut self, pc: &PeerConnection, streams: &dyn Fn(VideoKind) -> String) {
+        for source in [Source::Camera, Source::Screen] {
+            if self.senders.contains_key(&source) {
+                continue;
+            }
+            let init = livekit::webrtc::rtp_transceiver::RtpTransceiverInit {
+                direction: livekit::webrtc::rtp_transceiver::RtpTransceiverDirection::SendRecv,
+                stream_ids: vec![streams(kind_of(source))],
+                send_encodings: Vec::new(),
+            };
+            match pc.add_transceiver_for_media(livekit::webrtc::MediaType::Video, init) {
+                Ok(transceiver) => {
+                    self.senders.insert(source, (transceiver.sender(), false));
+                }
+                Err(e) => diagnose(&format!("call: video sender: {e:?}")),
+            }
+        }
+    }
+
+    /// Each capture delivering frames on its sender, each stopped one off it.
+    fn attach(
+        &mut self,
+        pc: &PeerConnection,
+        factory: &PeerConnectionFactory,
+        streams: &dyn Fn(VideoKind) -> String,
+        reuse: &dyn Fn(VideoKind) -> bool,
+    ) {
+        let sources: &[Source] = if self.apart { &[Source::Camera] } else { &[Source::Camera, Source::Screen] };
+        for &source in sources {
+            let label = if source == Source::Camera { "camera" } else { "screen" };
+            let wanted = match self.slot(source) {
+                Some(local) if local.ready && !local.attached => {
+                    let capture = local.capture.source.clone();
+                    let track = local.track.get_or_insert_with(|| factory.create_video_track(label, capture)).clone();
+                    local.attached = true;
+                    Some(track)
+                }
+                Some(_) => continue,
+                None => None,
+            };
+            match (self.senders.get_mut(&source), wanted) {
+                (Some((sender, live)), Some(track)) => {
+                    if sender.set_track(Some(MediaStreamTrack::Video(track))).is_ok() {
+                        *live = true;
+                    }
+                }
+                (Some((sender, live)), None) if *live => {
+                    // webrtc-sys dereferences the track it is given: None would crash.
+                    let idle =
+                        NativeVideoSource::new(VideoResolution { width: 16, height: 16 }, source == Source::Screen);
+                    let _ = sender.set_track(Some(MediaStreamTrack::Video(factory.create_video_track(label, idle))));
+                    *live = false;
+                }
+                (None, Some(track)) => match add_video(pc, track, streams(kind_of(source)), reuse(kind_of(source))) {
+                    Ok(sender) => {
+                        self.senders.insert(source, (sender, true));
+                    }
+                    Err(e) => {
+                        diagnose(&format!("call: {label} track: {e:?}"));
+                        *self.slot(source) = None;
+                        error(if source == Source::Camera { "camera_unavailable" } else { "screen_unavailable" });
+                    }
+                },
+                _ => {}
+            }
+        }
+    }
+
+    fn sending(&self) -> LocalVideo {
+        let live = |source| self.senders.get(&source).is_some_and(|(_, live)| *live);
+        LocalVideo { camera: live(Source::Camera), screen: if self.apart { self.shared } else { live(Source::Screen) } }
+    }
+
+    /// Whether someone's camera or screen is on screen here.
+    fn shows(&self, member: &str, source: Source) -> bool {
+        self.watched.values().any(|(_, s, m)| *s == source && m == member)
+    }
+
+    /// The remote tracks to the app as the provider names them: a track it
+    /// does not name is shown as its stream's camera until it names any.
+    fn show(&mut self) {
+        let Some(frames) = self.out.frames.clone() else { return };
+        let mut wanted: HashMap<String, (Source, String)> = HashMap::new();
+        for (id, (stream, _)) in &self.tracks {
+            let named = self
+                .remote
+                .iter()
+                .find(|r| &r.track == id)
+                .or_else(|| self.remote.iter().find(|r| &r.track == stream))
+                .or_else(|| self.named.get(id));
+            match named {
+                Some(r) => {
+                    wanted.insert(id.clone(), (source_of(r.kind), r.member.clone()));
+                }
+                None if !self.listed => {
+                    wanted.insert(id.clone(), (Source::Camera, stream.clone()));
+                }
+                None => {}
+            }
+        }
+        let stale: Vec<String> = self
+            .watched
+            .iter()
+            .filter(|(id, (_, source, member))| wanted.get(*id) != Some(&(*source, member.clone())))
+            .map(|(id, _)| id.clone())
+            .collect();
+        for id in stale {
+            if let Some((task, source, member)) = self.watched.remove(&id) {
+                task.abort();
+                frames.end(source, &member);
+            }
+        }
+        for (id, (source, member)) in wanted {
+            if self.watched.contains_key(&id) {
+                continue;
+            }
+            let Some((_, track)) = self.tracks.get(&id) else { continue };
+            let task = tokio::spawn(video::watch_rtc(track.clone(), source, member.clone(), frames.clone()));
+            self.watched.insert(id, (task, source, member));
+        }
+    }
+
+    /// A media session over: its tracks and senders go, the captures stay and
+    /// go on the next peer connection.
+    fn drop_media(&mut self) {
+        for (_, (task, source, member)) in self.watched.drain() {
+            task.abort();
+            if let Some(frames) = &self.out.frames {
+                frames.end(source, &member);
+            }
+        }
+        self.tracks.clear();
+        self.remote.clear();
+        self.named.clear();
+        self.listed = false;
+        self.senders.clear();
+        self.told = LocalVideo::default();
+        self.shared = false;
+        for local in [&mut self.camera, &mut self.screen].into_iter().flatten() {
+            local.track = None;
+            local.attached = false;
+        }
+    }
+}
+
+/// This side's screen on a session of its own ([`CallSignaling::screen_session`])
+/// and a peer connection that sends it alone, with a silent microphone as
+/// Chime's web client does.
+struct Share<S> {
+    session: S,
+    pc: Option<PeerConnection>,
+    ice: Vec<IceServer>,
+    peer_tx: mpsc::UnboundedSender<Peer>,
+    peers: mpsc::UnboundedReceiver<Peer>,
+    offering: Option<(String, tokio::time::Instant)>,
+    gathered: Vec<Candidate>,
+    relay_only: bool,
+    connected: bool,
+}
+
+enum ShareNews {
+    Event(Option<CallEvent>),
+    Peer(Peer),
+}
+
+/// What a share's news did to it.
+enum Step {
+    Going,
+    Connected,
+    Failed,
+}
+
+/// The next news of the share, if there is one; never otherwise.
+async fn share_news<S: CallSignaling>(share: &mut Option<Share<S>>) -> ShareNews {
+    let Some(share) = share else { return std::future::pending().await };
+    tokio::select! {
+        event = share.session.next_event() => ShareNews::Event(event),
+        Some(peer) = share.peers.recv() => ShareNews::Peer(peer),
+    }
+}
+
+impl<S: CallSignaling + Send + 'static> Share<S> {
+    fn new(session: S) -> Self {
+        let (peer_tx, peers) = mpsc::unbounded_channel();
+        Share {
+            session,
+            pc: None,
+            ice: Vec::new(),
+            peer_tx,
+            peers,
+            offering: None,
+            gathered: Vec::new(),
+            relay_only: false,
+            connected: false,
+        }
+    }
+
+    async fn step(
+        &mut self,
+        news: ShareNews,
+        factory: &PeerConnectionFactory,
+        screen: Option<NativeVideoSource>,
+    ) -> Step {
+        match news {
+            ShareNews::Event(None | Some(CallEvent::Ended(_) | CallEvent::Over(_))) => Step::Failed,
+            ShareNews::Event(Some(CallEvent::IceServers(servers))) => {
+                self.ice = servers
+                    .into_iter()
+                    .map(|s| IceServer { urls: s.urls, username: s.username, password: s.credential })
+                    .collect();
+                Step::Going
+            }
+            ShareNews::Event(Some(CallEvent::OfferWanted { relay_only })) => {
+                self.relay_only = relay_only;
+                if self.pc.is_none() {
+                    let Some(screen) = screen else { return Step::Failed };
+                    match self.open(factory, screen) {
+                        Ok(pc) => self.pc = Some(pc),
+                        Err(e) => {
+                            diagnose(&format!("call: screen: {e}"));
+                            return Step::Failed;
+                        }
+                    }
+                }
+                let Some(pc) = &self.pc else { return Step::Failed };
+                match offer(pc, true).await {
+                    Ok(sdp) => {
+                        self.offering = Some((sdp, tokio::time::Instant::now()));
+                        if self.connected || pc.ice_gathering_state() == IceGatheringState::Complete {
+                            let _ = self.peer_tx.send(Peer::Gathered);
+                        }
+                        Step::Going
+                    }
+                    Err(e) => {
+                        diagnose(&format!("call: screen offer: {e}"));
+                        Step::Failed
+                    }
+                }
+            }
+            ShareNews::Event(Some(CallEvent::Answer { sdp })) => {
+                let Some(pc) = &self.pc else { return Step::Going };
+                let set = match SessionDescription::parse(&sdp, SdpType::Answer) {
+                    Ok(answer) => pc.set_remote_description(answer).await.map_err(|e| format!("{e:?}")),
+                    Err(e) => Err(format!("{e:?}")),
+                };
+                match set {
+                    Ok(()) => Step::Going,
+                    Err(e) => {
+                        diagnose(&format!("call: screen answer: {e}"));
+                        if self.connected { Step::Going } else { Step::Failed }
+                    }
+                }
+            }
+            ShareNews::Event(Some(_)) => Step::Going,
+            ShareNews::Peer(Peer::Candidate(c)) => {
+                self.gathered.push(Candidate { mid: c.sdp_mid(), line: c.candidate() });
+                Step::Going
+            }
+            ShareNews::Peer(Peer::Gathered) => {
+                if self.send_offer().await.is_err() {
+                    Step::Failed
+                } else {
+                    Step::Going
+                }
+            }
+            ShareNews::Peer(Peer::State(state)) => {
+                debug(&format!("screen peer connection {state:?}"));
+                match state {
+                    PeerConnectionState::Connected if !self.connected => {
+                        self.connected = true;
+                        Step::Connected
+                    }
+                    PeerConnectionState::Failed => Step::Failed,
+                    _ => Step::Going,
+                }
+            }
+            ShareNews::Peer(Peer::Track { .. } | Peer::Video { .. }) => Step::Going,
+        }
+    }
+
+    /// The peer connection: a silent microphone, then the screen on a section
+    /// that also receives, as Chime's web client offers it.
+    fn open(&self, factory: &PeerConnectionFactory, screen: NativeVideoSource) -> Result<PeerConnection, String> {
+        let pc = open(factory, self.ice.clone(), self.relay_only, self.peer_tx.clone())?;
+        let stream = self.session.local_id().to_owned();
+        let options =
+            AudioSourceOptions { echo_cancellation: false, noise_suppression: false, auto_gain_control: false };
+        let silence = factory.create_audio_track("content", NativeAudioSource::new(options, 48_000, 1, 100));
+        pc.add_track(MediaStreamTrack::Audio(silence), &[stream]).map_err(|e| format!("audio: {e:?}"))?;
+        let track = factory.create_video_track("screen", screen);
+        add_video(&pc, track, self.session.video_stream(VideoKind::Screen), true)
+            .map_err(|e| format!("screen: {e:?}"))?;
+        Ok(pc)
+    }
+
+    fn offer_due(&self) -> bool {
+        self.offering.as_ref().is_some_and(|(_, at)| {
+            at.elapsed() > GATHERING || (self.relay_only && !self.gathered.is_empty() && at.elapsed() > FIRST_CANDIDATE)
+        })
+    }
+
+    async fn send_offer(&mut self) -> Result<(), rv_call::Error> {
+        let Some((sdp, _)) = self.offering.take() else { return Ok(()) };
+        self.session.offer(&rv_call::sdp_with_candidates(&sdp, &self.gathered)).await
+    }
+
+    /// Its peer connection closed, its session left in the background.
+    fn close(self) {
+        let Share { mut session, pc, .. } = self;
+        if let Some(pc) = pc {
+            pc.close();
+        }
+        tokio::spawn(async move { session.leave().await });
     }
 }
 
@@ -722,7 +1648,7 @@ mod tests {
 
     #[tokio::test]
     async fn an_external_call_offers_once_however_often_it_is_asked() {
-        let mut session = External::new("me".into(), false);
+        let mut session = External::new("me".into(), false, false, None, 0, false);
         assert!(matches!(next(&mut session).await, Some(Some(CallEvent::IceServers(_)))));
         assert!(matches!(next(&mut session).await, Some(Some(CallEvent::OfferWanted { .. }))));
         for _ in 0..1000 {
@@ -732,19 +1658,172 @@ mod tests {
 
     #[tokio::test]
     async fn an_answering_call_never_offers() {
-        let mut session = External::new("me".into(), true);
+        let mut session = External::new("me".into(), true, false, None, 0, false);
         assert!(matches!(next(&mut session).await, Some(Some(CallEvent::IceServers(_)))));
         for _ in 0..1000 {
             assert!(next(&mut session).await.is_none());
         }
+    }
+
+    #[tokio::test]
+    async fn a_video_call_offers_again_for_each_change_of_what_it_sends() {
+        let mut session = External::new("me".into(), true, true, None, 0, false);
+        assert!(matches!(next(&mut session).await, Some(Some(CallEvent::IceServers(_)))));
+        assert!(next(&mut session).await.is_none());
+        assert!(session.can_send(VideoKind::Camera) && session.can_send(VideoKind::Screen));
+        assert!(session.reuses_section(VideoKind::Camera) && !session.reuses_section(VideoKind::Screen));
+        assert!(session.offers_in_turn() && session.offers_to_receive_video());
+        assert_eq!(session.video_stream(VideoKind::Screen), "me-screen");
+        session.set_video(LocalVideo { camera: true, screen: false }).await.unwrap();
+        assert!(matches!(next(&mut session).await, Some(Some(CallEvent::OfferWanted { relay_only: false }))));
+        assert!(next(&mut session).await.is_none(), "once per change");
+        let mut audio = External::new("me".into(), false, false, None, 0, false);
+        audio.set_video(LocalVideo { camera: true, screen: false }).await.unwrap();
+        assert!(!audio.can_send(VideoKind::Camera) && !audio.offers_to_receive_video());
+        assert!(matches!(next(&mut audio).await, Some(Some(CallEvent::IceServers(_)))));
+        assert!(matches!(next(&mut audio).await, Some(Some(CallEvent::OfferWanted { .. }))));
+        assert!(next(&mut audio).await.is_none(), "an audio call never offers again");
+    }
+
+    /// Each section's kind, direction and stream.
+    fn sections(sdp: &str) -> Vec<(String, String, String)> {
+        let mut out: Vec<(String, String, String)> = Vec::new();
+        for line in sdp.lines() {
+            if let Some(media) = line.strip_prefix("m=") {
+                out.push((media.split(' ').next().unwrap_or("").to_owned(), String::new(), String::new()));
+            } else if let Some(last) = out.last_mut() {
+                if matches!(line, "a=recvonly" | "a=inactive" | "a=sendonly" | "a=sendrecv") {
+                    last.1 = line[2..].to_owned();
+                } else if let Some(msid) = line.strip_prefix("a=msid:") {
+                    last.2 = msid.split(' ').next().unwrap_or("").to_owned();
+                }
+            }
+        }
+        out
+    }
+
+    #[tokio::test]
+    async fn a_shared_screen_offers_a_silent_microphone_and_the_screen_alone() {
+        let factory = PeerConnectionFactory::default();
+        let screen = || Some(NativeVideoSource::new(VideoResolution { width: 16, height: 16 }, true));
+        let wanted = || ShareNews::Event(Some(CallEvent::OfferWanted { relay_only: false }));
+        let mut share = Share::new(External::new("me".into(), false, true, None, 0, false));
+        let servers = ShareNews::Event(Some(CallEvent::IceServers(Vec::new())));
+        assert!(matches!(share.step(servers, &factory, screen()).await, Step::Going));
+        assert!(matches!(share.step(wanted(), &factory, screen()).await, Step::Going));
+        let (sdp, _) = share.offering.clone().expect("an offer waits for gathering");
+        assert_eq!(
+            sections(&sdp),
+            [
+                ("audio".to_owned(), "sendrecv".to_owned(), "me".to_owned()),
+                ("video".to_owned(), "sendrecv".to_owned(), "me-screen".to_owned())
+            ]
+        );
+        assert!(matches!(share.step(wanted(), &factory, None).await, Step::Going), "a renegotiation keeps its tracks");
+        assert_eq!(sections(&share.offering.clone().unwrap().0).len(), 2);
+        let connected = ShareNews::Peer(Peer::State(PeerConnectionState::Connected));
+        assert!(matches!(share.step(connected, &factory, None).await, Step::Connected));
+        let ended = ShareNews::Event(Some(CallEvent::Ended("connection_lost".into())));
+        assert!(matches!(share.step(ended, &factory, None).await, Step::Failed));
+        share.close();
+
+        let mut bare = Share::new(External::new("me".into(), false, true, None, 0, false));
+        assert!(matches!(bare.step(wanted(), &factory, None).await, Step::Failed), "no screen, no share");
+        assert!(matches!(bare.step(ShareNews::Event(None), &factory, None).await, Step::Failed));
+    }
+
+    fn receiving(sdp: &str) -> Vec<&str> {
+        let mut video = false;
+        sdp.lines()
+            .filter(|line| {
+                if let Some(media) = line.strip_prefix("m=") {
+                    video = media.starts_with("video");
+                }
+                video && matches!(*line, "a=recvonly" | "a=inactive" | "a=sendonly" | "a=sendrecv")
+            })
+            .collect()
+    }
+
+    #[tokio::test]
+    async fn offers_carry_the_receiving_sections_asked_and_keep_them() {
+        let factory = PeerConnectionFactory::default();
+        let (tx, _rx) = mpsc::unbounded_channel();
+        let mut call = Call::new(audio::Mix::new());
+        call.pc = Some(open(&factory, Vec::new(), false, tx).unwrap());
+        assert!(receiving(&offer(call.pc.as_ref().unwrap(), false).await.unwrap()).is_empty());
+
+        call.add_receivers(2);
+        assert_eq!(receiving(&offer(call.pc.as_ref().unwrap(), true).await.unwrap()), ["a=recvonly", "a=recvonly"]);
+        call.add_receivers(1);
+        assert_eq!(receiving(&offer(call.pc.as_ref().unwrap(), true).await.unwrap()), ["a=recvonly", "a=recvonly"]);
+        call.add_receivers(3);
+        assert_eq!(
+            receiving(&offer(call.pc.as_ref().unwrap(), true).await.unwrap()),
+            ["a=recvonly", "a=recvonly", "a=recvonly"]
+        );
+        assert_eq!(
+            receiving(&offer(call.pc.as_ref().unwrap(), false).await.unwrap()),
+            ["a=inactive", "a=inactive", "a=inactive"],
+            "the legacy option takes receiving away from every video section"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_call_with_video_up_front_offers_its_sections_once_and_swaps_their_tracks() {
+        let session = External::new("me".into(), false, true, None, 1, true);
+        assert!(session.video_up_front());
+        assert!(!External::new("me".into(), false, false, None, 0, true).video_up_front(), "an audio call has none");
+        let factory = PeerConnectionFactory::default();
+        let (tx, _rx) = mpsc::unbounded_channel();
+        let (internal, _news) = mpsc::unbounded_channel();
+        let mut videos = Videos::new(VideoOut { frames: None, fake: true }, internal);
+        let mut call = Call::new(audio::Mix::new());
+        let pc = open(&factory, Vec::new(), false, tx).unwrap();
+        videos.prepare(&pc, &|kind| session.video_stream(kind));
+        videos.prepare(&pc, &|kind| session.video_stream(kind));
+        call.pc = Some(pc);
+        call.add_receivers(session.receive_videos());
+        let first = offer(call.pc.as_ref().unwrap(), true).await.unwrap();
+        assert_eq!(receiving(&first), ["a=sendrecv", "a=sendrecv", "a=recvonly"], "{first}");
+        for stream in ["a=msid:me-camera ", "a=msid:me-screen "] {
+            assert!(first.contains(stream), "{stream}: {first}");
+        }
+        assert_eq!(videos.sending(), LocalVideo::default());
+
+        let pc = call.pc.as_ref().unwrap();
+        let streams = |kind| session.video_stream(kind);
+        videos.want(Source::Camera, true, None, None);
+        videos.news(Internal::CameraReady);
+        videos.attach(pc, &factory, &streams, &|kind| session.reuses_section(kind));
+        assert_eq!(videos.sending(), LocalVideo { camera: true, screen: false });
+        let on = offer(pc, true).await.unwrap();
+        assert_eq!(receiving(&on), ["a=sendrecv", "a=sendrecv", "a=recvonly"], "no section added: {on}");
+        videos.want(Source::Camera, false, None, None);
+        videos.attach(pc, &factory, &streams, &|kind| session.reuses_section(kind));
+        assert_eq!(videos.sending(), LocalVideo::default());
+    }
+
+    #[tokio::test]
+    async fn a_call_with_video_up_front_never_offers_again_for_its_video() {
+        let mut session = External::new("me".into(), false, true, None, 0, true);
+        assert!(matches!(next(&mut session).await, Some(Some(CallEvent::IceServers(_)))));
+        assert!(matches!(next(&mut session).await, Some(Some(CallEvent::OfferWanted { .. }))));
+        session.set_video(LocalVideo { camera: true, screen: true }).await.unwrap();
+        assert!(next(&mut session).await.is_none());
     }
 }
 
 /// A call carried as raw PCM by another process (`Command::ConnectPcm`, a WhatsApp
 /// call): 16 kHz mono in 60 ms frames over TCP, resampled from and to this side's
 /// 48 kHz processing, so the echo canceller, the noise remover, the devices and who
-/// speaks all work as in any call. It ends when the app says so, or the socket closes.
-pub async fn run_pcm(address: String, fake: bool, commands: &mut mpsc::UnboundedReceiver<Result<Command, ()>>) {
+/// speaks all work as in any call. Its video goes on a second connection
+/// (pcm_video.rs). It ends when the app says so, or the socket closes.
+pub async fn run_pcm(
+    address: String,
+    fake: bool,
+    video_out: VideoOut,
+    commands: &mut mpsc::UnboundedReceiver<Result<Command, ()>>,
+) {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     emit(Event::State { state: State::Connecting });
     let Some((host, token)) = address.split_once('#') else {
@@ -774,6 +1853,14 @@ pub async fn run_pcm(address: String, fake: bool, commands: &mut mpsc::Unbounded
     let (_factory, microphone) = media(&sound);
     let mut call = Call::new(mix.clone());
     call.apply(&microphone);
+    let (internal, mut captures) = mpsc::unbounded_channel();
+    let (news_tx, mut news) = mpsc::unbounded_channel();
+    let flags = Arc::new(pcm_video::Flags::default());
+    let mut video = PcmVideo::connect(host, token, video_out, internal, news_tx, flags.clone());
+    if video.is_some() {
+        call.pcm_video = Some(flags);
+    }
+    emit(Event::CallVideo { camera: video.is_some(), screen: video.is_some() });
     let (tap, mut tapped) = mpsc::unbounded_channel::<Vec<i16>>();
     mix.set_tap(Some(tap));
     // The far side's frames, played 10 ms at a time on this side's clock.
@@ -806,10 +1893,28 @@ pub async fn run_pcm(address: String, fake: bool, commands: &mut mpsc::Unbounded
                 Some(Ok(Command::RemoteEnded { reason })) => break reason,
                 Some(Ok(Command::RemoteRoster { members })) => {
                     call.roster = members.into_iter().map(|m| CallMember { id: m.id, name: m.name, muted: m.muted }).collect();
+                    if let (Some(video), Some(first)) = (&video, call.roster.first()) {
+                        video.set_peer(&first.id);
+                    }
                     call.publish("me");
+                }
+                Some(Ok(command @ (Command::SetCamera { .. } | Command::StartScreenShare { .. } | Command::StopScreenShare | Command::ListScreens))) if video.is_some() => {
+                    if let Some(video) = &mut video {
+                        video.command(command);
+                    }
                 }
                 Some(command) => local(command, &mut call, &microphone, &mut sound),
             },
+            Some(capture) = captures.recv() => {
+                if let Some(video) = &mut video {
+                    video.news(capture);
+                }
+            }
+            Some(pcm_video::News::Refused) = news.recv() => {
+                if let Some(video) = &mut video {
+                    video.refused();
+                }
+            }
             frame = heard.recv() => {
                 let Some(frame) = frame else { break "remote_ended".to_owned() };
                 queue.extend(upsampled(&frame));
@@ -845,6 +1950,7 @@ pub async fn run_pcm(address: String, fake: bool, commands: &mut mpsc::Unbounded
         }
     };
     reader.abort();
+    drop(video);
     mix.set_tap(None);
     drop(sound);
     diagnose(&format!("call: ended ({reason})"));

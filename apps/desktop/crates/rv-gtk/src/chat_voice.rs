@@ -8,8 +8,8 @@ use rv_core::native::NativeSession;
 use rv_core::native::crypto::enrollment::rooms;
 use rv_core::native::security::Guard;
 use rv_core::voice::{
-    ConnectionState, Ended, PersonVolume, ScreenKind, ScreenQuality, ScreenSource, Snapshot, VideoSource, VoiceKeys,
-    thumbnail,
+    ConnectionState, Ended, PersonVolume, ScreenKind, ScreenQuality, ScreenSource, Snapshot, VideoSource,
+    VoiceController, VoiceKeys, thumbnail,
 };
 use tokio::sync::broadcast::error::RecvError;
 
@@ -121,20 +121,25 @@ impl Controls {
 
 /// A camera or screen of this device's session: a picture redrawn when a new
 /// frame arrived (`VoiceController::frame`, polled 25 times a second while shown).
-fn video_view(session: &Arc<NativeSession>, identity: &str, source: VideoSource, fit: gtk::ContentFit) -> gtk::Picture {
-    following_view(session, Rc::new(RefCell::new(identity.to_owned())), source, fit)
+pub(crate) fn video_view(
+    voice: &VoiceController,
+    identity: &str,
+    source: VideoSource,
+    fit: gtk::ContentFit,
+) -> gtk::Picture {
+    following_view(voice, Rc::new(RefCell::new(identity.to_owned())), source, fit)
 }
 
 /// A video view whose person may change (the full-screen stage follows a takeover).
-fn following_view(
-    session: &Arc<NativeSession>,
+pub(crate) fn following_view(
+    voice: &VoiceController,
     identity: Rc<RefCell<String>>,
     source: VideoSource,
     fit: gtk::ContentFit,
 ) -> gtk::Picture {
     let picture = gtk::Picture::builder().content_fit(fit).can_shrink(true).css_classes(["voice-video"]).build();
     picture.set_overflow(gtk::Overflow::Hidden);
-    let (weak, voice) = (picture.downgrade(), session.voice().clone());
+    let (weak, voice) = (picture.downgrade(), voice.clone());
     let mut shown = 0;
     let mut draw = move || {
         let Some(picture) = weak.upgrade() else { return glib::ControlFlow::Break };
@@ -181,7 +186,7 @@ fn video_box(
     let holder = gtk::Overlay::builder().css_classes(["voice-video"]).halign(gtk::Align::Center).build();
     holder.set_overflow(gtk::Overflow::Hidden);
     holder.set_child(Some(&gtk::Box::builder().width_request(width).height_request(height).build()));
-    holder.add_overlay(&video_view(session, identity, source, gtk::ContentFit::Cover));
+    holder.add_overlay(&video_view(session.voice(), identity, source, gtk::ContentFit::Cover));
     holder
 }
 
@@ -349,7 +354,7 @@ fn state_icons(o: &Occupant) -> Vec<gtk::Image> {
 fn tile(session: &Arc<NativeSession>, o: &Occupant, mine: bool) -> gtk::Overlay {
     let tile = if mine && o.camera {
         let tile = card();
-        tile.add_overlay(&video_view(session, &o.uid, VideoSource::Camera, gtk::ContentFit::Cover));
+        tile.add_overlay(&video_view(session.voice(), &o.uid, VideoSource::Camera, gtk::ContentFit::Cover));
         tile
     } else {
         avatar_card(&speaking_avatar(session, o, TileSize::Profile, "large"))
@@ -361,7 +366,7 @@ fn tile(session: &Arc<NativeSession>, o: &Occupant, mine: bool) -> gtk::Overlay 
     tile
 }
 
-fn card() -> gtk::Overlay {
+pub(crate) fn card() -> gtk::Overlay {
     let tile = gtk::Overlay::builder().css_classes(["voice-card", "tile"]).build();
     tile.set_overflow(gtk::Overflow::Hidden);
     tile.set_child(Some(&gtk::Box::builder().hexpand(true).vexpand(true).build()));
@@ -421,7 +426,7 @@ fn share_source(session: &Arc<NativeSession>, source: &ScreenSource, title: &str
         .build();
     placeholder.append(&glyph);
     thumb.set_child(Some(&placeholder));
-    let picture = video_view(session, &thumbnail(&source.id), VideoSource::Screen, gtk::ContentFit::Contain);
+    let picture = video_view(session.voice(), &thumbnail(&source.id), VideoSource::Screen, gtk::ContentFit::Contain);
     // Clear until the thumbnail comes: the icon shows through.
     picture.remove_css_class("voice-video");
     thumb.add_overlay(&picture);
@@ -1104,7 +1109,7 @@ impl ChatPage {
             if voice.stage.child().is_none() || *voice.stage_uid.borrow() != sharer.uid {
                 voice.stage_uid.replace(sharer.uid.clone());
                 voice.stage.set_child(Some(&following_view(
-                    session,
+                    session.voice(),
                     voice.stage_uid.clone(),
                     VideoSource::Screen,
                     gtk::ContentFit::Contain,
@@ -1614,7 +1619,7 @@ impl ChatPage {
         let monitor = root.as_ref().and_then(|r| r.surface()).and_then(|s| s.display().monitor_at_surface(&s));
         let overlay = gtk::Overlay::new();
         overlay.set_child(Some(&following_view(
-            &session,
+            session.voice(),
             self.voice.stage_uid.clone(),
             VideoSource::Screen,
             gtk::ContentFit::Contain,

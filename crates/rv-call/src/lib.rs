@@ -36,6 +36,31 @@ pub struct Member {
     pub muted: bool,
 }
 
+/// What a video track shows.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum VideoKind {
+    Camera,
+    Screen,
+}
+
+/// A remote video the provider announced: its track, by the track's id or its
+/// stream's id, and whose it is ([`Member::id`]).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RemoteVideo {
+    pub track: String,
+    pub member: String,
+    pub kind: VideoKind,
+}
+
+/// What this side sends: its camera, its screen. Each local video track
+/// carries [`CallSignaling::video_stream`] as its stream id, by which an adapter
+/// finds it in the local description.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct LocalVideo {
+    pub camera: bool,
+    pub screen: bool,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum Event {
     /// The servers to give the peer connection, before any offer.
@@ -63,6 +88,12 @@ pub enum Event {
     Levels(Vec<(String, f32)>),
     /// Everyone else, whenever anyone joins, leaves or changes.
     Roster(Vec<Member>),
+    /// Every remote video sent now, the whole list each time: a track missing
+    /// from it is no longer shown.
+    Videos(Vec<RemoteVideo>),
+    /// A text message for the data channel [`CallSignaling::data_channel`]
+    /// names, sent once it is open (Jitsi's bridge channel).
+    DataMessage(String),
     /// The media session is over but this client is still in the call: close
     /// the peer connection and wait for the next [`Event::Offer`] (Jitsi's focus
     /// ends the session of a participant left alone, and offers a new one when
@@ -115,7 +146,93 @@ pub trait CallSignaling {
     }
     /// A data channel the offer must open, by its label (Mattermost's SFU sends no
     /// one's media until it is open).
-    fn data_channel(&self) -> Option<&'static str> {
+    fn data_channel(&self) -> Option<&str> {
+        None
+    }
+    /// Whether what arrives on that data channel goes to the app (Teams' is
+    /// spoken by the app).
+    fn forwards_data(&self) -> bool {
+        false
+    }
+    /// That data channel's subprotocol.
+    fn data_protocol(&self) -> &'static str {
+        ""
+    }
+    /// Whether this provider takes this side's camera, or its screen: the
+    /// engine sends only what it may. Remote videos are shown whatever this says.
+    fn can_send(&self, _kind: VideoKind) -> bool {
+        false
+    }
+    /// Whose and what a remote video track is, from its own ids, for a provider
+    /// that names it there rather than in [`Event::Videos`].
+    fn video_of(&self, _track: &str, _stream: &str) -> Option<(String, VideoKind)> {
+        None
+    }
+    /// Whether the provider's offers carry this side's own sending sections
+    /// (Jitsi): a local track then goes on the first unused one. Otherwise it
+    /// gets a section of its own, never one the server opened for another's
+    /// track.
+    fn offers_local_sections(&self) -> bool {
+        false
+    }
+    /// Whether this kind of local track goes on the first unused section (as
+    /// [`CallSignaling::offers_local_sections`] says for every kind) rather than
+    /// on one of its own: Teams sends the camera on the section that receives
+    /// the other side's, a shared screen on a section of its own.
+    fn reuses_section(&self, _kind: VideoKind) -> bool {
+        self.offers_local_sections()
+    }
+    /// Whether an offer waits for the previous one's answer: the app carries
+    /// this provider's signalling and answers one offer at a time (Teams).
+    fn offers_in_turn(&self) -> bool {
+        false
+    }
+    /// Whether this side's offers receive video: its video sections keep
+    /// receiving, and an offer with none asks for one (Teams' camera section
+    /// both sends and receives). Otherwise libwebrtc's legacy offer options
+    /// leave receiving out of every video section this side offers.
+    fn offers_to_receive_video(&self) -> bool {
+        false
+    }
+    /// How many receive-only video sections this side's offers must carry, one
+    /// per remote video the provider sends when asked on a section of its own
+    /// (Chime). Sections added stay: an offer with more than this many leaves
+    /// the rest unused.
+    fn receive_videos(&self) -> usize {
+        0
+    }
+    /// Whether the first offer carries this side's camera and screen sections,
+    /// both sending and receiving, before either has a track: a capture
+    /// starting or stopping then only swaps its track, with no new offer, the
+    /// app telling the provider what is sent its own way (a Teams group call).
+    fn video_up_front(&self) -> bool {
+        false
+    }
+    /// The stream id a local video track carries; the microphone's by default.
+    fn video_stream(&self, _kind: VideoKind) -> String {
+        self.local_id().to_owned()
+    }
+    /// This side's camera or screen started or stopped: the engine already
+    /// attached or detached the track. The adapter renegotiates as its provider
+    /// does ([`Event::OfferWanted`] where the client offers, [`Event::Offer`]
+    /// where it answers) and tells the call who sends what.
+    fn set_video(&mut self, _video: LocalVideo) -> impl Future<Output = Result<(), Error>> + Send {
+        async { Ok(()) }
+    }
+    /// Whether this side's screen goes as a session of its own, from
+    /// [`CallSignaling::screen_session`], rather than on this one's peer
+    /// connection.
+    fn screen_apart(&self) -> bool {
+        false
+    }
+    /// A session of its own for this side's screen (Chime's `#content`
+    /// attendee), joining as it is made: a peer connection of its own sends the
+    /// screen alone, what it receives unused, and it is left when the share
+    /// stops. [`CallSignaling::set_video`] tells this session once it sends.
+    fn screen_session(&self) -> Option<Self>
+    where
+        Self: Sized,
+    {
         None
     }
 }

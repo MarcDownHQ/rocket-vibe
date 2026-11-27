@@ -9,6 +9,8 @@
 //! of the camera and the screen, for headless tests.
 mod audio;
 mod call;
+mod h264;
+mod pcm_video;
 mod screen_audio;
 mod video;
 
@@ -143,7 +145,7 @@ async fn run() {
                         continue;
                     }
                     let config = rv_call::jitsi::Config { websocket, domain, muc, focus, room, display_name, token };
-                    return call::run(|| rv_call::jitsi::join(config.clone()), voice.fake, &mut commands).await;
+                    return call::run(|| rv_call::jitsi::join(config.clone()), voice.fake, voice.video_out(), &mut commands).await;
                 }
                 Some(Ok(Command::ConnectChime { signaling_url, audio_host, attendee_id, join_token, origin })) => {
                     if voice.room.is_some() {
@@ -151,37 +153,53 @@ async fn run() {
                         continue;
                     }
                     let config = rv_call::chime::Config { signaling_url, audio_host, attendee_id, join_token, origin };
-                    return call::run(|| rv_call::chime::client::join(config.clone()), voice.fake, &mut commands).await;
+                    return call::run(|| rv_call::chime::client::join(config.clone()), voice.fake, voice.video_out(), &mut commands).await;
                 }
                 Some(Ok(Command::ConnectPcm { address })) => {
                     if voice.room.is_some() {
                         error("already_connected");
                         continue;
                     }
-                    return call::run_pcm(address, voice.fake, &mut commands).await;
+                    return call::run_pcm(address, voice.fake, voice.video_out(), &mut commands).await;
                 }
-                Some(Ok(Command::ConnectExternal { identity, answering })) => {
+                Some(Ok(Command::ConnectExternal {
+                    identity,
+                    answering,
+                    video,
+                    data_channel,
+                    receive_videos,
+                    video_up_front,
+                })) => {
                     if voice.room.is_some() {
                         error("already_connected");
                         continue;
                     }
                     let join = || {
-                        let identity = identity.clone();
-                        async move { Ok::<_, rv_call::Error>(call::External::new(identity, answering)) }
+                        let (identity, data_channel) = (identity.clone(), data_channel.clone());
+                        async move {
+                            Ok::<_, rv_call::Error>(call::External::new(
+                                identity,
+                                answering,
+                                video,
+                                data_channel,
+                                receive_videos,
+                                video_up_front,
+                            ))
+                        }
                     };
-                    return call::run(join, voice.fake, &mut commands).await;
+                    return call::run(join, voice.fake, voice.video_out(), &mut commands).await;
                 }
-                Some(Ok(Command::ConnectMattermost { server, token, channel_id, user_id, ice_servers })) => {
+                Some(Ok(Command::ConnectMattermost { server, token, channel_id, user_id, ice_servers, screen, camera })) => {
                     if voice.room.is_some() {
                         error("already_connected");
                         continue;
                     }
-                    let config = rv_call::mattermost::Config { server, token, channel_id, user_id };
+                    let config = rv_call::mattermost::Config { server, token, channel_id, user_id, screen, camera };
                     let ice: Vec<rv_call::IceServer> = ice_servers
                         .into_iter()
                         .map(|s| rv_call::IceServer { urls: s.urls, username: s.username, credential: s.credential })
                         .collect();
-                    return call::run(|| rv_call::mattermost::join(config.clone(), ice.clone()), voice.fake, &mut commands)
+                    return call::run(|| rv_call::mattermost::join(config.clone(), ice.clone()), voice.fake, voice.video_out(), &mut commands)
                         .await;
                 }
                 Some(Ok(Command::Connect { url, token, e2ee_key })) => {
@@ -421,13 +439,19 @@ impl Voice {
             | Command::ConnectChime { .. }
             | Command::ConnectExternal { .. }
             | Command::ConnectPcm { .. }
+            | Command::SendData { .. }
             | Command::RemoteOffer { .. }
             | Command::RemoteAnswer { .. }
             | Command::RemoteRoster { .. }
+            | Command::RemoteVideos { .. }
             | Command::RemoteEnded { .. }
             | Command::ConnectMattermost { .. }
             | Command::Disconnect => {}
         }
+    }
+
+    fn video_out(&self) -> call::VideoOut {
+        call::VideoOut { frames: self.frames.clone(), fake: self.fake_video }
     }
 
     fn may_publish(&self) -> bool {

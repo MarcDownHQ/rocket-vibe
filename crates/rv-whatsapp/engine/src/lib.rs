@@ -3,6 +3,7 @@
 
 mod actions;
 mod avatars;
+mod call_video;
 mod calls;
 pub mod content;
 pub mod diagnostics;

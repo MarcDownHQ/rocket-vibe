@@ -10,12 +10,13 @@
 #[cfg(feature = "client")]
 pub mod client;
 pub mod proto;
+pub(crate) mod video;
 
 use std::collections::BTreeMap;
 
 use proto::{Message, Writer, frame, kind};
 
-use crate::{IceServer, Member};
+use crate::{IceServer, Member, VideoKind};
 
 /// The SDK this client presents itself as: the protocol it speaks is that one's.
 const SDK_VERSION: &str = "3.32.0";
@@ -57,9 +58,25 @@ impl Config {
             "{base}?X-Chime-Control-Protocol-Version=3&X-Amzn-Chime-Send-Close-On-Error=1&X-Amzn-Version={SDK_VERSION}&X-Amzn-User-Agent=rocket-vibe"
         ))
     }
+
+    /// The attendee sharing this one's screen: the same credentials with
+    /// `#content` after the id and the token.
+    pub fn content(&self) -> Config {
+        Config {
+            attendee_id: format!("{}{}", self.attendee_id, video::CONTENT),
+            join_token: format!("{}{}", self.join_token, video::CONTENT),
+            ..self.clone()
+        }
+    }
+
+    pub(crate) fn is_content(&self) -> bool {
+        self.attendee_id.ends_with(video::CONTENT)
+    }
 }
 
-pub(crate) fn join(timestamp: u64, audio_session_id: u32) -> Vec<u8> {
+/// The JOIN; a `content` attendee's asks for no adaptation and no periodic
+/// key frame, as the SDK's content share does.
+pub(crate) fn join(timestamp: u64, audio_session_id: u32, content: bool) -> Vec<u8> {
     let details = Writer::default()
         .string(5, "rocket-vibe")
         .string(6, env!("CARGO_PKG_VERSION"))
@@ -73,18 +90,44 @@ pub(crate) fn join(timestamp: u64, audio_session_id: u32) -> Vec<u8> {
         .uint(3, 2)
         .message(4, details)
         .uint(6, u64::from(audio_session_id))
-        .bool(7, true)
+        .bool(7, true);
+    let body = if content {
+        body.uint(10, 1).bool(12, false).bool(13, true)
+    } else {
         // BANDWIDTH_PROBING_AND_VIDEO_QUALITY_ADAPTION, and the three supported
-        .uint(10, 4)
-        .uint(11, 2)
-        .uint(11, 3)
-        .uint(11, 4);
+        body.uint(10, 4).uint(11, 2).uint(11, 3).uint(11, 4)
+    };
     proto::signal(timestamp, kind::JOIN, frame::JOIN, body)
 }
 
-/// The SUBSCRIBE carrying the offer: the microphone as the one stream sent.
-pub(crate) fn subscribe(timestamp: u64, config: &Config, compressed_offer: &[u8], muted: bool) -> Vec<u8> {
-    let stream = Writer::default()
+/// What Slack's web client sends on the main socket as its screen share
+/// starts: two `data-channel` messages, the second naming the attendee as a
+/// `browser:content` sharer.
+pub(crate) fn share_announced(timestamp: u64, attendee_id: &str) -> Vec<Vec<u8>> {
+    let content = Writer::default().string(1, "browser:content").string(2, attendee_id);
+    [
+        Writer::default().string(4, attendee_id).bytes(5, &[]),
+        Writer::default().string(4, attendee_id).message(15, content),
+    ]
+    .into_iter()
+    .map(|data| {
+        let payload = Writer::default().string(1, "data-channel").bytes(2, &data.finish());
+        proto::signal(timestamp, kind::DATA_MESSAGE, frame::DATA_MESSAGE, Writer::default().message(1, payload))
+    })
+    .collect()
+}
+
+/// The SUBSCRIBE carrying the offer: the microphone, the `video` sent if any,
+/// and the remote videos `placed` on the offer's receiving sections.
+pub(crate) fn subscribe(
+    timestamp: u64,
+    config: &Config,
+    compressed_offer: &[u8],
+    muted: bool,
+    video: Option<VideoKind>,
+    placed: &video::Placed,
+) -> Vec<u8> {
+    let microphone = Writer::default()
         .uint(1, 1)
         .uint(2, 15)
         .uint(3, 600)
@@ -94,17 +137,49 @@ pub(crate) fn subscribe(timestamp: u64, config: &Config, compressed_offer: &[u8]
         .string(8, &config.attendee_id)
         // AUDIO
         .uint(9, 1);
-    let body = Writer::default()
-        // RX: no video sent
-        .uint(1, 1)
-        .message(2, stream)
-        .uint(3, 0)
-        .string(4, "")
-        .string(5, &config.audio_host)
-        .bool(6, false)
-        .bool(7, muted)
-        .bytes(8, compressed_offer);
+    // RX, or DUPLEX with a video
+    let mut body = Writer::default().uint(1, if video.is_some() { 3 } else { 1 }).message(2, microphone);
+    if let Some(kind) = video {
+        let kbps = match kind {
+            VideoKind::Camera => 1400,
+            VideoKind::Screen => 1500,
+        };
+        let stream = Writer::default()
+            .uint(1, 2)
+            .uint(2, 15)
+            .uint(3, kbps)
+            .string(4, "AmazonChimeExpressVideo")
+            .uint(6, 2)
+            .string(8, &config.attendee_id)
+            // VIDEO
+            .uint(9, 2);
+        body = body.message(2, stream);
+    }
+    for id in &placed.receive {
+        body = body.uint(3, u64::from(*id));
+    }
+    body = body.string(4, "").string(5, &config.audio_host).bool(6, false).bool(7, muted).bytes(8, compressed_offer);
+    for subscription in &placed.subscriptions {
+        let (priority, kbps, adaptation) = match subscription.kind {
+            VideoKind::Camera => (4_294_967_265, 600, 2),
+            VideoKind::Screen => (4_294_967_285, 10_000, 3),
+        };
+        let config = Writer::default()
+            .string(1, &subscription.mid)
+            .string(2, &subscription.attendee)
+            .uint(4, priority)
+            .uint(5, kbps)
+            .uint(6, adaptation)
+            .uint(7, 1);
+        body = body.message(9, config);
+    }
     proto::signal(timestamp, kind::SUBSCRIBE, frame::SUBSCRIBE, body)
+}
+
+/// Tells the server these receiving sections no longer receive.
+pub(crate) fn remote_video_removed(timestamp: u64, mids: &[String]) -> Vec<u8> {
+    let body = mids.iter().fold(Writer::default(), |w, mid| w.string(2, mid));
+    proto::signal(timestamp, kind::REMOTE_VIDEO_UPDATE, frame::REMOTE_VIDEO_UPDATE, body)
 }
 
 pub(crate) fn audio_control(timestamp: u64, muted: bool) -> Vec<u8> {
@@ -157,7 +232,7 @@ impl Roster {
             let Some(id) = stream.int(1) else { continue };
             let attendee = stream.string(2);
             let muted = stream.int(3).map(|m| m != 0);
-            if attendee.as_deref() == Some(self.me.as_str()) {
+            if attendee.as_deref().is_some_and(|a| a == self.me || a.ends_with(video::CONTENT)) {
                 continue;
             }
             if stream.int(5).is_some_and(|d| d != 0) {
@@ -230,6 +305,27 @@ pub(crate) fn audio_status(status: u64) -> Status {
     }
 }
 
+/// A SUBSCRIBE_ACK's raw-deflated answer, which the server compresses with the
+/// previous answer on the same socket as its preset dictionary (none for the
+/// first).
+pub(crate) fn inflate_answer(compressed: &[u8], previous: &[u8]) -> Option<Vec<u8>> {
+    let dictionary = &previous[previous.len().saturating_sub(32 * 1024)..];
+    let mut stream = Vec::with_capacity(dictionary.len() + 5 + compressed.len());
+    if !dictionary.is_empty() {
+        // miniz_oxide takes no preset dictionary: a non-final stored block
+        // holding it ends byte-aligned, so the answer's own blocks follow it.
+        let len = dictionary.len() as u16;
+        stream.push(0);
+        stream.extend_from_slice(&len.to_le_bytes());
+        stream.extend_from_slice(&(!len).to_le_bytes());
+        stream.extend_from_slice(dictionary);
+    }
+    stream.extend_from_slice(compressed);
+    let mut inflated = miniz_oxide::inflate::decompress_to_vec(&stream).ok()?;
+    inflated.drain(..dictionary.len());
+    Some(inflated)
+}
+
 /// An attendee's volume as the server sends it (minus decibels) between 0 and
 /// 1, over the SDK's own range of -42 to -14 dB.
 fn level(volume: u64) -> f32 {
@@ -267,7 +363,7 @@ mod tests {
 
     #[test]
     fn the_join_matches_the_captured_one() {
-        let b = join(7, 42);
+        let b = join(7, 42, false);
         let (kind, m) = proto::received(&b).unwrap();
         assert_eq!(b[0], proto::CLIENT_FRAME);
         assert_eq!(kind, kind::JOIN);
@@ -277,8 +373,78 @@ mod tests {
     }
 
     #[test]
+    fn the_content_attendee_is_this_one_with_content_after_its_id_and_token() {
+        let content = config().content();
+        assert_eq!(content.attendee_id, "me-attendee#content");
+        assert_eq!(content.join_token, "token#content");
+        assert_eq!((content.signaling_url, content.audio_host), (config().signaling_url, config().audio_host));
+        assert!(config().content().is_content() && !config().is_content());
+    }
+
+    #[test]
+    fn the_content_join_asks_for_no_adaptation_as_captured() {
+        let b = join(7, 42, true);
+        let (_, m) = proto::received(&b).unwrap();
+        let content = m.message(frame::JOIN).unwrap();
+        assert_eq!(
+            (content.int(1), content.int(3), content.int(6), content.int(7)),
+            (Some(2), Some(2), Some(42), Some(1))
+        );
+        assert_eq!((content.int(10), content.int(12), content.int(13)), (Some(1), Some(0), Some(1)));
+        assert!(content.ints(11).is_empty());
+        let b = join(7, 42, false);
+        let (_, m) = proto::received(&b).unwrap();
+        let main = m.message(frame::JOIN).unwrap();
+        assert_eq!((main.int(10), main.ints(11), main.int(13)), (Some(4), vec![2, 3, 4], None));
+    }
+
+    #[test]
+    fn the_content_subscribe_sends_the_screen_beside_a_silent_microphone() {
+        let content = config().content();
+        let placed = video::Placed { receive: vec![0], ..Default::default() };
+        let b = subscribe(7, &content, b"deflated", false, Some(VideoKind::Screen), &placed);
+        let (_, m) = proto::received(&b).unwrap();
+        let sub = m.message(frame::SUBSCRIBE).unwrap();
+        assert_eq!((sub.int(1), sub.int(7), sub.ints(3)), (Some(3), Some(0), vec![0]));
+        let streams = sub.messages(2);
+        assert_eq!(streams.len(), 2);
+        assert_eq!(streams[0].string(8).as_deref(), Some("me-attendee#content"));
+        assert_eq!(streams[0].int(9), Some(1));
+        let screen = &streams[1];
+        assert_eq!(
+            (screen.int(1), screen.int(2), screen.int(3), screen.int(6), screen.int(9)),
+            (Some(2), Some(15), Some(1500), Some(2), Some(2))
+        );
+        assert_eq!(screen.string(4).as_deref(), Some("AmazonChimeExpressVideo"));
+        assert_eq!(screen.string(8).as_deref(), Some("me-attendee#content"));
+        assert!(sub.messages(9).is_empty());
+    }
+
+    #[test]
+    fn a_share_is_announced_as_slack_does_on_the_main_socket() {
+        let frames = share_announced(7, "me-attendee");
+        assert_eq!(frames.len(), 2);
+        let mut data = Vec::new();
+        for b in &frames {
+            let (kind, m) = proto::received(b).unwrap();
+            assert_eq!(kind, kind::DATA_MESSAGE);
+            let payload = m.message(frame::DATA_MESSAGE).unwrap().message(1).unwrap();
+            assert_eq!(payload.string(1).as_deref(), Some("data-channel"));
+            data.push(payload.bytes(2).unwrap().to_vec());
+        }
+        let first = Message::parse(&data[0]).unwrap();
+        assert_eq!((first.string(4).as_deref(), first.bytes(5)), (Some("me-attendee"), Some(&b""[..])));
+        let second = Message::parse(&data[1]).unwrap();
+        assert_eq!(second.string(4).as_deref(), Some("me-attendee"));
+        let content = second.message(15).unwrap();
+        assert_eq!(content.string(1).as_deref(), Some("browser:content"));
+        assert_eq!(content.string(2).as_deref(), Some("me-attendee"));
+    }
+
+    #[test]
     fn the_subscribe_sends_the_microphone_and_the_offer() {
-        let b = subscribe(7, &config(), b"deflated", true);
+        let b =
+            subscribe(7, &config(), b"deflated", true, None, &video::Placed { receive: vec![0], ..Default::default() });
         let (kind, m) = proto::received(&b).unwrap();
         assert_eq!(kind, kind::SUBSCRIBE);
         let sub = m.message(frame::SUBSCRIBE).unwrap();
@@ -290,6 +456,54 @@ mod tests {
         assert_eq!(stream.string(4).as_deref(), Some("AmazonChimeExpressAudio"));
         assert_eq!(stream.string(8).as_deref(), Some("me-attendee"));
         assert_eq!(stream.int(9), Some(1));
+        assert_eq!(sub.messages(2).len(), 1);
+        assert_eq!(sub.ints(3), vec![0]);
+        assert!(sub.messages(9).is_empty());
+    }
+
+    #[test]
+    fn the_subscribe_sends_the_camera_and_asks_for_the_videos_placed_as_captured() {
+        let placed = video::Placed {
+            receive: vec![0, 11, 71],
+            subscriptions: vec![
+                video::Subscription { mid: "2".into(), attendee: "other".into(), kind: VideoKind::Camera },
+                video::Subscription { mid: "3".into(), attendee: "other#content".into(), kind: VideoKind::Screen },
+            ],
+        };
+        let b = subscribe(7, &config(), b"deflated", false, Some(VideoKind::Camera), &placed);
+        let (_, m) = proto::received(&b).unwrap();
+        let sub = m.message(frame::SUBSCRIBE).unwrap();
+        assert_eq!(sub.int(1), Some(3));
+        let streams = sub.messages(2);
+        assert_eq!(streams.len(), 2);
+        let camera = &streams[1];
+        assert_eq!(
+            (camera.int(1), camera.int(2), camera.int(3), camera.int(6), camera.int(9)),
+            (Some(2), Some(15), Some(1400), Some(2), Some(2))
+        );
+        assert_eq!(camera.string(4).as_deref(), Some("AmazonChimeExpressVideo"));
+        assert_eq!(camera.string(8).as_deref(), Some("me-attendee"));
+        assert_eq!(sub.ints(3), vec![0, 11, 71]);
+        let configs = sub.messages(9);
+        assert_eq!(configs.len(), 2);
+        assert_eq!(configs[0].string(1).as_deref(), Some("2"));
+        assert_eq!(configs[0].string(2).as_deref(), Some("other"));
+        assert_eq!(
+            (configs[0].int(4), configs[0].int(5), configs[0].int(6)),
+            (Some(4_294_967_265), Some(600), Some(2))
+        );
+        assert_eq!(
+            (configs[1].int(4), configs[1].int(5), configs[1].int(6)),
+            (Some(4_294_967_285), Some(10_000), Some(3))
+        );
+    }
+
+    #[test]
+    fn a_freed_section_is_told_removed() {
+        let b = remote_video_removed(7, &["2".to_owned(), "4".to_owned()]);
+        let (kind, m) = proto::received(&b).unwrap();
+        assert_eq!(kind, kind::REMOTE_VIDEO_UPDATE);
+        assert_eq!(m.message(frame::REMOTE_VIDEO_UPDATE).unwrap().strings(2), vec!["2".to_owned(), "4".to_owned()]);
     }
 
     #[test]
@@ -347,6 +561,26 @@ mod tests {
     }
 
     #[test]
+    fn a_shared_screen_is_no_one_in_the_roster() {
+        let mut roster = Roster::new("me-attendee");
+        let joined = info(vec![
+            Writer::default().uint(1, 2).string(2, "other").string(4, "T-R-UOTHER"),
+            Writer::default().uint(1, 3).string(2, "other#content").string(4, "T-R-UOTHER"),
+            Writer::default().uint(1, 4).string(2, "me-attendee#content").string(4, "T-R-UME"),
+        ]);
+        roster.stream_info(&Message::parse(&joined).unwrap());
+        assert_eq!(roster.members(), vec![Member { id: "T-R-UOTHER".into(), name: String::new(), muted: false }]);
+        let meta = Writer::default()
+            .message(1, Writer::default().uint(1, 2).uint(2, 14))
+            .message(1, Writer::default().uint(1, 3).uint(2, 127))
+            .finish();
+        let (levels, _) = roster.metadata(&Message::parse(&meta).unwrap());
+        assert_eq!(levels, vec![("T-R-UOTHER".to_owned(), 1.0)], "the screen's silence hides no one's voice");
+        let gone = info(vec![Writer::default().uint(1, 4)]);
+        assert!(!roster.stream_info(&Message::parse(&gone).unwrap()));
+    }
+
+    #[test]
     fn metadata_gives_levels_and_silence_for_the_streams_it_leaves_out() {
         let mut roster = Roster::new("me");
         let joined = info(vec![
@@ -361,5 +595,25 @@ mod tests {
         assert_eq!(level(42), 0.0);
         assert_eq!(level(127), 0.0);
         assert!((level(28) - 0.5).abs() < 1e-6);
+    }
+
+    #[test]
+    fn an_answer_inflates_with_the_previous_one_as_its_dictionary() {
+        let previous = b"v=0\r\no=- 0 0 IN IP4 127.0.0.1\r\ns=-\r\nt=0 0\r\na=group:BUNDLE 0 1\r\n\
+            m=audio 9 UDP/TLS/RTP/SAVPF 111\r\na=mid:0\r\nm=video 9 UDP/TLS/RTP/SAVPF 96\r\na=mid:1\r\na=inactive\r\n";
+        let answer = b"v=0\r\no=- 0 0 IN IP4 127.0.0.1\r\ns=-\r\nt=0 0\r\na=group:BUNDLE 0 1 2\r\n\
+            m=audio 9 UDP/TLS/RTP/SAVPF 111\r\na=mid:0\r\nm=video 9 UDP/TLS/RTP/SAVPF 96\r\na=mid:1\r\na=inactive\r\n\
+            m=video 9 UDP/TLS/RTP/SAVPF 96\r\na=mid:2\r\na=sendonly\r\na=msid:v_2 track_2\r\n";
+        // zlib's raw deflate of `answer` with `previous` as its preset dictionary.
+        let compressed = [
+            0x2b, 0xa3, 0xc4, 0x75, 0x0a, 0x46, 0x34, 0x77, 0x1f, 0x71, 0x9a, 0x8c, 0x40, 0x8c, 0xe2, 0xd4, 0xbc, 0x94,
+            0xfc, 0xbc, 0x9c, 0x4a, 0xb0, 0x60, 0x31, 0x50, 0xb4, 0x2c, 0xde, 0x48, 0xa1, 0xa4, 0x28, 0x31, 0x39, 0x3b,
+            0x1e, 0x28, 0x0f, 0x00,
+        ];
+        assert_eq!(inflate_answer(&compressed, previous).as_deref(), Some(&answer[..]));
+        assert_eq!(inflate_answer(&compressed, b""), None);
+
+        let first = miniz_oxide::deflate::compress_to_vec(previous, 6);
+        assert_eq!(inflate_answer(&first, b"").as_deref(), Some(&previous[..]));
     }
 }

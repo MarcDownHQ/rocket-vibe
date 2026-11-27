@@ -634,14 +634,13 @@ impl WhatsAppChat {
         })
     }
 
-    /// A ringing call this app can carry (a person's, audio only); the others
-    /// are answered on the phone.
+    /// A ringing call this app can carry (a person's, a video call too); a
+    /// group's is answered on the phone.
     pub fn call_answerable(&self, call_id: String) -> bool {
-        rv_core::voice::available()
-            && self.session.snapshot().calls.get(&call_id).is_some_and(|c| !c.video && c.group.is_empty())
+        rv_core::voice::available() && self.session.snapshot().calls.get(&call_id).is_some_and(|c| c.group.is_empty())
     }
 
-    /// A person's chat can be called, audio only; a group's not yet.
+    /// A person's chat can be called, audio first; a group's not yet.
     pub fn call_possible(&self, rid: String) -> bool {
         rv_core::voice::available() && !rid.ends_with("@g.us") && self.session.connection() == Connection::Online
     }

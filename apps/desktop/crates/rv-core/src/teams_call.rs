@@ -1,17 +1,20 @@
 //! A Teams call the app carries itself (brain/architecture/native-calls.md): this
 //! side speaks Teams' signalling over the account's tokens and socket, the voice
-//! sidecar offers and carries the media. Audio only.
+//! sidecar offers and carries the media, the cameras and shared screens included.
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::time::Duration;
 
-use rv_voice_protocol::RemoteMember;
-use serde_json::Value;
+use rv_voice_protocol::{RemoteMember, RemoteVideo};
+use serde_json::{Value, json};
 
 use crate::session::Session;
 use crate::sync::Backend;
-use crate::teams::calling::{self, CallEvent, Caller};
+use crate::teams::calling::{self, CallEvent, Caller, Source};
+use crate::teams::datachannel::{self, Channel, Routing};
+use crate::teams::sdp;
+use crate::teams::sync::TeamsSync;
 use crate::voice::VoiceController;
 use rv_provider::rest::RestError;
 
@@ -19,6 +22,10 @@ use rv_provider::rest::RestError;
 const RINGING: Duration = Duration::from_secs(90);
 /// How long after the answer a conversation's end push is believed.
 const SETTLED: Duration = Duration::from_secs(5);
+/// The receive-only video sections a group call offers besides this side's
+/// camera and screen sections, which receive too: four cameras and a shared
+/// screen in all.
+const GROUP_RECEIVERS: usize = 3;
 
 /// Who a call goes to.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -32,6 +39,35 @@ pub enum Target {
     TestCall,
     /// The call ringing in this chat, answered here.
     Incoming(String),
+}
+
+/// What a call's media negotiated so far, as [`drive`] takes it over.
+struct Media {
+    layout: sdp::Layout,
+    /// Whether the other side took the call already: one answered here.
+    answered: bool,
+    /// Where this side's own new offers go, once Teams said.
+    renegotiation: Option<String>,
+    media_leg: Option<String>,
+}
+
+impl Media {
+    fn new(layout: sdp::Layout) -> Self {
+        Media { layout, answered: false, renegotiation: None, media_leg: None }
+    }
+}
+
+/// What this side sends now, as the window asked.
+fn sending(voice: &VoiceController) -> sdp::Sending {
+    let snapshot = voice.snapshot();
+    sdp::Sending { camera: snapshot.camera, screen: snapshot.sharing }
+}
+
+/// What the sidecar sends now, its track on: what a group call tells Teams.
+fn sent(voice: &VoiceController) -> sdp::Sending {
+    let snapshot = voice.snapshot();
+    let local = snapshot.local();
+    sdp::Sending { camera: local.is_some_and(|p| p.camera), screen: local.is_some_and(|p| p.screen) }
 }
 
 struct Identity {
@@ -97,7 +133,7 @@ impl Session {
             chain: calling::random_id(),
         };
         voice
-            .connect_external(label, &identity.endpoint)
+            .connect_external(label, &identity.endpoint, None, 0, false)
             .await
             .map_err(|e| RestError::incomplete(&format!("call: {e}")))?;
         let Some(offer) = voice.local_offer().await else {
@@ -106,11 +142,12 @@ impl Session {
         };
         let chain = identity.chain.clone();
         let mut pushes = self.teams_call_pushes.subscribe();
+        let mut layout = sdp::Layout::default();
         let body = calling::place_call(
             &identity.caller(),
             &to,
             thread.as_deref(),
-            &calling::teams_offer(&offer),
+            &sdp::teams_offer(&offer, sending(voice), &mut layout),
             &calling::random_id(),
         );
         let created = match teams.service.calling_post(calling::EPCONV, &chain, &body).await {
@@ -124,7 +161,7 @@ impl Session {
         let voice = voice.clone();
         tokio::spawn(async move {
             let test = target == Target::TestCall;
-            drive(&session, &voice, &identity, &created, test, None, &mut pushes).await;
+            drive(&session, &voice, &identity, &created, test, Media::new(layout), &mut pushes).await;
         });
         Ok(())
     }
@@ -157,24 +194,28 @@ impl Session {
             chain: calling::random_id(),
         };
         voice
-            .connect_external(label, &identity.endpoint)
+            .connect_external(label, &identity.endpoint, Some(datachannel::LABEL), GROUP_RECEIVERS, true)
             .await
             .map_err(|e| RestError::incomplete(&format!("call: {e}")))?;
         let Some(offer) = voice.local_offer().await else {
             voice.disconnect().await;
             return Err(RestError::incomplete("call: no offer"));
         };
-        let (chain, caller, offer) = (identity.chain.as_str(), identity.caller(), calling::teams_offer(&offer));
+        let mut layout = sdp::Layout::group();
+        let offer = sdp::teams_offer(&offer, sending(voice), &mut layout);
+        let described = |mut body: Value| {
+            calling::describe_media(&mut body, sdp::media_descriptions(&layout, sdp::Sending::default()));
+            body
+        };
+        let (chain, caller) = (identity.chain.as_str(), identity.caller());
         let mut pushes = self.teams_call_pushes.subscribe();
         let created = match &join {
             Some(join) => {
                 match teams.service.calling_post(calling::EPCONV, chain, &calling::join_meeting(&caller, join)).await {
                     Ok(conversation) => match conversation.get("conversationController").and_then(Value::as_str) {
                         Some(controller) => {
-                            teams
-                                .service
-                                .calling_post(controller, chain, &calling::join_meeting_call(&caller, join, &offer))
-                                .await
+                            let body = described(calling::join_meeting_call(&caller, join, &offer));
+                            teams.service.calling_post(controller, chain, &body).await
                         }
                         None => Err(RestError::incomplete("call: the meeting's conversation has no controller")),
                     },
@@ -182,10 +223,8 @@ impl Session {
                 }
             }
             None => {
-                teams
-                    .service
-                    .calling_post(calling::EPCONV, chain, &calling::start_channel_call(&caller, rid, &offer))
-                    .await
+                let body = described(calling::start_channel_call(&caller, rid, &offer));
+                teams.service.calling_post(calling::EPCONV, chain, &body).await
             }
         };
         let created = match created {
@@ -201,7 +240,7 @@ impl Session {
         let session = self.clone();
         let voice = voice.clone();
         tokio::spawn(async move {
-            drive(&session, &voice, &identity, &created, false, None, &mut pushes).await;
+            drive(&session, &voice, &identity, &created, false, Media::new(layout), &mut pushes).await;
         });
         Ok(())
     }
@@ -273,7 +312,8 @@ impl Session {
             .and_then(Value::as_str)
             .ok_or_else(|| RestError::incomplete("call: no acceptance link"))?
             .to_owned();
-        let Some(plain) = calling::webrtc_answer(&answer.offer) else {
+        let mut layout = sdp::Layout::default();
+        let Some(plain) = sdp::plain_offer(&answer.offer, &mut layout) else {
             return Err(RestError::incomplete("call: an offer without audio"));
         };
         voice
@@ -284,15 +324,26 @@ impl Session {
             voice.disconnect().await;
             return Err(RestError::incomplete("call: no answer"));
         };
+        let sending = sending(voice);
         let body = calling::accept_call(
             &identity.caller(),
-            &calling::teams_answer(&local, &answer.offer),
+            &sdp::teams_answer(&local, &answer.offer, sending, &layout),
             answer.media_leg.as_deref(),
+            &sdp::modalities(&layout, sending),
         );
-        if let Err(e) = teams.service.calling_post(&acceptance, &chain, &body).await {
-            voice.disconnect().await;
-            return Err(e);
-        }
+        let acknowledged = match teams.service.calling_post(&acceptance, &chain, &body).await {
+            Ok(acknowledged) => acknowledged,
+            Err(e) => {
+                voice.disconnect().await;
+                return Err(e);
+            }
+        };
+        let media = Media {
+            layout,
+            answered: true,
+            renegotiation: calling::renegotiation_link(&acknowledged),
+            media_leg: answer.media_leg.clone(),
+        };
         if std::env::var("RV_CALL_DEBUG").as_deref() == Ok("1") {
             eprintln!("teams call: answered {call_id}");
         }
@@ -300,7 +351,7 @@ impl Session {
         let session = self.clone();
         let voice = voice.clone();
         tokio::spawn(async move {
-            drive(&session, &voice, &identity, &created, false, Some(plain), &mut pushes).await;
+            drive(&session, &voice, &identity, &created, false, media, &mut pushes).await;
         });
         Ok(())
     }
@@ -380,14 +431,129 @@ fn debug(envelope: &Value, event: &CallEvent) {
     eprintln!("teams call: push {path} -> {kind} {keys:?}");
 }
 
+/// A group call's media server, spoken to on the data channel: which video it
+/// sends on which section.
+struct Group {
+    channel: Channel,
+    routing: Routing,
+}
+
+/// What a group call told Teams this side sends, and where it tells it.
+struct Told {
+    descriptions: String,
+    capabilities: Option<String>,
+    sharer: Option<String>,
+    sent: sdp::Sending,
+    request: u32,
+    camera_described: bool,
+    shares: u32,
+}
+
+impl Told {
+    fn new(descriptions: String, capabilities: Option<String>, sharer: Option<String>) -> Self {
+        Told {
+            descriptions,
+            capabilities,
+            sharer,
+            sent: sdp::Sending::default(),
+            request: 1,
+            camera_described: false,
+            shares: 0,
+        }
+    }
+}
+
+/// Tells Teams each change of what this side sends in a group call, as its web
+/// client does: the camera's capabilities before it first goes out, the sharer
+/// before a share, then every section's direction.
+async fn tell(
+    teams: &TeamsSync,
+    chain: &str,
+    caller: &Caller<'_>,
+    layout: &sdp::Layout,
+    told: &mut Told,
+    now: sdp::Sending,
+) {
+    for (step, label) in sdp::sending_steps(told.sent, now) {
+        if label == sdp::Label::Camera && step.camera && !told.camera_described {
+            told.camera_described = true;
+            if let (Some(link), Some(mid)) = (&told.capabilities, sdp::own_mid(layout, sdp::Label::Camera)) {
+                let body = calling::camera_capabilities(mid, 1);
+                report("camera's capabilities", teams.service.calling_post(link, chain, &body).await.map(|_| ()));
+            }
+        }
+        if label == sdp::Label::Screen
+            && step.screen
+            && let Some(link) = &told.sharer
+        {
+            told.shares += 1;
+            let body = calling::screen_sharer(caller, told.shares);
+            report("screen sharer", teams.service.calling_post(link, chain, &body).await.map(|_| ()));
+        }
+        told.request += 1;
+        told.sent = step;
+        let descriptions = sdp::media_descriptions(layout, step);
+        let body = calling::update_media_descriptions(caller, descriptions, label == sdp::Label::Screen, told.request);
+        report("media descriptions", teams.service.calling_post(&told.descriptions, chain, &body).await.map(|_| ()));
+    }
+}
+
+/// The other side's videos to the sidecar, when they changed: in a group call
+/// the ones its media server was asked for, whose each is; otherwise whose they
+/// are is the one other person a call with one has.
+async fn show_videos(
+    voice: &VoiceController,
+    layout: &sdp::Layout,
+    roster: &BTreeMap<String, String>,
+    group: Option<&Group>,
+    shown: &mut Vec<RemoteVideo>,
+) {
+    let videos: Vec<RemoteVideo> = match group {
+        Some(group) => group
+            .routing
+            .shown(&sdp::video_slots(layout))
+            .into_iter()
+            .map(|(stream, member, screen)| RemoteVideo { stream, member, screen })
+            .collect(),
+        None => {
+            let member = if roster.len() == 1 { roster.keys().next().cloned() } else { None };
+            sdp::remote_videos(layout)
+                .into_iter()
+                .filter_map(|(stream, label)| {
+                    Some(RemoteVideo { stream, member: member.clone()?, screen: label == sdp::Label::Screen })
+                })
+                .collect()
+        }
+    };
+    if videos != *shown {
+        *shown = videos.clone();
+        voice.remote_videos(videos).await;
+    }
+}
+
+/// Asks the media server for the videos that started, and stops those that
+/// ended, on the call's sections.
+async fn route(
+    voice: &VoiceController,
+    layout: &sdp::Layout,
+    sources: &BTreeMap<String, Vec<Source>>,
+    group: &mut Group,
+) {
+    for (stream, source, screen) in group.routing.plan(&sdp::video_slots(layout), sources) {
+        if std::env::var("RV_CALL_DEBUG").as_deref() == Ok("1") {
+            eprintln!("teams call: asking for {source:?} on stream {stream}");
+        }
+        voice.send_data(group.channel.subscribe(stream, source, screen)).await;
+    }
+}
+
 async fn drive(
     session: &Arc<Session>,
     voice: &VoiceController,
     identity: &Identity,
     created: &Value,
     test: bool,
-    // The plain offer of a call answered here, accepted already.
-    accepted: Option<String>,
+    media: Media,
     pushes: &mut tokio::sync::broadcast::Receiver<Value>,
 ) {
     let Backend::Teams(teams) = session.backend() else { return };
@@ -395,11 +561,18 @@ async fn drive(
     let links = created.get("links").unwrap_or(&Value::Null);
     let conversation = created.get("conversationController").and_then(Value::as_str).unwrap_or("");
     let mut changes = voice.changes();
+    let mut offers = voice.local_offers();
     let mut roster: BTreeMap<String, String> = BTreeMap::new();
-    let mut answered = accepted.is_some();
+    let mut sources: BTreeMap<String, Vec<Source>> = BTreeMap::new();
+    let mut group: Option<Group> = None;
+    let mut data = voice.data();
+    let mut heartbeat = tokio::time::interval(Duration::from_secs(1));
+    let mut shown: Vec<RemoteVideo> = Vec::new();
+    let mut sharing = false;
+    let mut told: Option<Told> = None;
+    let Media { mut layout, mut answered, mut renegotiation, mut media_leg } = media;
     let mut answered_at = answered.then(tokio::time::Instant::now);
-    // What the call negotiated last, in plain WebRTC: a new offer must fit it.
-    let mut negotiated: Option<String> = accepted;
+    let debugging = std::env::var("RV_CALL_DEBUG").as_deref() == Ok("1");
     // Teams' conversation holds this client through this long poll's 30 s lease.
     let broker = links.get("subscribe").and_then(Value::as_str).map(|first| {
         let (session, chain, first) = (session.clone(), chain.to_owned(), first.to_owned());
@@ -423,6 +596,44 @@ async fn drive(
                 if change.is_err() || voice.snapshot().ended.is_some() {
                     break true;
                 }
+                if let Some(told) = &mut told {
+                    tell(teams, chain, &identity.caller(), &layout, told, sent(voice)).await;
+                }
+            }
+            _ = heartbeat.tick(), if group.is_some() => {
+                if let Some(group) = &mut group {
+                    voice.send_data(group.channel.heartbeat()).await;
+                }
+            }
+            Ok(frame) = data.recv(), if group.is_some() => {
+                for message in datachannel::messages(&frame) {
+                    let kind = message.get("type").and_then(Value::as_str).unwrap_or("");
+                    if kind == "sr_res" && message.get("result").and_then(Value::as_str) != Some("ok") {
+                        eprintln!("Teams call: a video request refused: {message}");
+                    } else if debugging && !matches!(kind, "heartbeat" | "bwe") {
+                        eprintln!("teams call: data channel {kind}");
+                    }
+                }
+            }
+            Ok(()) = offers.changed(), if answered => {
+                let Some(offer) = offers.borrow_and_update().clone() else { continue };
+                let Some(link) = renegotiation.clone() else {
+                    eprintln!("Teams call: no link to offer anew on");
+                    continue;
+                };
+                let sending = sending(voice);
+                let offer = sdp::teams_offer(&offer, sending, &mut layout);
+                if debugging {
+                    eprintln!("teams call: offering {}", sdp::sdp_sections(&offer));
+                }
+                let modalities = sdp::modalities(&layout, sending);
+                let screen = std::mem::replace(&mut sharing, sending.screen) != sending.screen;
+                let body = calling::renegotiate(&identity.caller(), &offer, media_leg.as_deref(), &modalities, screen);
+                let sent = teams.service.calling_post(&link, chain, &body).await.map(|_| ());
+                if sent.is_err() {
+                    layout.withdraw();
+                }
+                report("new offer", sent);
             }
             push = pushes.recv() => {
                 let envelope = match push {
@@ -444,12 +655,15 @@ async fn drive(
                 let event = calling::call_event(&envelope);
                 debug(&envelope, &event);
                 match event {
-                    CallEvent::Negotiation { sdp, answer_link, media_leg } => {
-                        let debugging = std::env::var("RV_CALL_DEBUG").as_deref() == Ok("1");
+                    CallEvent::Negotiation { sdp, answer_link, media_leg: leg } => {
                         if debugging {
-                            eprintln!("teams call: new offer {}", calling::sdp_sections(&sdp));
+                            eprintln!("teams call: new offer {}", sdp::sdp_sections(&sdp));
                         }
-                        let Some(plain) = calling::renegotiation_offer(&sdp, negotiated.as_deref()) else {
+                        layout.withdraw();
+                        if leg.is_some() {
+                            media_leg = leg;
+                        }
+                        let Some(plain) = sdp::plain_offer(&sdp, &mut layout) else {
                             eprintln!("Teams call: a new offer without audio");
                             continue;
                         };
@@ -457,27 +671,75 @@ async fn drive(
                             eprintln!("Teams call: a new offer went unanswered");
                             continue;
                         };
-                        negotiated = Some(plain);
-                        let answer = calling::teams_answer(&answer, &sdp);
+                        let sending = sending(voice);
+                        let answer = sdp::teams_answer(&answer, &sdp, sending, &layout);
                         if debugging {
-                            eprintln!("teams call: answering {}", calling::sdp_sections(&answer));
+                            eprintln!("teams call: answering {}", sdp::sdp_sections(&answer));
                         }
-                        let body = calling::answer_negotiation(&answer, media_leg.as_deref());
+                        let modalities = sdp::modalities(&layout, sending);
+                        let body = calling::answer_negotiation(&answer, media_leg.as_deref(), &modalities);
                         report("new offer's answer", teams.service.calling_post(&answer_link, chain, &body).await.map(|_| ()));
+                        if let Some(group) = &mut group {
+                            route(voice, &layout, &sources, group).await;
+                        }
+                        show_videos(voice, &layout, &roster, group.as_ref(), &mut shown).await;
                     }
-                    CallEvent::Accepted { sdp, acknowledge, call_leg, .. } if !answered => {
-                        let Some(answer) = calling::webrtc_answer(&sdp) else {
+                    CallEvent::Accepted { sdp, acknowledge, .. } if answered && layout.offering() => {
+                        let Some(answer) = sdp::plain_answer(&sdp, &mut layout) else {
+                            eprintln!("Teams call: an answer without audio");
+                            continue;
+                        };
+                        voice.remote_answer(&answer).await;
+                        if let Some(link) = acknowledge {
+                            report("answer's acknowledgement", teams.service.calling_post(&link, chain, &json!({})).await.map(|_| ()));
+                        }
+                        if let Some(group) = &mut group {
+                            route(voice, &layout, &sources, group).await;
+                        }
+                        show_videos(voice, &layout, &roster, group.as_ref(), &mut shown).await;
+                    }
+                    CallEvent::Accepted {
+                        sdp,
+                        acknowledge,
+                        call_leg,
+                        renegotiation: link,
+                        media_descriptions,
+                        channel_parameters,
+                        ..
+                    } if !answered => {
+                        let Some(answer) = sdp::plain_answer(&sdp, &mut layout) else {
                             voice.remote_ended("connect_failed").await;
                             break true;
                         };
                         answered = true;
                         answered_at = Some(tokio::time::Instant::now());
+                        renegotiation = link;
                         voice.remote_answer(&answer).await;
-                        negotiated = Some(answer);
+                        if let Some(address) = sdp::data_stream(&layout) {
+                            let mut channel = Channel::new(address);
+                            voice.send_data(channel.syn()).await;
+                            let mut started = Group { channel, routing: Routing::default() };
+                            route(voice, &layout, &sources, &mut started).await;
+                            group = Some(started);
+                        }
                         if let Some(link) = acknowledge {
                             let body = calling::acknowledge_acceptance(&identity.caller());
-                            report("acknowledgement", teams.service.calling_post(&link, chain, &body).await.map(|_| ()));
+                            let acknowledged = teams.service.calling_post(&link, chain, &body).await;
+                            if renegotiation.is_none() {
+                                renegotiation = acknowledged.as_ref().ok().and_then(calling::renegotiation_link);
+                            }
+                            report("acknowledgement", acknowledged.map(|_| ()));
                         }
+                        if debugging && renegotiation.is_none() {
+                            eprintln!("teams call: no renegotiation link");
+                        }
+                        if layout.is_group() && let Some(link) = media_descriptions {
+                            let sharer = links.get("updateParticipantProperties").and_then(Value::as_str);
+                            let mut started = Told::new(link, channel_parameters, sharer.map(str::to_owned));
+                            tell(teams, chain, &identity.caller(), &layout, &mut started, sent(voice)).await;
+                            told = Some(started);
+                        }
+                        show_videos(voice, &layout, &roster, group.as_ref(), &mut shown).await;
                         if let Some(link) = call_leg {
                             let body = calling::register_on_leg(&identity.caller());
                             report("call leg", teams.service.calling_post(&link, chain, &body).await.map(|_| ()));
@@ -494,16 +756,22 @@ async fn drive(
                                 continue;
                             }
                             if change.present {
+                                sources.insert(change.mri.clone(), change.sources);
                                 roster.insert(change.mri, change.name);
                             } else {
+                                sources.remove(&change.mri);
                                 roster.remove(&change.mri);
                             }
+                        }
+                        if let Some(group) = &mut group {
+                            route(voice, &layout, &sources, group).await;
                         }
                         let members = roster
                             .iter()
                             .map(|(id, name)| RemoteMember { id: id.clone(), name: name.clone(), muted: false })
                             .collect();
                         voice.remote_roster(members).await;
+                        show_videos(voice, &layout, &roster, group.as_ref(), &mut shown).await;
                     }
                     CallEvent::Ended { .. } => {
                         voice.remote_ended("remote_ended").await;

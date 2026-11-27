@@ -116,7 +116,8 @@ struct RoomView: View {
             if let link, let url = URL(string: link) {
                 CallWindow.show(url, title: L("call.window_title", ["room": model.room.name]),
                                 slackCookie: model.provider.legacy?.huddleCookie(), displayName: app.account?.username,
-                                chat: model.provider.legacy, teamsRoom: model.provider.legacy?.isTeams() == true ? model.room.rid : nil)
+                                chat: model.provider.legacy, teamsRoom: model.provider.legacy?.isTeams() == true ? model.room.rid : nil,
+                                room: model.room.rid, app: app)
             } else {
                 app.notice = L("call.failed")
             }
@@ -1401,7 +1402,8 @@ struct CallCard: View {
                         let legacy = model.provider.legacy
                         CallWindow.show(url, title: L("message.call"), slackCookie: legacy?.huddleCookie(),
                                         displayName: app.account?.username, chat: legacy,
-                                        teamsRoom: legacy?.teamsThreadCall(rid: model.room.rid) == true ? model.room.rid : nil)
+                                        teamsRoom: legacy?.teamsThreadCall(rid: model.room.rid) == true ? model.room.rid : nil,
+                                        room: model.room.rid, app: app)
                     } else {
                         app.notice = L("call.failed")
                     }

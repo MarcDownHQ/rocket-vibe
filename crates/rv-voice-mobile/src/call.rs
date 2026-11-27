@@ -64,6 +64,16 @@ pub fn event_json(event: &Event) -> Value {
         Event::Ended(reason) => json!({"type": "ended", "reason": reason}),
         Event::Over(reason) => json!({"type": "over", "reason": reason}),
         Event::MediaEnded => json!({"type": "media_ended"}),
+        Event::Videos(videos) => {
+            let kind = |k: rv_call::VideoKind| match k {
+                rv_call::VideoKind::Camera => "camera",
+                rv_call::VideoKind::Screen => "screen",
+            };
+            let videos: Vec<Value> =
+                videos.iter().map(|v| json!({"track": v.track, "member": v.member, "kind": kind(v.kind)})).collect();
+            json!({"type": "videos", "videos": videos})
+        }
+        Event::DataMessage(text) => json!({"type": "data", "text": text}),
     }
 }
 
@@ -285,7 +295,7 @@ pub extern "system" fn Java_com_rocketvibe_voice_JitsiCall_startMattermost(
     ) else {
         return 0;
     };
-    let config = rv_call::mattermost::Config { server, token, channel_id, user_id };
+    let config = rv_call::mattermost::Config { server, token, channel_id, user_id, screen: false, camera: false };
     match Call::start_mattermost(config, &ice_servers) {
         Some(call) => {
             let handle = NEXT.fetch_add(1, Ordering::Relaxed);

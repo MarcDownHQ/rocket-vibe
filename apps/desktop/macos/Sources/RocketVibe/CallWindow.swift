@@ -25,13 +25,16 @@ final class CallWindow: NSObject, WKUIDelegate, WKNavigationDelegate, NSWindowDe
     /// `displayName` its name there); its page opens when that cannot be done.
     /// A Teams call started in a chat (`teamsRoom`), or any call of a channel or
     /// a meeting chat, runs natively first too.
-    static func show(_ url: URL, title: String, slackCookie: String? = nil, displayName: String? = nil, chat: Chat? = nil, teamsRoom: String? = nil) {
+    /// `room` and `app` put the room's chat beside a call carried natively.
+    static func show(_ url: URL, title: String, slackCookie: String? = nil, displayName: String? = nil, chat: Chat? = nil,
+                     teamsRoom: String? = nil, room: String? = nil, app: AppModel? = nil) {
+        let beside = room.flatMap { app?.callChat($0) }
         // A Mattermost Calls plugin call runs natively only: it has no page.
         if url.scheme == "mmcalls" {
             guard let chat else { return NSSound.beep() }
             Task {
                 if let native = await chat.startPluginCall(callId: url.absoluteString, title: title) {
-                    NativeCallWindow.show(native, title: title)
+                    NativeCallWindow.show(native, title: title, chat: beside, app: app)
                 } else {
                     NSSound.beep()
                 }
@@ -41,7 +44,7 @@ final class CallWindow: NSObject, WKUIDelegate, WKNavigationDelegate, NSWindowDe
         if let teamsRoom, let chat {
             Task {
                 if let native = await chat.startTeamsCall(rid: teamsRoom, title: title) {
-                    NativeCallWindow.show(native, title: title)
+                    NativeCallWindow.show(native, title: title, chat: beside, app: app)
                 } else {
                     show(url, title: title)
                 }
@@ -52,7 +55,7 @@ final class CallWindow: NSObject, WKUIDelegate, WKNavigationDelegate, NSWindowDe
         if slack, let chat {
             Task {
                 if let native = await chat.startHuddleCall(callUrl: url.absoluteString, title: title) {
-                    NativeCallWindow.show(native, title: title)
+                    NativeCallWindow.show(native, title: title, chat: beside, app: app)
                 } else {
                     show(url, title: title, slackCookie: slackCookie, displayName: displayName)
                 }
@@ -67,7 +70,7 @@ final class CallWindow: NSObject, WKUIDelegate, WKNavigationDelegate, NSWindowDe
         if !slack && !teams && url.scheme == "https", let displayName {
             Task {
                 if let native = await startJitsiCall(meetingUrl: url.absoluteString, displayName: displayName, title: title) {
-                    NativeCallWindow.show(native, title: title)
+                    NativeCallWindow.show(native, title: title, chat: beside, app: app)
                 } else {
                     open(url, title: title, slackCookie: nil, teams: false)
                 }

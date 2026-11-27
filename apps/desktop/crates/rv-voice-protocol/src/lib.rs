@@ -14,6 +14,10 @@ use serde::{Deserialize, Serialize};
 /// 2: `Connect.e2ee_key`, which a version 1 sidecar would ignore and connect in clear.
 pub const VERSION: u32 = 2;
 
+fn is_zero(value: &usize) -> bool {
+    *value == 0
+}
+
 fn is_false(value: &bool) -> bool {
     !*value
 }
@@ -27,6 +31,17 @@ pub struct RemoteMember {
     pub id: String,
     pub name: String,
     pub muted: bool,
+}
+
+/// A video someone else sends in an external call: the stream id its section
+/// carries (`a=msid`), whose it is ([`RemoteMember::id`]), and whether it is a
+/// shared screen rather than a camera.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RemoteVideo {
+    pub stream: String,
+    pub member: String,
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub screen: bool,
 }
 
 /// A STUN or TURN server for a call the sidecar signals itself.
@@ -52,7 +67,7 @@ pub enum Command {
         e2ee_key: Option<String>,
     },
     /// Join a Jitsi Meet conference natively (Rocket.Chat's Jitsi provider, kChat's
-    /// kMeet): the sidecar speaks its signalling itself (rv-call). Audio only.
+    /// kMeet): the sidecar speaks its signalling itself (rv-call), audio and video.
     ConnectJitsi {
         /// `wss://host/xmpp-websocket`, without its query.
         websocket: String,
@@ -81,12 +96,33 @@ pub enum Command {
     },
     /// A call whose signalling the app speaks itself (Teams, over its own tokens
     /// and socket): the sidecar offers ([`Event::LocalOffer`]) and carries the media.
-    /// Audio only.
     ConnectExternal {
         identity: String,
         /// The remote side offers first ([`Command::RemoteOffer`]): no local offer.
         #[serde(default)]
         answering: bool,
+        /// The other side takes this side's camera and screen: the sidecar offers
+        /// anew when either starts or stops, the camera's section carrying
+        /// `<identity>-camera` as its stream id, the screen's `<identity>-screen`.
+        #[serde(default, skip_serializing_if = "is_false")]
+        video: bool,
+        /// A data channel the offer opens, by its label: what arrives on it comes
+        /// back as [`Event::Data`], [`Command::SendData`] sends on it.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        data_channel: Option<String>,
+        /// Receive-only video sections the offer carries besides the camera's,
+        /// for a server that sends each video it is asked for on a section of its own.
+        #[serde(default, skip_serializing_if = "is_zero")]
+        receive_videos: usize,
+        /// With `video`: the first offer carries the camera's and the screen's
+        /// sections, sending nothing yet and receiving, and a start or stop
+        /// only changes what they send, with no new offer.
+        #[serde(default, skip_serializing_if = "is_false")]
+        video_up_front: bool,
+    },
+    /// A binary message on an external call's data channel, sent once it is open.
+    SendData {
+        data: Vec<u8>,
     },
     /// An offer from the other side of an external call, in plain WebRTC SDP:
     /// answered with [`Event::LocalAnswer`].
@@ -101,12 +137,17 @@ pub enum Command {
     RemoteRoster {
         members: Vec<RemoteMember>,
     },
+    /// Every video the other side of an external call sends now, the whole list
+    /// each time: a stream missing from it is no longer shown.
+    RemoteVideos {
+        videos: Vec<RemoteVideo>,
+    },
     /// The other side ended an external call.
     RemoteEnded {
         reason: String,
     },
     /// Join a Mattermost Calls plugin call natively, the channel's, starting it
-    /// when none runs: the sidecar speaks its signalling itself (rv-call). Audio only.
+    /// when none runs: the sidecar speaks its signalling itself (rv-call).
     ConnectMattermost {
         /// `https://host[/subpath]`.
         server: String,
@@ -117,12 +158,19 @@ pub enum Command {
         /// The plugin's STUN and TURN servers (`/config`, `/turn-credentials`).
         #[serde(default)]
         ice_servers: Vec<IceServerSpec>,
+        /// What the plugin lets a member send besides the microphone (`/config`
+        /// `AllowScreenSharing`, `EnableVideo`).
+        #[serde(default, skip_serializing_if = "is_false")]
+        screen: bool,
+        #[serde(default, skip_serializing_if = "is_false")]
+        camera: bool,
     },
     /// A call whose audio another process carries (a WhatsApp call, in the app's
     /// WhatsApp engine): its 16 kHz mono PCM, 60 ms frames of 960 little-endian
     /// i16, both ways over TCP at `address` (`host:port#token`, the token sent
     /// first as a line). Who is in it comes with `RemoteRoster`, its end with
-    /// `RemoteEnded`. Audio only.
+    /// `RemoteEnded`. Its video is H.264 on a second connection to the same
+    /// address, `<token> video` as its first line.
     ConnectPcm {
         address: String,
     },
@@ -219,9 +267,11 @@ impl std::fmt::Debug for Command {
                 .field("attendee_id", attendee_id)
                 .finish_non_exhaustive(),
             Self::ConnectExternal { .. } => f.write_str("ConnectExternal"),
+            Self::SendData { data } => f.debug_struct("SendData").field("data", &data.len()).finish(),
             Self::RemoteOffer { .. } => f.write_str("RemoteOffer"),
             Self::RemoteAnswer { .. } => f.write_str("RemoteAnswer"),
             Self::RemoteRoster { members } => f.debug_struct("RemoteRoster").field("members", &members.len()).finish(),
+            Self::RemoteVideos { videos } => f.debug_struct("RemoteVideos").field("videos", &videos.len()).finish(),
             Self::RemoteEnded { reason } => f.debug_struct("RemoteEnded").field("reason", reason).finish(),
             Self::ConnectMattermost { server, channel_id, .. } => f
                 .debug_struct("ConnectMattermost")
@@ -359,6 +409,10 @@ pub enum Event {
     LocalAnswer {
         sdp: String,
     },
+    /// A message on an external call's data channel.
+    Data {
+        data: Vec<u8>,
+    },
     Hello {
         version: u32,
         sidecar: String,
@@ -385,6 +439,12 @@ pub enum Event {
     },
     /// Local speech while muted; no microphone samples leave this device.
     MutedSpeech,
+    /// What a call carried natively lets this side send, once joined. A LiveKit
+    /// room never says: it sends both.
+    CallVideo {
+        camera: bool,
+        screen: bool,
+    },
     /// The session ended; `reason` is LiveKit's in snake case (`duplicate_identity`,
     /// `participant_removed`, `room_deleted`, `client_initiated`...), or `connect_failed`.
     Disconnected {
@@ -393,7 +453,8 @@ pub enum Event {
     /// A command failed; the session goes on unless a `Disconnected` follows.
     /// Video: `camera_unavailable`, `screen_unavailable`, `screen_cancelled`
     /// (the picker was closed), `screen_ended` (stopped from outside, or another
-    /// participant's share replaced this one), `camera_ended`.
+    /// participant's share replaced this one), `camera_ended`, `video_declined`
+    /// (the other side of a call carried as PCM would not switch to video).
     Error {
         code: String,
     },
@@ -419,6 +480,11 @@ pub mod frames {
     pub const MAGIC: &[u8; 4] = b"RVV1";
     /// The largest message: a 1920 by 1080 frame and its header.
     pub const MAX_MESSAGE: u32 = 1920 * 1080 * 4 + 512;
+
+    /// The identity this side's previews go under in a call carried natively:
+    /// the window shows them on the local participant whatever the provider
+    /// calls it, and a rejoin under a new id keeps them.
+    pub const LOCAL_PREVIEW: &str = "local";
 
     #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
     pub enum Source {
@@ -567,6 +633,39 @@ mod tests {
                 json!({"type":"start_screen_share","with_call":true,"source":"w:42","quality":{"height":720,"fps":30}}),
             ),
             (Command::ListScreens, json!({"type":"list_screens"})),
+            (
+                Command::ConnectExternal {
+                    identity: "e".into(),
+                    answering: false,
+                    video: true,
+                    data_channel: None,
+                    receive_videos: 0,
+                    video_up_front: false,
+                },
+                json!({"type":"connect_external","identity":"e","answering":false,"video":true}),
+            ),
+            (
+                Command::ConnectExternal {
+                    identity: "e".into(),
+                    answering: false,
+                    video: true,
+                    data_channel: Some("main-channel".into()),
+                    receive_videos: 3,
+                    video_up_front: true,
+                },
+                json!({"type":"connect_external","identity":"e","answering":false,"video":true,"data_channel":"main-channel","receive_videos":3,"video_up_front":true}),
+            ),
+            (Command::SendData { data: vec![16, 0] }, json!({"type":"send_data","data":[16,0]})),
+            (
+                Command::RemoteVideos {
+                    videos: vec![
+                        RemoteVideo { stream: "s1".into(), member: "8:orgid:a".into(), screen: false },
+                        RemoteVideo { stream: "s2".into(), member: "8:orgid:a".into(), screen: true },
+                    ],
+                },
+                json!({"type":"remote_videos","videos":[{"stream":"s1","member":"8:orgid:a"},
+                    {"stream":"s2","member":"8:orgid:a","screen":true}]}),
+            ),
             (
                 Command::SetParticipantVolume { identity: "u2".into(), volume: 0.5, muted: false },
                 json!({"type":"set_participant_volume","identity":"u2","volume":0.5}),

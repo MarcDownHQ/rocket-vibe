@@ -1,22 +1,28 @@
 //! The Chime signalling connection.
 
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+
 use futures_util::{SinkExt, StreamExt};
 use tokio::sync::{mpsc, oneshot};
 use tokio_tungstenite::tungstenite::Message as Frame;
 use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 
 use super::proto::{self, Message, frame, kind};
+use super::video::{self, Subscriptions};
 use super::{Config, Roster, Status};
-use crate::{CallSignaling, Candidate, Error, Event};
+use crate::{CallSignaling, Candidate, Error, Event, LocalVideo, VideoKind};
 
 /// How often the server is pinged, and how long without a frame from it means
 /// the socket is gone (it sends levels ten times a second).
 const PING_EVERY: std::time::Duration = std::time::Duration::from_secs(10);
 const SILENCE: std::time::Duration = std::time::Duration::from_secs(30);
+/// At most this many remote videos at once, below the server's own limit.
+const VIDEO_LIMIT: usize = 16;
 
 /// `RV_CALL_DEBUG=1` prints the frames' types and why a session ended, to stderr.
 fn debug(what: &str) {
-    if std::env::var("RV_CALL_DEBUG").as_deref() == Ok("1") {
+    if matches!(std::env::var("RV_CALL_DEBUG").as_deref(), Ok("1" | "2")) {
         eprintln!("rv-call: chime: {what}");
     }
 }
@@ -29,6 +35,7 @@ enum End {
 enum Command {
     Offer(String),
     Muted(bool),
+    Video(LocalVideo),
     Leave(oneshot::Sender<()>),
 }
 
@@ -37,6 +44,11 @@ pub struct Session {
     events: mpsc::UnboundedReceiver<Event>,
     commands: mpsc::UnboundedSender<Command>,
     attendee: String,
+    /// How many remote videos the offers must receive, and whether any ever did.
+    receiving: Arc<AtomicUsize>,
+    received: Arc<AtomicBool>,
+    /// The attendee this one's screen joins as; `None` for that attendee itself.
+    content: Option<Config>,
 }
 
 type Socket = tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>;
@@ -48,6 +60,21 @@ fn now_ms() -> u64 {
 /// Connects with the attendee's join token and joins: the TURN servers come
 /// back, then the engine is asked for its offer.
 pub async fn join(config: Config) -> Result<Session, Error> {
+    let (socket, servers, video_limit) = connect(&config).await?;
+    let (event_tx, events) = mpsc::unbounded_channel();
+    let (commands, command_rx) = mpsc::unbounded_channel();
+    let attendee = config.attendee_id.clone();
+    let content = Some(config.content());
+    let receiving = Arc::new(AtomicUsize::new(0));
+    let received = Arc::new(AtomicBool::new(false));
+    let mut state = State::new(config, video_limit, receiving.clone(), received.clone(), event_tx);
+    state.started(servers);
+    tokio::spawn(async move { state.run(socket, command_rx).await });
+    Ok(Session { events, commands, attendee, receiving, received, content })
+}
+
+/// The socket joined: its TURN servers and the most videos it may receive.
+async fn connect(config: &Config) -> Result<(Socket, Vec<crate::IceServer>, usize), Error> {
     let _ = rustls::crypto::ring::default_provider().install_default();
     let url = config.socket_url().ok_or_else(|| Error::new("not a Chime signalling URL"))?;
     let mut request = url.into_client_request().map_err(|e| Error::new(format!("url: {e}")))?;
@@ -63,8 +90,8 @@ pub async fn join(config: Config) -> Result<Session, Error> {
 
     let mut audio_session = [0u8; 4];
     let _ = getrandom::fill(&mut audio_session);
-    send(&mut socket, super::join(now_ms(), u32::from_le_bytes(audio_session))).await?;
-    let servers = loop {
+    send(&mut socket, super::join(now_ms(), u32::from_le_bytes(audio_session), config.is_content())).await?;
+    loop {
         let incoming = tokio::time::timeout(std::time::Duration::from_secs(10), socket.next())
             .await
             .map_err(|_| Error::new("no join acknowledgement"))?;
@@ -87,20 +114,15 @@ pub async fn join(config: Config) -> Result<Session, Error> {
             )));
         }
         match kind {
-            kind::JOIN_ACK => break super::turn_servers(&message.message(frame::JOIN_ACK).unwrap_or(Message::empty())),
+            kind::JOIN_ACK => {
+                let ack = message.message(frame::JOIN_ACK).unwrap_or(Message::empty());
+                let limit = ack.int(2).unwrap_or(VIDEO_LIMIT as u64) as usize;
+                return Ok((socket, super::turn_servers(&ack), limit));
+            }
             kind::PING_PONG => pong(&mut socket, &message).await?,
             _ => {}
         }
-    };
-
-    let (event_tx, events) = mpsc::unbounded_channel();
-    let (commands, command_rx) = mpsc::unbounded_channel();
-    let _ = event_tx.send(Event::IceServers(servers));
-    let _ = event_tx.send(Event::OfferWanted { relay_only: true });
-    let attendee = config.attendee_id.clone();
-    let mut state = State { roster: Roster::new(&config.attendee_id), config, muted: false, events: event_tx };
-    tokio::spawn(async move { state.run(socket, command_rx).await });
-    Ok(Session { events, commands, attendee })
+    }
 }
 
 impl CallSignaling for Session {
@@ -135,16 +157,98 @@ impl CallSignaling for Session {
     fn local_id(&self) -> &str {
         &self.attendee
     }
+
+    fn can_send(&self, kind: VideoKind) -> bool {
+        kind == VideoKind::Camera || self.content.is_some()
+    }
+
+    fn offers_to_receive_video(&self) -> bool {
+        self.received.load(Ordering::Relaxed)
+    }
+
+    fn receive_videos(&self) -> usize {
+        self.receiving.load(Ordering::Relaxed)
+    }
+
+    async fn set_video(&mut self, video: LocalVideo) -> Result<(), Error> {
+        self.commands.send(Command::Video(video)).map_err(|_| Error::new("session ended"))
+    }
+
+    fn screen_apart(&self) -> bool {
+        self.content.is_some()
+    }
+
+    fn screen_session(&self) -> Option<Self> {
+        let config = self.content.clone()?;
+        let (event_tx, events) = mpsc::unbounded_channel();
+        let (commands, command_rx) = mpsc::unbounded_channel();
+        let attendee = config.attendee_id.clone();
+        let (receiving, received) = (Arc::new(AtomicUsize::new(0)), Arc::new(AtomicBool::new(false)));
+        let (receiving_state, received_state) = (receiving.clone(), received.clone());
+        tokio::spawn(async move {
+            match connect(&config).await {
+                Ok((socket, servers, limit)) => {
+                    let mut state = State::new(config, limit, receiving_state, received_state, event_tx);
+                    state.started(servers);
+                    state.run(socket, command_rx).await;
+                }
+                Err(e) => {
+                    debug(&format!("content: {e}"));
+                    let _ = event_tx.send(Event::Ended(e.0));
+                }
+            }
+        });
+        Some(Session { events, commands, attendee, receiving, received, content: None })
+    }
 }
 
 struct State {
     config: Config,
     roster: Roster,
     muted: bool,
+    camera: bool,
+    /// Whether this side's screen was told sent, from its own attendee.
+    screen: bool,
+    last_answer: String,
+    videos: Subscriptions,
+    receiving: Arc<AtomicUsize>,
+    received: Arc<AtomicBool>,
+    /// A SUBSCRIBE waits for its answer, and another must follow it.
+    subscribing: bool,
+    resubscribe: bool,
     events: mpsc::UnboundedSender<Event>,
 }
 
 impl State {
+    fn new(
+        config: Config,
+        video_limit: usize,
+        receiving: Arc<AtomicUsize>,
+        received: Arc<AtomicBool>,
+        events: mpsc::UnboundedSender<Event>,
+    ) -> Self {
+        State {
+            roster: Roster::new(&config.attendee_id),
+            config,
+            muted: false,
+            camera: false,
+            screen: false,
+            last_answer: String::new(),
+            videos: Subscriptions::new(video_limit.min(VIDEO_LIMIT)),
+            receiving,
+            received,
+            subscribing: true,
+            resubscribe: false,
+            events,
+        }
+    }
+
+    /// Joined: the engine gets the TURN servers, then is asked for its offer.
+    fn started(&self, servers: Vec<crate::IceServer>) {
+        let _ = self.events.send(Event::IceServers(servers));
+        let _ = self.events.send(Event::OfferWanted { relay_only: true });
+    }
+
     async fn run(&mut self, mut socket: Socket, mut commands: mpsc::UnboundedReceiver<Command>) {
         let mut ping = tokio::time::interval(PING_EVERY);
         ping.tick().await;
@@ -172,10 +276,30 @@ impl State {
                     let Some(command) = command else { break End::Lost("client_gone".to_owned()) };
                     match command {
                         Command::Offer(sdp) => {
+                            let placed = self.videos.place(&sdp);
+                            let _ = self.events.send(Event::Videos(self.videos.remote()));
+                            let video = if self.config.is_content() {
+                                Some(VideoKind::Screen)
+                            } else {
+                                (self.camera && video::sends_video(&sdp)).then_some(VideoKind::Camera)
+                            };
                             let deflated = miniz_oxide::deflate::compress_to_vec(sdp.as_bytes(), 6);
-                            let subscribe = super::subscribe(now_ms(), &self.config, &deflated, self.muted);
+                            let subscribe = super::subscribe(now_ms(), &self.config, &deflated, self.muted, video, &placed);
+                            self.subscribing = true;
                             if send(&mut socket, subscribe).await.is_err() {
                                 break End::Lost("connection_lost".to_owned());
+                            }
+                        }
+                        Command::Video(video) => {
+                            if video.screen && !self.screen {
+                                for frame in super::share_announced(now_ms(), &self.config.attendee_id) {
+                                    let _ = send(&mut socket, frame).await;
+                                }
+                            }
+                            self.screen = video.screen;
+                            if video.camera != self.camera {
+                                self.camera = video.camera;
+                                self.subscribe_again();
                             }
                         }
                         Command::Muted(muted) => {
@@ -232,11 +356,31 @@ impl State {
                 let sdp = match ack.string(3).filter(|s| !s.is_empty()) {
                     Some(sdp) => sdp,
                     None => {
-                        let inflated = miniz_oxide::inflate::decompress_to_vec(ack.bytes(5)?).ok()?;
+                        let inflated = super::inflate_answer(ack.bytes(5)?, self.last_answer.as_bytes())?;
                         String::from_utf8(inflated).ok()?
                     }
                 };
+                self.last_answer.clone_from(&sdp);
                 let _ = self.events.send(Event::Answer { sdp });
+                self.subscribing = false;
+                if std::mem::take(&mut self.resubscribe) {
+                    self.subscribe_again();
+                }
+            }
+            kind::INDEX | kind::AUDIO_STREAM_ID_INFO | kind::AUDIO_METADATA if self.config.is_content() => {}
+            kind::INDEX => {
+                let sources = video::index_sources(&message.message(frame::INDEX)?, &self.config.attendee_id);
+                if let Some(freed) = self.videos.index(sources) {
+                    if !freed.is_empty() {
+                        let _ = send(socket, super::remote_video_removed(now_ms(), &freed)).await;
+                        let _ = self.events.send(Event::Videos(self.videos.remote()));
+                    }
+                    self.receiving.store(self.videos.receiving(), Ordering::Relaxed);
+                    if self.videos.receiving() > 0 {
+                        self.received.store(true, Ordering::Relaxed);
+                    }
+                    self.subscribe_again();
+                }
             }
             kind::AUDIO_STREAM_ID_INFO => {
                 if self.roster.stream_info(&message.message(frame::AUDIO_STREAM_ID_INFO)?) {
@@ -265,6 +409,18 @@ impl State {
             _ => {}
         }
         None
+    }
+}
+
+impl State {
+    /// Has the engine offer again, once the SUBSCRIBE in flight is answered.
+    fn subscribe_again(&mut self) {
+        if self.subscribing {
+            self.resubscribe = true;
+        } else {
+            self.subscribing = true;
+            let _ = self.events.send(Event::OfferWanted { relay_only: true });
+        }
     }
 }
 

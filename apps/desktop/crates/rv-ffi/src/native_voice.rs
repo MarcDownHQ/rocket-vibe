@@ -14,7 +14,8 @@ use rv_core::native::NativeSession;
 use rv_core::native::crypto::enrollment::rooms;
 use rv_core::native::security::Guard;
 use rv_core::voice::{
-    ConnectionState, Ended, PersonVolume, ScreenKind, ScreenQuality, Snapshot, VideoSource, VoiceKeys, thumbnail,
+    ConnectionState, Ended, PersonVolume, ScreenKind, ScreenQuality, Snapshot, VideoSource, VoiceController, VoiceKeys,
+    thumbnail,
 };
 use rv_core::voice_prefs::VoicePrefs;
 use std::collections::HashMap;
@@ -233,8 +234,8 @@ fn members(session: &NativeSession, room: &str, snapshot: &Snapshot) -> Vec<Voic
         .collect()
 }
 
-fn frame(session: &NativeSession, identity: &str, source: VideoSource, since: u64) -> Option<VoiceFrame> {
-    let frame = session.voice().frame(identity, source)?;
+pub(crate) fn frame(voice: &VoiceController, identity: &str, source: VideoSource, since: u64) -> Option<VoiceFrame> {
+    let frame = voice.frame(identity, source)?;
     Some(VoiceFrame {
         width: frame.width,
         height: frame.height,
@@ -360,10 +361,10 @@ impl NativeChat {
     /// Someone's camera or screen (`screen`), this side's own included; the
     /// pixels only when the frame changed since `since`.
     pub fn voice_frame(&self, identity: String, screen: bool, since: u64) -> Option<VoiceFrame> {
-        frame(&self.session, &identity, if screen { VideoSource::Screen } else { VideoSource::Camera }, since)
+        frame(self.session.voice(), &identity, if screen { VideoSource::Screen } else { VideoSource::Camera }, since)
     }
     pub fn voice_thumbnail(&self, source: String, since: u64) -> Option<VoiceFrame> {
-        frame(&self.session, &thumbnail(&source), VideoSource::Screen, since)
+        frame(self.session.voice(), &thumbnail(&source), VideoSource::Screen, since)
     }
     /// The microphone's level after processing, 0 to 1.
     pub fn voice_input_level(&self) -> f32 {

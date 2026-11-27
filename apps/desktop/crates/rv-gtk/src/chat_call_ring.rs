@@ -98,12 +98,15 @@ impl ChatPage {
                 session.clone(),
                 rv_core::teams_call::Target::Incoming(id.to_owned()),
             );
-            crate::native_call::open(call, room, crate::native_call::Names::none(), move || {
+            let opened = crate::native_call::open(call, room, crate::native_call::Names::none(), move || {
                 if let Some(this) = weak.upgrade() {
                     this.toast(t("call.native_fallback").to_owned());
                     this.join_ringing_call(&session2, &id2, &room2);
                 }
             });
+            if let Some(opened) = opened {
+                opened.chat(session.clone(), id);
+            }
             return;
         }
         self.join_ringing_call(session, id, room);
@@ -115,7 +118,8 @@ impl ChatPage {
             let url = on_tokio(async move { session.join_call(&id).await }).await;
             let Some(this) = weak.upgrade() else { return };
             match url {
-                Ok(url) => this.open_call(&url, &room),
+                // The room that rang may not be the one open: no chat beside it.
+                Ok(url) => this.open_call_in(&url, &room, None),
                 Err(_) => this.toast(t("call.failed").to_owned()),
             }
         });

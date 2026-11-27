@@ -196,8 +196,8 @@ call id is the room's page in Slack's web app with `?open=start_huddle`
 ignored, and a stored one is rewritten on join (`huddle_page` / `huddlePage`). Once
 over, an ended call (`videoconf-ended`) with the length from `date_start`/`date_end`. The end arrives as an edit of the same message. The room
 header's call button and the card's Join both name that Slack page
-(`Session::start_call` / `join_call`). The apps first carry the huddle natively, audio only,
-from `rooms.join`'s Chime credentials ([native calls](native-calls.md#slack-huddles-over-chime-audio-2026-11-06));
+(`Session::start_call` / `join_call`). The apps first carry the huddle natively (Android audio only, the desktop with
+cameras and screens), from `rooms.join`'s Chime credentials ([native calls](native-calls.md#slack-huddles-over-chime-audio-2026-11-06));
 what follows is the fallback, the page. On GTK Linux it opens already signed in
 (`browser_login::open_signed_in`, `Session::open_huddle_window`, `ChatView::open_call`): an
 app window of a Chromium-family browser on a temporary profile (created 0700) whose `d`

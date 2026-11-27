@@ -90,6 +90,46 @@ async fn a_jitsi_call_runs_in_the_same_controller() {
 }
 
 #[tokio::test]
+async fn an_external_call_offers_again_for_its_camera_and_shows_the_videos_it_is_told_of() {
+    let voice = fake(&[]);
+    voice.connect_external("Teams", "ep", None, 0, false).await.unwrap();
+    assert_eq!(voice.local_offer().await.as_deref(), Some("offer 1"));
+    let snapshot = until(&voice, |s| s.call_video.is_some()).await;
+    assert_eq!(snapshot.call_video, Some((true, true)), "a Teams call takes the camera and the screen");
+    let mut offers = voice.local_offers();
+    voice.set_camera(true).await;
+    tokio::time::timeout(Duration::from_secs(10), offers.changed()).await.unwrap().unwrap();
+    assert_eq!(offers.borrow_and_update().as_deref(), Some("offer 2"));
+    voice
+        .remote_videos(vec![rv_voice_protocol::RemoteVideo {
+            stream: "teams-1".into(),
+            member: "peer".into(),
+            screen: true,
+        }])
+        .await;
+    let snapshot = until(&voice, |s| s.participants.iter().any(|p| p.identity == "peer" && p.screen)).await;
+    assert!(snapshot.participants.iter().any(|p| p.identity == "peer" && !p.camera));
+    voice.disconnect().await;
+}
+
+#[tokio::test]
+async fn an_external_call_with_its_video_up_front_never_offers_again_for_it() {
+    let voice = fake(&[]);
+    voice.connect_external("Teams", "ep", Some("main-channel"), 3, true).await.unwrap();
+    assert_eq!(voice.local_offer().await.as_deref(), Some("offer 1"));
+    let mut offers = voice.local_offers();
+    offers.borrow_and_update();
+    voice.set_camera(true).await;
+    let snapshot = until(&voice, |s| s.local().is_some_and(|p| p.camera)).await;
+    assert!(snapshot.camera);
+    assert!(
+        tokio::time::timeout(Duration::from_millis(300), offers.changed()).await.is_err(),
+        "the camera goes out on the section offered first"
+    );
+    voice.disconnect().await;
+}
+
+#[tokio::test]
 async fn a_chime_call_joins_through_the_sidecar() {
     let voice = fake(&[]);
     let call = NativeCall::Chime(ChimeCall {
@@ -261,6 +301,11 @@ async fn video_frames_reach_the_app_and_end_with_their_track() {
     voice.start_screen_share(None, None).await;
     let snapshot = until(&voice, |s| s.error.as_deref() == Some("screen_cancelled")).await;
     assert!(!snapshot.sharing);
+    // A peer who will not switch to video takes the camera wish back.
+    voice.connect(&grant("r3", "fake://declined"), None, None).await.unwrap();
+    voice.set_camera(true).await;
+    let snapshot = until(&voice, |s| s.error.as_deref() == Some("video_declined")).await;
+    assert!(!snapshot.camera && !snapshot.sharing);
     voice.disconnect().await;
     assert!(voice.frame("peer", VideoSource::Camera).is_none());
 }

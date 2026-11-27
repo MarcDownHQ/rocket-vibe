@@ -656,7 +656,7 @@ public final class AppModel {
         call.callerName ?? rooms.first { $0.rid == call.rid }?.name ?? ""
     }
 
-    /// A WhatsApp call this app cannot carry (video, group) is answered on the phone.
+    /// A WhatsApp call this app cannot carry (a group's) is answered on the phone.
     public func answeredOnPhone(_ call: RingingCall) -> Bool {
         whatsapp.map { !$0.callAnswerable(callId: call.callId) } ?? false
     }
@@ -983,6 +983,15 @@ public final class AppModel {
         open(destination)
         do { try await source.forward(message, to: destination) }
         catch { if account == sessionId { notice = L("forward.failed") } }
+    }
+
+    /// A room's chat beside a call: a model of its own, the open room untouched.
+    public func callChat(_ rid: String) -> RoomModel? {
+        guard let provider, let found = rooms.first(where: { $0.rid == rid }) else { return nil }
+        let model = RoomModel(provider: provider, room: found)
+        model.onNotice = { [weak self] in self?.notice = $0 }
+        Task { await model.load() }
+        return model
     }
 
     public func open(_ rid: String, remember: Bool = true, preserveNavigation: Bool = false, peek: Bool = false) {

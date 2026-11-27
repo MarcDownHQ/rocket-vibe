@@ -8,7 +8,7 @@ use tokio_tungstenite::tungstenite::Message as Frame;
 use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 
 use super::{Config, Incoming, Person};
-use crate::{CallSignaling, Candidate, Error, Event, IceServer};
+use crate::{CallSignaling, Candidate, Error, Event, IceServer, LocalVideo, VideoKind};
 
 /// How often the socket is pinged, and how long without a frame from the server
 /// means it is gone.
@@ -17,7 +17,7 @@ const SILENCE: std::time::Duration = std::time::Duration::from_secs(60);
 
 /// `RV_CALL_DEBUG=1` prints the events' names and why a session ended, to stderr.
 fn debug(what: &str) {
-    if std::env::var("RV_CALL_DEBUG").as_deref() == Ok("1") {
+    if matches!(std::env::var("RV_CALL_DEBUG").as_deref(), Ok("1" | "2")) {
         let ms = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map(|d| d.as_millis() % 100_000)
@@ -30,7 +30,17 @@ enum Command {
     Description(&'static str, String),
     Candidate(Candidate),
     Muted(bool),
+    Video(LocalVideo),
     Leave(oneshot::Sender<()>),
+}
+
+/// The stream id of this side's camera or screen track: the plugin is told it
+/// (`video_on`, `screen_on`) to tell the track from the voice's.
+fn video_stream(connection: &str, kind: VideoKind) -> String {
+    match kind {
+        VideoKind::Camera => format!("{connection}-video"),
+        VideoKind::Screen => format!("{connection}-screen"),
+    }
 }
 
 /// A joined Mattermost call.
@@ -38,6 +48,8 @@ pub struct Session {
     events: mpsc::UnboundedReceiver<Event>,
     commands: mpsc::UnboundedSender<Command>,
     connection: String,
+    screen: bool,
+    camera: bool,
 }
 
 type Socket = tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>;
@@ -83,7 +95,9 @@ pub async fn join(config: Config, ice_servers: Vec<IceServer>) -> Result<Session
     let (commands, command_rx) = mpsc::unbounded_channel();
     let _ = event_tx.send(Event::IceServers(ice_servers));
     let _ = event_tx.send(Event::OfferWanted { relay_only: false });
+    let (screen, camera) = (config.screen, config.camera);
     let mut state = State {
+        video: LocalVideo::default(),
         connection: connection.clone(),
         people: people.into_iter().map(|p| (p.session.clone(), p)).collect(),
         voice: BTreeMap::new(),
@@ -95,7 +109,7 @@ pub async fn join(config: Config, ice_servers: Vec<IceServer>) -> Result<Session
     };
     state.publish();
     tokio::spawn(async move { state.run(socket, command_rx).await });
-    Ok(Session { events, commands, connection })
+    Ok(Session { events, commands, connection, screen, camera })
 }
 
 impl CallSignaling for Session {
@@ -133,9 +147,30 @@ impl CallSignaling for Session {
     fn data_channel(&self) -> Option<&'static str> {
         Some("calls-dc")
     }
+
+    fn can_send(&self, kind: VideoKind) -> bool {
+        match kind {
+            VideoKind::Camera => self.camera,
+            VideoKind::Screen => self.screen,
+        }
+    }
+
+    fn video_stream(&self, kind: VideoKind) -> String {
+        video_stream(&self.connection, kind)
+    }
+
+    fn video_of(&self, track: &str, _stream: &str) -> Option<(String, VideoKind)> {
+        super::video_of(track)
+    }
+
+    async fn set_video(&mut self, video: LocalVideo) -> Result<(), Error> {
+        self.commands.send(Command::Video(video)).map_err(|_| Error::new("session ended"))
+    }
 }
 
 struct State {
+    /// What this side was last said to send.
+    video: LocalVideo,
     connection: String,
     people: BTreeMap<String, Person>,
     /// Who the server says speaks, by session.
@@ -206,6 +241,41 @@ impl State {
                             self.muted = muted;
                             let name = if muted { "mute" } else { "unmute" };
                             socket.send(Frame::text(super::action(name, seq, serde_json::json!({})))).await
+                        }
+                        Command::Video(video) => {
+                            // The plugin learns which stream is which before the
+                            // offer carrying it, as its own client does.
+                            let mut frames = Vec::new();
+                            for (kind, on, was) in [
+                                (VideoKind::Screen, video.screen, self.video.screen),
+                                (VideoKind::Camera, video.camera, self.video.camera),
+                            ] {
+                                if on == was {
+                                    continue;
+                                }
+                                let (name, key) = match (kind, on) {
+                                    (VideoKind::Screen, true) => ("screen_on", "screenStreamID"),
+                                    (VideoKind::Screen, false) => ("screen_off", ""),
+                                    (VideoKind::Camera, true) => ("video_on", "videoStreamID"),
+                                    (VideoKind::Camera, false) => ("video_off", ""),
+                                };
+                                let data = if key.is_empty() {
+                                    serde_json::json!({})
+                                } else {
+                                    let stream = video_stream(&self.connection, kind);
+                                    serde_json::json!({ "data": serde_json::json!({ key: stream }).to_string() })
+                                };
+                                frames.push((name, data));
+                            }
+                            self.video = video;
+                            let mut sent = Ok(());
+                            for (name, data) in frames {
+                                let seq = if sent.is_ok() { self.next_seq() } else { break };
+                                debug(&format!("sending {name}"));
+                                sent = socket.send(Frame::text(super::action(name, seq, data))).await;
+                            }
+                            let _ = self.events.send(Event::OfferWanted { relay_only: false });
+                            sent
                         }
                         Command::Leave(done) => {
                             let _ = socket.send(Frame::text(super::action("leave", seq, serde_json::json!({})))).await;

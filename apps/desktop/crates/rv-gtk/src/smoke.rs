@@ -8,6 +8,10 @@
 //!   RV_SMOKE_ROOM   room name to open once the room list is loaded
 //!   RV_SMOKE_SEND   text to send in that room
 //!   RV_SMOKE_SHOT   PNG path; the window is rendered after RV_SMOKE_DELAY_MS, then the app quits
+//!   RV_SMOKE_NATIVE_CALL  a Jitsi meeting URL joined in the native call window, no account
+//!                   needed; with RV_SMOKE_VIDEO=1 the camera and the screen go on once
+//!                   connected (RV_VOICE_FAKE_VIDEO=pattern without devices), and RV_SMOKE_SHOT
+//!                   renders the window
 //!   RV_SMOKE_EXPECT        `|`-separated texts the open room must show by then
 //!   RV_SMOKE_EXPECT_ABSENT `|`-separated texts it must NOT show
 //!   RV_SMOKE_SIZE          `WIDTHxHEIGHT` of the window
@@ -2207,6 +2211,72 @@ fn fold_checks(chat: Rc<crate::chat::ChatPage>) {
     if folded >= before || back != before {
         FAILED.store(true, Ordering::SeqCst);
     }
+}
+
+/// `RV_SMOKE_NATIVE_CALL`: see the module's documentation.
+pub fn native_call(app: &adw::Application) -> bool {
+    let Ok(url) = std::env::var("RV_SMOKE_NATIVE_CALL") else { return false };
+    let app = app.clone();
+    let hold = app.hold();
+    glib::spawn_future_local(async move {
+        let _hold = hold;
+        let found = crate::on_tokio(async move { rv_core::voice::discover_jitsi(&url, "Smoke").await }).await;
+        let Some(call) = found else {
+            check("native call: a Jitsi meeting", false, "");
+            return app.quit();
+        };
+        let call = crate::native_call::Call::Sidecar(rv_core::voice::NativeCall::Jitsi(call));
+        let names = crate::native_call::Names::none();
+        let Some(opened) =
+            crate::native_call::open(call, "Smoke call", names, || println!("smoke: native call fell back"))
+        else {
+            check("native call: the sidecar is there", false, "");
+            return app.quit();
+        };
+        opened.window.set_application(Some(&app));
+        let delay = std::env::var("RV_SMOKE_DELAY_MS").ok().and_then(|v| v.parse().ok()).unwrap_or(20_000);
+        let started = std::time::Instant::now();
+        let mut video_on = std::env::var("RV_SMOKE_VIDEO").as_deref() != Ok("1");
+        while started.elapsed() < std::time::Duration::from_millis(delay) {
+            glib::timeout_future(std::time::Duration::from_millis(250)).await;
+            let snapshot = opened.voice.snapshot();
+            if !video_on && snapshot.state == rv_core::voice::ConnectionState::Connected {
+                video_on = true;
+                let voice = opened.voice.clone();
+                crate::on_tokio(async move {
+                    voice.set_camera(true).await;
+                    voice.start_screen_share(None, None).await;
+                })
+                .await;
+            }
+        }
+        let snapshot = opened.voice.snapshot();
+        println!(
+            "smoke: native call {:?}, {} people, video {:?}, camera {} sharing {}",
+            snapshot.state,
+            snapshot.participants.len(),
+            snapshot.call_video,
+            snapshot.camera,
+            snapshot.sharing
+        );
+        for p in &snapshot.participants {
+            println!("smoke: participant local={} camera={} screen={}", p.local, p.camera, p.screen);
+        }
+        if let Ok(shot) = std::env::var("RV_SMOKE_SHOT") {
+            let window = &opened.window;
+            let snap = gtk::Snapshot::new();
+            gtk::WidgetPaintable::new(Some(window)).snapshot(&snap, window.width() as f64, window.height() as f64);
+            let saved = snap
+                .to_node()
+                .zip(window.renderer())
+                .is_some_and(|(node, renderer)| renderer.render_texture(&node, None).save_to_png(&shot).is_ok());
+            check("native call screenshot saved", saved, &shot);
+        }
+        let voice = opened.voice.clone();
+        crate::on_tokio(async move { voice.disconnect().await }).await;
+        app.quit();
+    });
+    true
 }
 
 /// `RV_SMOKE_GALLERY=1`: a window of sample messages and a composer, no
