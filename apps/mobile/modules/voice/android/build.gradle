@@ -44,4 +44,5 @@ def buildVoiceNative = tasks.register('buildVoiceNative', Exec) {
 tasks.named('preBuild').configure { dependsOn buildVoiceNative }
 dependencies {
   implementation 'io.livekit:livekit-android:2.29.0'
+  testImplementation 'junit:junit:4.13.2'
 }

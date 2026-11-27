@@ -6,13 +6,13 @@
   <uses-permission android:name="android.permission.BLUETOOTH_CONNECT" />
   <!-- An incoming direct call shows over the lock screen. -->
   <uses-permission android:name="android.permission.USE_FULL_SCREEN_INTENT" />
-  <!-- Screen sharing runs in LiveKit's ScreenCaptureService (media projection). -->
+  <!-- Screen sharing runs in LiveKit's ScreenCaptureService (media projection), a native call's in VoiceService. -->
   <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PROJECTION" />
   <uses-permission android:name="android.permission.FOREGROUND_SERVICE_CAMERA" />
   <uses-permission android:name="android.permission.CAMERA" />
   <application>
     <service android:name="com.rocketvibe.voice.VoiceService" android:exported="false"
-      android:foregroundServiceType="microphone|camera|mediaPlayback" />
+      android:foregroundServiceType="microphone|camera|mediaPlayback|mediaProjection" />
     <service android:name="com.rocketvibe.voice.CallService" android:exported="false"
       android:foregroundServiceType="microphone|camera|mediaPlayback" />
     <activity android:name="com.rocketvibe.voice.IncomingCallActivity" android:exported="false"

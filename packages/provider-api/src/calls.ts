@@ -16,12 +16,17 @@ export type PcmCallEngine={
 };
 
 /** What the voice engine needs to join a Mattermost Calls plugin call itself. */
-export type MattermostCallCredentials={server:string;token:string;channelId:string;userId:string;iceServers:{urls:string[];username:string;credential:string}[]};
+export type MattermostCallCredentials={server:string;token:string;channelId:string;userId:string;iceServers:{urls:string[];username:string;credential:string}[];
+  /** What the plugin lets a member send besides the microphone (`/config` `AllowScreenSharing`, `EnableVideo`). */
+  screen:boolean;camera:boolean};
 
 /** The voice engine, for a call whose signalling the provider speaks itself. */
 export type ExternalCallEngine={
-  /** Opens the session under this identity. */
-  start:(identity:string)=>Promise<void>;
+  /**
+   * Opens the session under this identity; `dataChannel` names a data channel the offer opens, `receiveVideos` the receive-only video sections it carries (the camera taking the first).
+   * With `videoUpFront` the first offer carries the camera's and the screen's sections, sending nothing yet, and a start or stop makes no new offer.
+   */
+  start:(identity:string,options?:{dataChannel?:string;receiveVideos?:number;videoUpFront?:boolean})=>Promise<void>;
   /** The local offer, once its candidates are gathered. */
   offer:()=>Promise<string>;
   answer:(sdp:string)=>Promise<void>;
@@ -32,6 +37,18 @@ export type ExternalCallEngine={
   ended:(reason:string)=>Promise<void>;
   /** Resolves when the call is hung up here. */
   left:()=>Promise<void>;
+  /** This side's later offers, made when its camera or screen starts or stops; returns its unsubscribe. */
+  offers?:(listener:(sdp:string)=>void)=>()=>void;
+  /** What this side sends now, as the call screen asked. */
+  sending?:()=>{camera:boolean;screen:boolean};
+  /** Tells each change of what this side's video sections send, their track on; returns its unsubscribe. */
+  sent?:(listener:(now:{camera:boolean;screen:boolean})=>void)=>()=>void;
+  /** Every video the other side sends now, by the stream id its section carries: whose, and whether a shared screen. */
+  videos?:(videos:{stream:string;member:string;screen:boolean}[])=>Promise<void>;
+  /** A binary message on the data channel `start` opened, sent once it is open. */
+  sendData?:(data:Uint8Array)=>Promise<void>;
+  /** What arrives on that data channel; returns its unsubscribe. */
+  data?:(listener:(data:Uint8Array)=>void)=>()=>void;
 };
 
 export type NativeCalls={

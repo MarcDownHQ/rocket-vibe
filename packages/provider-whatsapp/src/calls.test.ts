@@ -4,11 +4,13 @@ import { carryWhatsAppCall, whatsappCallSignal } from './index.ts';
 import type { WaCall } from './frames.ts';
 
 describe('WhatsApp calls', () => {
-  test('a 1:1 audio call rings; a video or group call does not, an end stops it', () => {
+  test('a 1:1 call rings, audio or video; a group call does not, an end stops it', () => {
     const ring: WaCall = { id: 'C1', from: 'a@s.whatsapp.net', state: 'ringing' };
-    assert.deepEqual(whatsappCallSignal(ring, 'Ada'), { kind: 'ring', rid: 'a@s.whatsapp.net', messageId: 'C1', callId: 'C1', callerId: 'a@s.whatsapp.net', callerName: 'Ada' });
-    assert.equal(whatsappCallSignal({ ...ring, video: true }, null), null);
+    const rings = { kind: 'ring', rid: 'a@s.whatsapp.net', messageId: 'C1', callId: 'C1', callerId: 'a@s.whatsapp.net', callerName: 'Ada' };
+    assert.deepEqual(whatsappCallSignal(ring, 'Ada'), rings);
+    assert.deepEqual(whatsappCallSignal({ ...ring, video: true }, 'Ada'), rings);
     assert.equal(whatsappCallSignal({ ...ring, group: 'g@g.us' }, null), null);
+    assert.equal(whatsappCallSignal({ ...ring, video: true, group: 'g@g.us' }, null), null);
     assert.deepEqual(whatsappCallSignal({ ...ring, state: 'ended' }, null), { kind: 'rung-over' });
     assert.equal(whatsappCallSignal({ ...ring, state: 'active' }, null), null);
   });

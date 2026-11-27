@@ -7,18 +7,16 @@
  */
 import { Stack, useLocalSearchParams, useRouter } from 'expo-router';
 import { useEffect, useRef, useState } from 'react';
-import { Modal, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
-import Animated from 'react-native-reanimated';
+import { Pressable, StyleSheet, Text, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
-import type { RestClient } from '../../lib/rest.ts';
 import { TILE_GAP, arrangeTiles } from '../../lib/voiceGrid.ts';
 import { useT } from '../../ui/i18n.ts';
 import { useSession } from '../../ui/session.tsx';
-import { type Colors, FONTS, useColors } from '../../ui/theme.ts';
+import { FONTS, useColors } from '../../ui/theme.ts';
 import { Icon, InlineIcon } from '../../ui/icon.tsx';
 import { VoiceReactions } from '../../ui/social.tsx';
-import { SpeakingAvatar, VoiceControls, VoiceTile, type VoiceCard, useVoiceGlow, useJoinVoice, useListening, usePeople, usePersonSheet, useRoomVoice, useVoice } from '../../ui/voice.tsx';
+import { ScreenStage, VoiceControls, VoiceTile, type VoiceCard, useJoinVoice, useListening, usePeople, usePersonSheet, useRoomVoice, useVoice } from '../../ui/voice.tsx';
 import { VoiceVideoView } from '../../modules/voice/index.ts';
 
 type Card = VoiceCard;
@@ -38,7 +36,6 @@ export default function VoiceScreen() {
   const here = voice.room === rid && voice.phase !== 'idle';
   const direct = directParam === '1' || (voice.room === rid && voice.direct);
   const [area, setArea] = useState({ width: 0, height: 0 });
-  const [fullscreen, setFullscreen] = useState(false);
 
   // A direct call over (hung up here or there): back to its chat.
   const wasHere = useRef(false);
@@ -58,12 +55,8 @@ export default function VoiceScreen() {
         uid: o.user.id, name: o.user.display_name || o.user.username, speaking: false, muted: o.muted,
         deafened: o.deafened, local: false, camera: false, screen: false, mutedHere: mutedHere(o.user.id),
       }));
-  // The room's one screen share takes most of the screen; the people go in a
-  // narrow column at its right, cameras as thumbnails.
+  // The room's one screen share takes most of the screen.
   const sharer = here ? cards.find(card => card.screen) : undefined;
-  // The share over: out of full screen, so the next one does not open in it.
-  // Adjusted while rendering, not in an effect (no extra render pass).
-  if (fullscreen && sharer === undefined) setFullscreen(false);
   const status = !here ? null
     : voice.ring?.state === 'ringing' && voice.participants.length < 2 ? t('voice.ringing')
     : voice.phase === 'connected' ? t('voice.connected')
@@ -100,19 +93,7 @@ export default function VoiceScreen() {
         </Pressable>
       </View>
       {sharer !== undefined && VoiceVideoView !== null ? (
-        <View style={styles.shareRow}>
-          <Pressable style={[styles.stage, { backgroundColor: c.deepCard, borderColor: c.border }]} onPress={() => setFullscreen(true)}
-            accessibilityRole="button" accessibilityLabel={t('voice.fullscreen')}>
-            <VoiceVideoView identity={sharer.uid} source="screen" fit="contain" style={StyleSheet.absoluteFill} />
-            <Text style={[styles.stageLabel, { color: c.text, backgroundColor: c.background }]} numberOfLines={1}>
-              <InlineIcon name="video-display" /> {t('voice.screenOf', { name: sharer.name })}
-            </Text>
-            <Text style={[styles.stageFull, { color: c.text, backgroundColor: c.background }]}>⛶</Text>
-          </Pressable>
-          <ScrollView style={styles.strip} contentContainerStyle={styles.stripContent} showsVerticalScrollIndicator={false}>
-            {cards.map(card => <MiniCard key={card.uid} c={c} client={state.client} card={card} onLongPress={press(card)} />)}
-          </ScrollView>
-        </View>
+        <ScreenStage c={c} client={state.client} sharer={sharer} cards={cards} press={press} />
       ) : cards.length === 0 ? (
         <Text style={[styles.empty, { color: c.dimmed }]}>{t('voice.empty')}</Text>
       ) : (
@@ -141,38 +122,9 @@ export default function VoiceScreen() {
           </Pressable>
         )}
       </View>
-      {sharer !== undefined && VoiceVideoView !== null && (
-        <Modal visible={fullscreen} transparent={false} animationType="fade" statusBarTranslucent navigationBarTranslucent
-          supportedOrientations={['portrait', 'landscape']} onRequestClose={() => setFullscreen(false)}>
-          <Pressable style={styles.fullscreen} onPress={() => setFullscreen(false)} accessibilityRole="button" accessibilityLabel={t('voice.exitFullscreen')}>
-            <VoiceVideoView identity={sharer.uid} source="screen" fit="contain" style={StyleSheet.absoluteFill} />
-          </Pressable>
-        </Modal>
-      )}
     </SafeAreaView>
   );
 }
-
-
-
-/** Someone beside a shared screen: a small camera, or the avatar, and the name. */
-function MiniCard({ c, client, card, onLongPress }: { c: Colors; client: RestClient; card: Card; onLongPress?: () => void }) {
-  const border = useVoiceGlow(card.speaking);
-  return (
-    <Pressable onLongPress={onLongPress} delayLongPress={350} style={[styles.mini, { backgroundColor: c.card, borderColor: c.border }]}>
-      <Animated.View pointerEvents="none" style={[StyleSheet.absoluteFill, styles.miniGlow, { borderColor: c.online }, border]} />
-      {card.camera && VoiceVideoView !== null ? (
-        <View style={styles.miniCamera}>
-          <VoiceVideoView identity={card.uid} source="camera" fit="cover" style={StyleSheet.absoluteFill} />
-        </View>
-      ) : (
-        <SpeakingAvatar c={c} client={client} uid={card.uid} name={card.name} speaking={card.speaking} size={44} radius={22} />
-      )}
-      <Text style={[styles.miniName, { color: c.text }]} numberOfLines={1}>{card.name}</Text>
-    </Pressable>
-  );
-}
-
 
 const styles = StyleSheet.create({
   full: { flex: 1 },
@@ -183,17 +135,6 @@ const styles = StyleSheet.create({
   status: { fontFamily: FONTS.bodyBold, fontSize: 12 },
   grid: { flex: 1, margin: 12, gap: TILE_GAP, justifyContent: 'center' },
   gridRow: { flexDirection: 'row', justifyContent: 'center', gap: TILE_GAP },
-  shareRow: { flex: 1, flexDirection: 'row', gap: 10, padding: 12 },
-  stage: { flex: 1, borderRadius: 18, borderWidth: 1, overflow: 'hidden' },
-  strip: { width: 92, flexGrow: 0 },
-  stripContent: { gap: 10 },
-  mini: { alignItems: 'center', gap: 6, paddingVertical: 10, paddingHorizontal: 6, borderRadius: 16, borderWidth: 1, overflow: 'hidden' },
-  miniGlow: { borderRadius: 16, borderWidth: 2, zIndex: 1 },
-  miniCamera: { width: 78, height: 58, borderRadius: 10, overflow: 'hidden' },
-  miniName: { fontFamily: FONTS.bodyStrong, fontSize: 11, maxWidth: '100%' },
-  stageLabel: { position: 'absolute', left: 10, bottom: 10, paddingHorizontal: 8, paddingVertical: 3, borderRadius: 8, fontFamily: FONTS.bodyBold, fontSize: 12, opacity: 0.85 },
-  stageFull: { position: 'absolute', right: 10, top: 10, paddingHorizontal: 8, paddingVertical: 2, borderRadius: 8, fontSize: 16, opacity: 0.85 },
-  fullscreen: { flex: 1, backgroundColor: '#000000' },
   empty: { flex: 1, textAlign: 'center', padding: 32, fontFamily: FONTS.body, fontSize: 14 },
   footer: { paddingVertical: 14, paddingHorizontal: 16, borderTopWidth: 1 },
   join: { alignSelf: 'center', borderRadius: 24, paddingHorizontal: 28, paddingVertical: 12 },

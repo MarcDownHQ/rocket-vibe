@@ -425,10 +425,17 @@ Built (desktop):
   `offers_carry_the_receiving_sections_asked_and_keep_them`).
 - **Windows**: nothing huddle-specific; GTK shows the camera button from `Event::CallVideo`, the
   others' cameras in tiles and a screen on the stage as for Jitsi.
-- **Not built**: PAUSE/RESUME of a group; Android
-  (`rv-voice-mobile`'s offers carry no video section, so nothing is subscribed, and its peer
-  connection offers again on each change of the others' videos). **Not run** against a live huddle:
-  the capture, unit tests and the sidecar's offer test only.
+- **Android** (2026-11-26): `rv-voice-mobile`'s `offerWanted` event carries `receiveVideos` and
+  `receiveVideo` (the session's `receive_videos` and `offers_to_receive_video`, read as it goes
+  out, `session_event_json`); `JitsiSession` (`JitsiCall.kt`) keeps the most asked for in the session,
+  adds receive-only video transceivers up to it before each offer (`addReceivers`, none removed) and
+  sets `OfferToReceiveVideo` once video was wanted. The answer's `v_<mid>` streams name each track
+  through the call's video list (`shown()` matches it by stream); the camera goes on a send-only
+  section of its own, as for Mattermost. The call screen needed nothing: its camera button follows
+  `canCamera`, true for Chime since the shared code's `can_send(Camera)`.
+- **Not built**: PAUSE/RESUME of a group. **Not run** against a
+  live huddle: the capture, unit tests and the sidecar's offer test only; Android by compiling (the
+  Android cross-compile, `:voice:compileDebugKotlin`) and rv-voice-mobile's tests only.
 
 ### Slack huddles over Chime, screen share (2026-11-26)
 
@@ -484,8 +491,25 @@ Built (desktop):
   call goes on. A main session lost or over leaves its share; a rejoin opens a new one while the
   capture runs. The windows needed nothing (`Event::CallVideo` shows the button); SwiftUI shares
   through the same sidecar, whose screen capture works on macOS.
-- **Not run** against a live huddle: whether Chime takes a microphone that sends no frame; whether the
-  others' Slack clients show the share as they do Chrome's. Checked: the frames against the capture and the sidecar's offer, in unit tests.
+- **Android** (2026-11-26): `rv-voice-mobile` (`call.rs`) adds `screenApart` (the session's
+  `screen_apart`) to the `local` event; `Share(true)` from the Kotlin side opens the session
+  `screen_session` gives inside the drive, whose events reach Kotlin wrapped as `{type: "share", event}`
+  (its `local` first, so its end never ends the call), `shareOffer` passes it the offer, and `Share(false)`,
+  or the call's end, leaves it. `JitsiSession` (`JitsiCall.kt`) keeps the screen off the call's peer
+  connection; once the capture runs and the call's peer connection exists, `syncVideo` asks for the
+  screen's session and its `offerWanted` opens a `Share`: a peer connection of its own from the same
+  factory, a microphone track kept disabled (libwebrtc then sends silence; the phone's audio device is
+  shared, so a source given no frames is not to be had) and the screen on a `sendrecv` transceiver, both on
+  stream `<attendee>#content`, the capture's frames moved to its source; the offer goes once gathering
+  completed, as the call's does. Connected, the call's session is told the screen is sent (`video`); the
+  capture stopping closes it. A share failing (its session ended, an answer refused before it connected,
+  its peer connection failed) stops the capture, tells the call screen `screenUnavailable` (a notice,
+  "Couldn't share the screen") when nothing was sent yet, and the call goes on. A rejoin drops it with the
+  media and opens a new one while the capture runs.
+- **Not run** against a live huddle: whether Chime takes a microphone that sends no frame (Android's
+  sends silence); whether the others' Slack clients show the share as they do Chrome's. Checked: the frames
+  against the capture and the sidecar's offer, in unit tests; Android by compiling (`:voice:compileDebugKotlin`)
+  and rv-voice-mobile's test of the screen's session (asked once, offered, left, ending without the call).
 
 ### Teams calls placed from a chat, audio (2026-11-06)
 
@@ -735,8 +759,19 @@ then run on the bench. kChat has no such plugin: its calls stay kMeet's.
   redrawn on its changes, and a composer posting through the outbox) behind a header button
   (`native_call::Opened::chat`); SwiftUI the room's `MessageList` and `Composer` on a `RoomModel` of
   its own (`AppModel::callChat`).
-- **Owed**: Android (video and the chat button); Chime (this side's screen share, the `#content` socket);
-  the plugin's `MediaMap`. WhatsApp's video has its own path, below; Teams' is after it.
+- **Android** (`JitsiCall.kt`, `NativeVideo.kt`, rv-voice-mobile's `local` event and `video`/`videoOf`
+  calls): `JitsiSession` sends the front camera (Camera2) and the screen (media projection, `VoiceService`
+  taking that foreground type while a native call shares), the captures outliving a media session; a
+  track goes on the first unused section where the provider's offers carry this side's (Jitsi), else on a
+  send-only section of its own; the data channel opens with its protocol, its messages waiting for it;
+  crossing offers handled as on desktop. Remote videos are named from the call's list, else from the
+  track's own ids, else shown as their stream's camera until the list comes. The call screen shows a
+  camera in its tile, a shared screen on the stage with the people in a strip (`ScreenStage`, shared with
+  the Vibez voice screen), camera and screen buttons only where the call can send them, and a chat button
+  opening the call's room over the call. Checked by compiling only (Kotlin, TypeScript, rv-voice-mobile
+  tests), not run on a device.
+- **Owed**: the plugin's `MediaMap`. WhatsApp's
+  video has its own path, below; Teams' is after it.
 
 ### WhatsApp 1:1 calls, audio (2026-11-11)
 
@@ -804,11 +839,28 @@ goes out as this side's video.
   `phone_only` send only a group's call to the phone. The camera goes out since the sidecar captures one
   on macOS, and the peer's camera is decoded by VideoToolbox (2026-11-24; the `h264` round trip passes on
   a Mac, CI never runs it there). Built on a Mac, not run in a call.
+- **Android** (`modules/voice/android/.../PcmVideo.kt`, `JitsiCall.kt`): `JitsiSession.runPcm` opens the
+  video connection beside the audio (`PcmVideo.open`, WebRTC's native library loaded first for its
+  buffers) and only then says the call takes camera and screen (`canCamera`, `canScreen`), so the call
+  screen shows its buttons and tiles as for any native call. The captures of `NativeVideo.kt` are tapped
+  (the screen while shared, else the camera): one picture every 66 ms, cropped and scaled within
+  1280x720 (720x1280 standing) in whole macroblocks, turned upright (`YuvHelper.I420Rotate`), then
+  `MediaCodec`'s H.264 encoder (`H264Encoder`: `COLOR_FormatYUV420Flexible` through `getInputImage`,
+  Constrained Baseline where the codec lists it else Baseline, level 3.1, 0.8 Mb/s a camera, 1.2 a
+  screen, 15 a second, a keyframe every 3 s and on `PARAMETER_KEY_REQUEST_SYNC_FRAME`); its
+  `BUFFER_FLAG_CODEC_CONFIG` output (SPS and PPS, Annex-B) is put before each keyframe that lacks them
+  (`PcmVideoWire.accessUnit`). The peer's units go from the first keyframe to `MediaCodec`'s decoder
+  (`H264Decoder`, low latency from Android 11) rendering onto a `SurfaceTextureHelper`'s surface, its
+  orientation as the frames' rotation (`setFrameRotation`), the frames shown under the peer's roster id
+  as their camera (`DecodedFeed`); a lost unit or a codec error asks for a keyframe at most once a
+  second. A refusal stops both captures and emits `videoDeclined`, which the call screen shows as a
+  notice. The framing, parameter sets, fit and clock are unit-tested (`PcmVideoWireTest`).
 - **Checked** (2026-11-21): the encoder's output decoded back at its size (`h264` tests); the real
   sidecar against a stand-in engine echoing its pictures as the peer's (`~/.cache/rvtest/pcm-harness.py`,
   outside the repo): about 15 pictures a second out, sending on then off, the echo decoded, turned and
   shown under the peer's id. **Not run with a phone**: the orientation's direction, and what a phone
-  makes of the stream, are unverified.
+  makes of the stream, are unverified. Android: checked by compiling (Kotlin, an x86_64 debug build) and
+  the framing's unit tests; not run on a device, against an engine or with a phone.
 
 ### Teams call video (2026-11-23)
 
@@ -956,8 +1008,40 @@ goes out as this side's video.
   where the web client reserves 100, and the made-up `sequence-number` 1 of the camera's capabilities; a
   group chat's call (placed by `epconv` with its people) still goes the 1:1 way, no data channel; whether Teams takes `renegotiate` from this client, whether it minds a stopped share
   told as `inactive` on its mid where its web client goes back to the placeholder, whether Teams' native
-  clients renegotiate as its web client does, and the codec the two sides settle on. Android owes the
-  whole of it.
+  clients renegotiate as its web client does, and the codec the two sides settle on.
+- **Android** (2026-11-23): `packages/provider-teams/src/calling.ts` ports `sdp.rs` (`Layout`, `teamsOffer`,
+  `plainAnswer`, `plainOffer`, `teamsAnswer`, `remoteVideos`, `modalities`, with its unit tests in
+  `calling.test.ts`) and `drive` (`runCall`: one push or offer at a time, an offer made before Teams took a
+  placed call waiting for its acceptance); `ExternalCallEngine` (`packages/provider-api/src/calls.ts`) gains
+  `offers`, `sending` and `videos`. The Kotlin call (`JitsiCall.kt` `startExternal(identity, answering, video)`)
+  is the sidecar's `External`: camera on the first unused video section (`reused`), screen on a send-only
+  transceiver of its own, streams `<identity>-camera` / `<identity>-screen`, a new offer per start or stop
+  only from a stable connection (`offerInTurn`, `deferred`), Teams' offer crossing this side's rolling it back
+  (`remoteOffer`), a refused first answer ending the call and a late one ignored (`remoteAnswer`), and
+  `remoteVideos` feeding the naming the Jitsi path uses (`shown`). Its offers carry `OfferToReceiveVideo`
+  (org.webrtc leaves video sections alone without it, where LiveKit's Rust binding defaulted to stripping
+  their receiving), so a placed call offers a camera section from the start. The call screen
+  (`app/call/[callId].tsx` `externalVideo`) opens the call with video and so shows the camera and screen
+  buttons. The fixes the 2026-11-23 capture led to (the answer acknowledged on `mediaAcknowledgement`,
+  `negotiationTag`, Teams' other mids reserved) are ported. Group calls (2026-11-24): `calling.ts` takes
+  `Layout.group`, the x-data translation (`teamsData` / `plainData`), `streams`, `videoSlots` and
+  `dataStream`, and `packages/provider-teams/src/datachannel.ts` ports `datachannel.rs` byte for byte (JSON
+  keys in serde_json's sorted order); `joinThreadCall` starts the engine with `{dataChannel: 'main-channel',
+  receiveVideos: 5}` and `runCall` greets, beats every second (cleared when the call ends) and routes as
+  `drive` does. The Kotlin call adds the receive-only transceivers before its first offer (the camera's
+  `addTrack` then reuses the first) and opens the channel ordered and in-band; `sendData` queues until it is
+  open and what arrives reaches JS as the `data` event (bytes as a number array). **Checked**: compiled and
+  unit-tested only, not run on a device nor against Teams. This side's camera and share in a group call
+  (2026-11-26) go as on the desktop: `joinThreadCall` starts the engine with `videoUpFront` and three
+  receivers, the Kotlin call adding a camera and a screen transceiver, `sendrecv` with no track, before
+  them (`prepareVideo`) and swapping their tracks with no new offer; the invitation carries
+  `mediaDescriptions` (`describeMedia`, all `recvonly`); `runCall`, once accepted with the
+  `updateMediaDescriptions` link, posts each change the engine reports (`ExternalCallEngine.sent`, the call
+  screen reading the local member's camera and screen) one at a time (`sendingSteps`,
+  `updateMediaDescriptionsBody`), after `applyChannelParameters` (`cameraCapabilitiesBody`, its parameter
+  in serde_json's sorted keys) before the camera first goes out and `updateParticipantProperties`
+  (`screenSharerBody`) before each share. 1:1 calls keep `renegotiate`. Compiled and unit-tested only
+  (rv-teams' tests ported, and the run against a fake engine).
 
 ## Order
 
@@ -989,6 +1073,11 @@ Teams meetings and video last.
 - apps/desktop/voice/src/call.rs, apps/desktop/voice/src/video.rs, crates/rv-call/src/jitsi/sdp.rs,
   apps/desktop/crates/rv-gtk/src/native_call.rs, apps/desktop/crates/rv-gtk/src/call_chat.rs,
   apps/desktop/macos/Sources/RocketVibe/NativeCallWindow.swift
+- apps/mobile/modules/voice/android/src/main/java/com/rocketvibe/voice/NativeVideo.kt,
+  apps/mobile/app/call/[callId].tsx, crates/rv-voice-mobile/src/call.rs
+- apps/mobile/modules/voice/android/src/main/java/com/rocketvibe/voice/PcmVideo.kt,
+  apps/mobile/modules/voice/android/src/test/java/com/rocketvibe/voice/PcmVideoWireTest.kt,
+  crates/rv-whatsapp/engine/src/call_video.rs
 - crates/rv-call/src/mattermost, apps/desktop/crates/rv-core/src/mattermost/calls.rs,
   apps/mobile/providers/mattermost/pluginCalls.ts
 - The Calls plugin 1.12.3 (`mattermost-plugin-calls-v1.12.3-linux-amd64.tar.gz`, its webapp
@@ -998,6 +1087,10 @@ Teams meetings and video last.
 - crates/rv-teams/src/sdp.rs, crates/rv-teams/src/calling.rs, apps/desktop/crates/rv-core/src/teams_call.rs
   (Teams' video), Teams' web calling bundle `calling-pluginless-*.js` in `teams.cloud.microsoft.har`,
   `teams.cloud.microsoft_screenshare.har`, Microslop's `crates/ost-microsoft/src/calling/rtcp.rs`
+- packages/provider-teams/src/calling.ts, packages/provider-teams/src/calling.test.ts,
+  packages/provider-teams/src/datachannel.ts, packages/provider-teams/src/datachannel.test.ts,
+  packages/provider-api/src/calls.ts, apps/mobile/modules/voice/android/src/main/java/com/rocketvibe/voice/JitsiCall.kt
+  (Teams' video on Android)
 - crates/rv-teams/src/datachannel.rs, crates/rv-call/src/lib.rs (`video_up_front`), captures 2026-11-23/24
   `teams.cloud.microsoft_video2.har`, `teams.cloud.microsoft_video3.har`, `teams-datachannel.json`
   (a group call's and a meeting's own camera and share)

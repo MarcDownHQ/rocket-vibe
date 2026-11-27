@@ -62,6 +62,8 @@ object VoiceEngine {
   private var room: Room? = null
   /** A Jitsi Meet conference carried natively instead of a LiveKit room. */
   private var jitsi: JitsiSession? = null
+  /** A native call's screen is shared: [VoiceService] holds the media projection type. */
+  @Volatile var projecting = false; private set
   private val ticker = android.os.Handler(android.os.Looper.getMainLooper())
   private var job: Job? = null
   /** How long someone still speaks after their last loud enough sound. */
@@ -114,6 +116,12 @@ object VoiceEngine {
   private val mutedSpeechListeners = CopyOnWriteArraySet<() -> Unit>()
   fun listenMutedSpeech(listener: () -> Unit) { mutedSpeechListeners.add(listener) }
   fun unlistenMutedSpeech(listener: () -> Unit) { mutedSpeechListeners.remove(listener) }
+  private val videoDeclinedListeners = CopyOnWriteArraySet<() -> Unit>()
+  fun listenVideoDeclined(listener: () -> Unit) { videoDeclinedListeners.add(listener) }
+  fun unlistenVideoDeclined(listener: () -> Unit) { videoDeclinedListeners.remove(listener) }
+  private val screenUnavailableListeners = CopyOnWriteArraySet<() -> Unit>()
+  fun listenScreenUnavailable(listener: () -> Unit) { screenUnavailableListeners.add(listener) }
+  fun unlistenScreenUnavailable(listener: () -> Unit) { screenUnavailableListeners.remove(listener) }
   private val mainThread = android.os.Handler(android.os.Looper.getMainLooper())
   private val mutedMonitor = MutedMonitor { mainThread.post { mutedSpeechListeners.forEach { it() } } }
 
@@ -136,6 +144,7 @@ object VoiceEngine {
   private fun snapshot(): Map<String, Any?> = mapOf(
     "state" to state, "room" to roomId, "microphone" to microphone, "deafened" to deafened,
     "camera" to camera, "sharing" to sharing, "encrypted" to (keys != null),
+    "canCamera" to (jitsi?.canCamera ?: true), "canScreen" to (jitsi?.canScreen ?: true),
     "reason" to reason, "route" to route(), "routes" to routes(), "participants" to members(),
   )
 
@@ -428,6 +437,11 @@ object VoiceEngine {
 
   fun setCamera(enabled: Boolean) {
     camera = enabled && canFilm()
+    jitsi?.let { j ->
+      camera = j.setCamera(camera)
+      if (camera) VoiceService.start(app)
+      return changed()
+    }
     val r = room ?: return changed()
     // The service restarts in the foreground with the camera type added.
     if (camera) VoiceService.start(app)
@@ -439,13 +453,14 @@ object VoiceEngine {
 
   /** [data] is the user's MediaProjection consent; the server already granted the screen. */
   fun startScreenShare(data: Intent) {
-    val r = room ?: return
-    sharing = true
     // The chosen quality: the screen's shorter side at most `shareHeight` lines.
     val metrics = app.resources.displayMetrics
     val scale = min(1.0, shareHeight.toDouble() / min(metrics.widthPixels, metrics.heightPixels))
     val width = (metrics.widthPixels * scale).toInt() and 1.inv()
     val height = (metrics.heightPixels * scale).toInt() and 1.inv()
+    jitsi?.let { j -> return shareNatively(j, data, width, height) }
+    val r = room ?: return
+    sharing = true
     val bitrate = (width.toLong() * height * shareFps * 8 / 100).coerceIn(1_500_000L, 12_000_000L).toInt()
     r.screenShareTrackCaptureDefaults = r.screenShareTrackCaptureDefaults.copy(
       captureParams = VideoCaptureParameter(width, height, shareFps))
@@ -463,7 +478,35 @@ object VoiceEngine {
     }
   }
 
+  /** A native call's screen: the service in the foreground as a media projection first, as Android 14 wants, then the capture. */
+  private fun shareNatively(j: JitsiSession, data: Intent, width: Int, height: Int) {
+    if (!j.canScreen) return
+    sharing = true
+    projecting = true
+    changed()
+    VoiceService.project(app) { held ->
+      mainThread.post {
+        if (jitsi !== j || !sharing) return@post
+        if (!held || !j.startScreen(data, width, height, shareFps)) unproject()
+        changed()
+      }
+    }
+  }
+
+  /** The native call's screen share over: the service drops the media projection type. */
+  private fun unproject() {
+    sharing = false
+    if (!projecting) return
+    projecting = false
+    if (roomId != null) VoiceService.start(app)
+  }
+
   fun stopScreenShare() {
+    jitsi?.let { j ->
+      j.stopScreen()
+      unproject()
+      return changed()
+    }
     val r = room ?: return
     sharing = false
     scope.launch {
@@ -473,16 +516,25 @@ object VoiceEngine {
     }
   }
 
-  internal fun localIdentity(): String? = room?.localParticipant?.identity?.value
+  internal fun localIdentity(): String? = jitsi?.localIdentity() ?: room?.localParticipant?.identity?.value
 
   internal fun initRenderer(renderer: TextureViewRenderer): Boolean {
+    if (jitsi != null) {
+      renderer.init(NativeVideo.egl.eglBaseContext, null)
+      return true
+    }
     val r = room ?: return false
     r.initVideoRenderer(renderer)
     return true
   }
 
-  /** The camera or screen track of a participant, local or remote, once subscribed. */
-  internal fun videoTrack(identity: String, screen: Boolean): VideoTrack? {
+  /** The camera or screen of a participant, local or remote, once subscribed. */
+  internal fun videoFeed(identity: String, screen: Boolean): VideoFeed? {
+    jitsi?.let { return it.videoFeed(identity, screen) }
+    return videoTrack(identity, screen)?.let { RoomFeed(it) }
+  }
+
+  private fun videoTrack(identity: String, screen: Boolean): VideoTrack? {
     val r = room ?: return null
     val participant: Participant = if (r.localParticipant.identity?.value == identity) r.localParticipant
       else r.remoteParticipants.values.firstOrNull { it.identity?.value == identity } ?: return null
@@ -501,13 +553,13 @@ object VoiceEngine {
 
   /**
    * Joins a Jitsi Meet conference (Rocket.Chat's Jitsi provider, kChat's kMeet)
-   * natively, audio only; false when this build cannot, so the caller keeps the
+   * natively, with cameras and screens; false when this build cannot, so the caller keeps the
    * meeting's page. [callId] stands for the room in the snapshot.
    */
   fun connectJitsi(callId: String, meeting: String, displayName: String, token: String?, title: String): Boolean =
     connectNative(callId, title) { it.start(meeting, displayName, token) }
 
-  /** Joins a Mattermost Calls plugin call natively, audio only; false when this build cannot. */
+  /** Joins a Mattermost Calls plugin call natively, video where the plugin allows it; false when this build cannot. */
   internal fun connectMattermost(callId: String, call: MattermostCall, title: String): Boolean =
     connectNative(callId, title) { it.startMattermost(call) }
 
@@ -516,19 +568,25 @@ object VoiceEngine {
     connectNative(callId, title) { it.startChime(credentials) }
 
   /**
-   * A call whose signalling the app speaks itself (Teams), audio only: the offer
-   * arrives through [onLocalOffer], the rest through the `remote*` functions.
+   * A call whose signalling the app speaks itself (Teams), with `video` its camera
+   * and screen too: each offer arrives through [onLocalOffer], the rest through
+   * the `remote*` functions. `videoUpFront`: their sections come in the first offer.
    */
-  fun connectExternal(callId: String, identity: String, title: String, answering: Boolean): Boolean =
+  fun connectExternal(callId: String, identity: String, title: String, answering: Boolean, video: Boolean, dataChannel: String? = null, receiveVideos: Int = 0, videoUpFront: Boolean = false): Boolean =
     connectNative(callId, title) { session ->
       session.onLocalOffer = { sdp -> onLocalOffer?.invoke(sdp) }
-      session.startExternal(identity, answering)
+      session.onData = { data -> onData?.invoke(data) }
+      session.startExternal(identity, answering, video, dataChannel, receiveVideos, videoUpFront)
       true
     }
 
   var onLocalOffer: ((String) -> Unit)? = null
+  /** What arrives on an external call's data channel. */
+  var onData: ((ByteArray) -> Unit)? = null
 
-  /** A call whose audio the app's WhatsApp engine carries (its socket at `address`), audio only. */
+  fun sendData(data: ByteArray) { jitsi?.sendData(data) }
+
+  /** A call the app's WhatsApp engine carries (its socket at `address`): its audio, and its video beside it. */
   fun connectPcm(callId: String, address: String, title: String): Boolean =
     connectNative(callId, title) { it.startPcm(address) }
 
@@ -537,6 +595,8 @@ object VoiceEngine {
   fun remoteOffer(sdp: String, done: (String?) -> Unit) { jitsi?.remoteOffer(sdp, done) ?: done(null) }
 
   fun remoteRoster(members: List<Triple<String, String, Boolean>>) { jitsi?.remoteRoster(members) }
+
+  internal fun remoteVideos(videos: List<RemoteVideo>) { jitsi?.listRemoteVideos(videos) }
 
   /** The other side ended an external call. */
   fun remoteEnded(why: String) { if (jitsi != null) teardown(why, cue = state == "connected") }
@@ -553,6 +613,23 @@ object VoiceEngine {
       }
     },
       onEnd = { why -> if (jitsi != null) teardown(why, cue = state == "connected") })
+    session.onScreenStopped = {
+      if (jitsi === session && sharing) {
+        unproject()
+        changed()
+      }
+    }
+    session.onScreenUnavailable = {
+      if (jitsi === session) screenUnavailableListeners.forEach { it() }
+    }
+    session.onVideoRefused = {
+      if (jitsi === session) {
+        camera = false
+        unproject()
+        videoDeclinedListeners.forEach { it() }
+        changed()
+      }
+    }
     if (!start(session)) return false
     jitsi = session
     roomId = callId; this.title = title; link = null
@@ -577,6 +654,8 @@ object VoiceEngine {
       jitsi = null
       ticker.removeCallbacksAndMessages(null)
       j.close()
+      projecting = false
+      camera = false; sharing = false
       if (cue) VoiceSounds.cue(app, R.raw.cue_leave)
       state = if (why == null) "idle" else "disconnected"
       reason = why; roomId = null

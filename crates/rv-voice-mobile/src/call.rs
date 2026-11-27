@@ -14,7 +14,7 @@ use jni::JNIEnv;
 use jni::objects::{JClass, JString};
 use jni::sys::{jboolean, jlong, jstring};
 use rv_call::jitsi::Config;
-use rv_call::{CallSignaling, Candidate, Event};
+use rv_call::{CallSignaling, Candidate, Event, LocalVideo, VideoKind};
 use serde_json::{Value, json};
 use tokio::sync::mpsc as async_mpsc;
 
@@ -23,6 +23,12 @@ enum Command {
     Answer(String),
     Candidate(Candidate),
     Muted(bool),
+    Video(LocalVideo),
+    RemoteVideo { track: String, stream: String },
+    /// This side's screen capture is ready (a session of its own joins) or stopped (it is left).
+    Share(bool),
+    /// That session's offer, its candidates in it.
+    ShareOffer(String),
     Leave,
 }
 
@@ -38,6 +44,51 @@ pub struct Call {
     runtime: tokio::runtime::Runtime,
     commands: async_mpsc::UnboundedSender<Command>,
     events: Mutex<mpsc::Receiver<String>>,
+}
+
+fn kind_name(kind: VideoKind) -> &'static str {
+    match kind {
+        VideoKind::Camera => "camera",
+        VideoKind::Screen => "screen",
+    }
+}
+
+/// What the Kotlin side needs of the session before any media: its stream id,
+/// the data channel to open, what it may send and on which streams.
+pub fn local_json<S: CallSignaling>(session: &S) -> Value {
+    json!({
+        "type": "local",
+        "id": session.local_id(),
+        "dataChannel": session.data_channel(),
+        "dataProtocol": session.data_protocol(),
+        "canCamera": session.can_send(VideoKind::Camera),
+        "canScreen": session.can_send(VideoKind::Screen),
+        "cameraStream": session.video_stream(VideoKind::Camera),
+        "screenStream": session.video_stream(VideoKind::Screen),
+        "offersLocalSections": session.offers_local_sections(),
+        "screenApart": session.screen_apart(),
+    })
+}
+
+/// An event of the session that carries this side's screen, as the Kotlin side
+/// reads it apart from the call's own: its end ends the share, not the call.
+pub fn share_json(event: Value) -> Value {
+    json!({"type": "share", "event": event})
+}
+
+/// The next event of the screen's session, if there is one; never otherwise.
+async fn share_event<S: CallSignaling>(share: &mut Option<S>) -> Option<Event> {
+    match share {
+        Some(share) => share.next_event().await,
+        None => std::future::pending().await,
+    }
+}
+
+/// Whose and what a remote video track is, as its own ids say; `None` when
+/// they say nothing.
+pub fn named_json(track: &str, named: Option<(String, VideoKind)>) -> Option<Value> {
+    let (member, kind) = named?;
+    Some(json!({"type": "named", "track": track, "member": member, "kind": kind_name(kind)}))
 }
 
 /// The event as the Kotlin side reads it.
@@ -65,16 +116,23 @@ pub fn event_json(event: &Event) -> Value {
         Event::Over(reason) => json!({"type": "over", "reason": reason}),
         Event::MediaEnded => json!({"type": "media_ended"}),
         Event::Videos(videos) => {
-            let kind = |k: rv_call::VideoKind| match k {
-                rv_call::VideoKind::Camera => "camera",
-                rv_call::VideoKind::Screen => "screen",
-            };
             let videos: Vec<Value> =
-                videos.iter().map(|v| json!({"track": v.track, "member": v.member, "kind": kind(v.kind)})).collect();
+                videos.iter().map(|v| json!({"track": v.track, "member": v.member, "kind": kind_name(v.kind)})).collect();
             json!({"type": "videos", "videos": videos})
         }
         Event::DataMessage(text) => json!({"type": "data", "text": text}),
     }
+}
+
+/// The event as the Kotlin side reads it, an offer wanted with the receive-only
+/// video sections it must carry and whether it receives video (Chime).
+pub fn session_event_json<S: CallSignaling>(session: &S, event: &Event) -> Value {
+    let mut value = event_json(event);
+    if matches!(event, Event::OfferWanted { .. }) {
+        value["receiveVideos"] = json!(session.receive_videos());
+        value["receiveVideo"] = json!(session.offers_to_receive_video());
+    }
+    value
 }
 
 impl Call {
@@ -126,9 +184,7 @@ impl Call {
     ) -> Call {
         let (commands, command_rx) = async_mpsc::unbounded_channel();
         let (event_tx, events) = mpsc::channel();
-        let local = session.local_id().to_owned();
-        let channel = session.data_channel();
-        let _ = event_tx.send(json!({"type": "local", "id": local, "dataChannel": channel}).to_string());
+        let _ = event_tx.send(local_json(&session).to_string());
         runtime.spawn(drive(session, command_rx, event_tx));
         Call {
             runtime,
@@ -151,22 +207,33 @@ impl Call {
     }
 }
 
-async fn drive<S: CallSignaling + Send>(
+async fn drive<S: CallSignaling + Send + 'static>(
     mut session: S,
     mut commands: async_mpsc::UnboundedReceiver<Command>,
     events: mpsc::Sender<String>,
 ) {
+    let mut share: Option<S> = None;
     loop {
         tokio::select! {
             event = session.next_event() => match event {
                 Some(event) => {
                     let ended = matches!(event, Event::Ended(_) | Event::Over(_));
-                    if events.send(event_json(&event).to_string()).is_err() || ended {
+                    if events.send(session_event_json(&session, &event).to_string()).is_err() || ended {
                         break;
                     }
                 }
                 None => break,
             },
+            event = share_event(&mut share) => {
+                let over = matches!(event, None | Some(Event::Ended(_) | Event::Over(_)));
+                let event = event.map_or_else(|| json!({"type": "ended", "reason": "gone"}), |e| event_json(&e));
+                if over {
+                    share = None;
+                }
+                if events.send(share_json(event).to_string()).is_err() {
+                    break;
+                }
+            }
             command = commands.recv() => match command {
                 Some(Command::Offer(sdp)) => {
                     if let Err(e) = session.offer(&sdp).await {
@@ -184,12 +251,45 @@ async fn drive<S: CallSignaling + Send>(
                 Some(Command::Muted(muted)) => {
                     let _ = session.set_muted(muted).await;
                 }
+                Some(Command::Video(video)) => {
+                    if let Err(e) = session.set_video(video).await {
+                        let _ = events.send(json!({"type": "error", "message": e.to_string()}).to_string());
+                    }
+                }
+                Some(Command::RemoteVideo { track, stream }) => {
+                    if let Some(named) = named_json(&track, session.video_of(&track, &stream)) {
+                        let _ = events.send(named.to_string());
+                    }
+                }
+                Some(Command::Share(true)) => {
+                    if share.is_none() {
+                        share = session.screen_session();
+                        let event = share.as_ref().map_or_else(|| json!({"type": "ended", "reason": "not_apart"}), local_json);
+                        let _ = events.send(share_json(event).to_string());
+                    }
+                }
+                Some(Command::Share(false)) => {
+                    if let Some(mut stopped) = share.take() {
+                        tokio::spawn(async move { stopped.leave().await });
+                    }
+                }
+                Some(Command::ShareOffer(sdp)) => {
+                    if let Some(current) = &mut share
+                        && let Err(e) = current.offer(&sdp).await
+                    {
+                        share = None;
+                        let _ = events.send(share_json(json!({"type": "ended", "reason": e.to_string()})).to_string());
+                    }
+                }
                 Some(Command::Leave) | None => {
                     session.leave().await;
                     break;
                 }
             },
         }
+    }
+    if let Some(mut left) = share.take() {
+        left.leave().await;
     }
 }
 
@@ -285,6 +385,8 @@ pub extern "system" fn Java_com_rocketvibe_voice_JitsiCall_startMattermost(
     channel_id: JString,
     user_id: JString,
     ice_servers: JString,
+    screen: jboolean,
+    camera: jboolean,
 ) -> jlong {
     let (Some(server), Some(token), Some(channel_id), Some(user_id), Some(ice_servers)) = (
         text(&mut env, &server),
@@ -295,7 +397,7 @@ pub extern "system" fn Java_com_rocketvibe_voice_JitsiCall_startMattermost(
     ) else {
         return 0;
     };
-    let config = rv_call::mattermost::Config { server, token, channel_id, user_id, screen: false, camera: false };
+    let config = rv_call::mattermost::Config { server, token, channel_id, user_id, screen: screen != 0, camera: camera != 0 };
     match Call::start_mattermost(config, &ice_servers) {
         Some(call) => {
             let handle = NEXT.fetch_add(1, Ordering::Relaxed);
@@ -375,6 +477,57 @@ pub extern "system" fn Java_com_rocketvibe_voice_JitsiCall_muted(
 ) {
     if let Some(call) = call(handle) {
         call.send(Command::Muted(muted != 0));
+    }
+}
+
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_com_rocketvibe_voice_JitsiCall_video(
+    _env: JNIEnv,
+    _class: JClass,
+    handle: jlong,
+    camera: jboolean,
+    screen: jboolean,
+) {
+    if let Some(call) = call(handle) {
+        call.send(Command::Video(LocalVideo { camera: camera != 0, screen: screen != 0 }));
+    }
+}
+
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_com_rocketvibe_voice_JitsiCall_remoteVideo(
+    mut env: JNIEnv,
+    _class: JClass,
+    handle: jlong,
+    track: JString,
+    stream: JString,
+) {
+    if let (Some(call), Some(track)) = (call(handle), text(&mut env, &track)) {
+        let stream = text(&mut env, &stream).unwrap_or_default();
+        call.send(Command::RemoteVideo { track, stream });
+    }
+}
+
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_com_rocketvibe_voice_JitsiCall_share(
+    _env: JNIEnv,
+    _class: JClass,
+    handle: jlong,
+    on: jboolean,
+) {
+    if let Some(call) = call(handle) {
+        call.send(Command::Share(on != 0));
+    }
+}
+
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_com_rocketvibe_voice_JitsiCall_shareOffer(
+    mut env: JNIEnv,
+    _class: JClass,
+    handle: jlong,
+    sdp: JString,
+) {
+    if let (Some(call), Some(sdp)) = (call(handle), text(&mut env, &sdp)) {
+        call.send(Command::ShareOffer(sdp));
     }
 }
 
@@ -474,6 +627,192 @@ mod tests {
         assert_eq!(servers.len(), 1);
         assert_eq!(servers[0].urls, vec!["stun:s.example:3478".to_owned()]);
         assert!(ice_servers_of("not json").is_empty());
+    }
+
+    /// A provider that takes cameras only, on streams of its own, in sections of its own.
+    struct Fake;
+
+    impl CallSignaling for Fake {
+        async fn next_event(&mut self) -> Option<Event> {
+            None
+        }
+        async fn answer(&mut self, _sdp: &str) -> Result<(), rv_call::Error> {
+            Ok(())
+        }
+        async fn local_candidate(&mut self, _candidate: Candidate) -> Result<(), rv_call::Error> {
+            Ok(())
+        }
+        async fn set_muted(&mut self, _muted: bool) -> Result<(), rv_call::Error> {
+            Ok(())
+        }
+        async fn leave(&mut self) {}
+        fn local_id(&self) -> &str {
+            "me"
+        }
+        fn data_channel(&self) -> Option<&'static str> {
+            Some("dc")
+        }
+        fn data_protocol(&self) -> &'static str {
+            "proto"
+        }
+        fn can_send(&self, kind: VideoKind) -> bool {
+            kind == VideoKind::Camera
+        }
+        fn video_stream(&self, kind: VideoKind) -> String {
+            format!("me-{}", kind_name(kind))
+        }
+        fn receive_videos(&self) -> usize {
+            2
+        }
+        fn offers_to_receive_video(&self) -> bool {
+            true
+        }
+    }
+
+    #[test]
+    fn the_local_event_says_what_the_call_takes_and_on_which_streams() {
+        assert_eq!(
+            local_json(&Fake),
+            json!({
+                "type": "local", "id": "me", "dataChannel": "dc", "dataProtocol": "proto",
+                "canCamera": true, "canScreen": false,
+                "cameraStream": "me-camera", "screenStream": "me-screen",
+                "offersLocalSections": false, "screenApart": false,
+            })
+        );
+    }
+
+    #[test]
+    fn an_offer_wanted_says_how_many_sections_receive_video() {
+        assert_eq!(
+            session_event_json(&Fake, &Event::OfferWanted { relay_only: true }),
+            json!({"type": "offerWanted", "relayOnly": true, "receiveVideos": 2, "receiveVideo": true})
+        );
+        assert_eq!(session_event_json(&Fake, &Event::MediaEnded), json!({"type": "media_ended"}));
+    }
+
+    #[test]
+    fn a_track_named_by_its_ids_reads_whose_and_what() {
+        assert_eq!(
+            named_json("screen_s1_x", Some(("s1".into(), VideoKind::Screen))),
+            Some(json!({"type": "named", "track": "screen_s1_x", "member": "s1", "kind": "screen"}))
+        );
+        assert_eq!(named_json("t", None), None);
+        assert_eq!(
+            named_json("video_s2_y", rv_call::mattermost::video_of("video_s2_y")),
+            Some(json!({"type": "named", "track": "video_s2_y", "member": "s2", "kind": "camera"}))
+        );
+    }
+
+    #[test]
+    fn the_remote_videos_read_as_a_list() {
+        let videos = event_json(&Event::Videos(vec![rv_call::RemoteVideo {
+            track: "e1-v0".into(),
+            member: "e1".into(),
+            kind: VideoKind::Camera,
+        }]));
+        assert_eq!(videos, json!({"type": "videos", "videos": [{"track": "e1-v0", "member": "e1", "kind": "camera"}]}));
+        assert_eq!(event_json(&Event::DataMessage("hi".into())), json!({"type": "data", "text": "hi"}));
+    }
+
+    /// A provider whose screen goes on a session of its own, each session's
+    /// offers, video and leaving written down, the screen's events fed by the test.
+    struct Apart {
+        id: String,
+        events: async_mpsc::UnboundedReceiver<Event>,
+        log: Arc<Mutex<Vec<String>>>,
+        shares: Arc<Mutex<Vec<async_mpsc::UnboundedSender<Event>>>>,
+    }
+
+    impl CallSignaling for Apart {
+        async fn next_event(&mut self) -> Option<Event> {
+            self.events.recv().await
+        }
+        async fn answer(&mut self, _sdp: &str) -> Result<(), rv_call::Error> {
+            Ok(())
+        }
+        async fn offer(&mut self, sdp: &str) -> Result<(), rv_call::Error> {
+            self.log.lock().unwrap().push(format!("{} offer {sdp}", self.id));
+            Ok(())
+        }
+        async fn local_candidate(&mut self, _candidate: Candidate) -> Result<(), rv_call::Error> {
+            Ok(())
+        }
+        async fn set_muted(&mut self, _muted: bool) -> Result<(), rv_call::Error> {
+            Ok(())
+        }
+        async fn set_video(&mut self, video: LocalVideo) -> Result<(), rv_call::Error> {
+            self.log.lock().unwrap().push(format!("{} video {} {}", self.id, video.camera, video.screen));
+            Ok(())
+        }
+        async fn leave(&mut self) {
+            self.log.lock().unwrap().push(format!("{} leave", self.id));
+        }
+        fn local_id(&self) -> &str {
+            &self.id
+        }
+        fn screen_apart(&self) -> bool {
+            !self.id.ends_with("#content")
+        }
+        fn screen_session(&self) -> Option<Self> {
+            if !self.screen_apart() {
+                return None;
+            }
+            let (tx, events) = async_mpsc::unbounded_channel();
+            self.shares.lock().unwrap().push(tx);
+            Some(Apart { id: format!("{}#content", self.id), events, log: self.log.clone(), shares: self.shares.clone() })
+        }
+    }
+
+    #[test]
+    fn the_screen_goes_on_a_session_of_its_own_whose_end_ends_only_the_share() {
+        let runtime = Call::runtime().unwrap();
+        let (main_tx, main_events) = async_mpsc::unbounded_channel();
+        let (log, shares) = (Arc::new(Mutex::new(Vec::new())), Arc::new(Mutex::new(Vec::new())));
+        let session = Apart { id: "a".into(), events: main_events, log: log.clone(), shares: shares.clone() };
+        assert_eq!(local_json(&session)["screenApart"], true);
+        let (commands, command_rx) = async_mpsc::unbounded_channel();
+        let (event_tx, events) = mpsc::channel();
+        runtime.spawn(drive(session, command_rx, event_tx));
+        let next = || -> Value { serde_json::from_str(&events.recv_timeout(Duration::from_secs(2)).unwrap()).unwrap() };
+        let logged = |line: &str| {
+            for _ in 0..200 {
+                if log.lock().unwrap().iter().any(|l| l == line) {
+                    return true;
+                }
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            false
+        };
+
+        commands.send(Command::Share(true)).unwrap();
+        let local = next();
+        assert_eq!((local["type"].clone(), local["event"]["type"].clone(), local["event"]["id"].clone()), (json!("share"), json!("local"), json!("a#content")));
+        commands.send(Command::Share(true)).unwrap();
+        let share = shares.lock().unwrap()[0].clone();
+        share.send(Event::OfferWanted { relay_only: true }).unwrap();
+        assert_eq!(next(), json!({"type": "share", "event": {"type": "offerWanted", "relayOnly": true}}), "one session for a capture asked twice");
+        commands.send(Command::ShareOffer("v=0".into())).unwrap();
+        assert!(logged("a#content offer v=0"));
+        commands.send(Command::Video(LocalVideo { camera: false, screen: true })).unwrap();
+        assert!(logged("a video false true"), "the call's own session is told the screen is sent");
+        commands.send(Command::Share(false)).unwrap();
+        assert!(logged("a#content leave"));
+
+        commands.send(Command::Share(true)).unwrap();
+        assert_eq!(next()["event"]["type"], "local");
+        let share = shares.lock().unwrap()[1].clone();
+        share.send(Event::Ended("connect_failed".into())).unwrap();
+        assert_eq!(next(), json!({"type": "share", "event": {"type": "ended", "reason": "connect_failed"}}));
+        main_tx.send(Event::Roster(Vec::new())).unwrap();
+        assert_eq!(next()["type"], "roster", "the call goes on");
+        commands.send(Command::Share(true)).unwrap();
+        assert_eq!(next()["event"]["id"], "a#content", "a new share once the last one ended");
+
+        commands.send(Command::Leave).unwrap();
+        assert!(logged("a leave"));
+        assert!(logged("a#content leave"), "the call left leaves its share");
+        assert_eq!(log.lock().unwrap().iter().filter(|l| *l == "a#content leave").count(), 2);
     }
 
     #[test]

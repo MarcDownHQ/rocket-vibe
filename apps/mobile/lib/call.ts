@@ -183,6 +183,26 @@ export async function callPersonName(client: RestClient, identity: string): Prom
   return name === undefined ? null : name(identity);
 }
 
+/**
+ * The room a call belongs to, its chat opened beside it: the room it was opened
+ * from, else a Mattermost plugin call's channel (`mmcalls:<channel>`); null when
+ * none is known.
+ */
+export function callRoom(callId: string, rid: string | undefined): string | null {
+  if (rid !== undefined && rid !== '') return rid;
+  const channel = callId.startsWith('mmcalls:') ? callId.slice('mmcalls:'.length) : '';
+  return channel === '' ? null : channel;
+}
+
+/**
+ * What a native call takes from this side besides the microphone, as the voice
+ * engine says: a provider that does not take a camera or a screen (a Slack huddle,
+ * a Mattermost plugin without video) shows no button for it.
+ */
+export function callSends(snapshot: { canCamera?: boolean; canScreen?: boolean } | null): { camera: boolean; screen: boolean } {
+  return { camera: snapshot?.canCamera === true, screen: snapshot?.canScreen === true };
+}
+
 /** `url` cut before its query or fragment. */
 export function withoutToken(url: string): string {
   return url.split(/[?#]/u)[0] ?? url;

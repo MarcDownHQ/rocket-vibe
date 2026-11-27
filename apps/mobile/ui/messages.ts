@@ -1670,6 +1670,8 @@ const fr = {
   'call.endRemote': 'l’appel est terminé de l’autre côté',
   'call.endNoAnswer': 'pas de réponse',
   'call.endElsewhere': 'rejoint depuis un autre appareil',
+  'call.videoDeclined': 'Votre correspondant n’a pas accepté la vidéo. Caméra et partage d’écran coupés.',
+  'call.screenUnavailable': 'Impossible de partager l’écran.',
   'call.endRemoved': 'retiré de l’appel',
   'call.loadFailed': "L'appel n'a pas pu se charger.",
 
@@ -3420,6 +3422,8 @@ const en: Record<TranslationKey, string> = {
   'call.endRemote': 'the other side ended the call',
   'call.endNoAnswer': 'no answer',
   'call.endElsewhere': 'joined from another device',
+  'call.videoDeclined': 'The other person did not take the video. Camera and screen sharing are off.',
+  'call.screenUnavailable': "Couldn't share the screen.",
   'call.endRemoved': 'removed from the call',
   'call.loadFailed': "The call couldn't load.",
 

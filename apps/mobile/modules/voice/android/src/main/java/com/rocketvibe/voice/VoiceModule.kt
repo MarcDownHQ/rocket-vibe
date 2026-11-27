@@ -26,32 +26,47 @@ class ConnectOptions : Record {
   @Field val e2eeKey: String? = null
 }
 
+/** What a Mattermost Calls plugin lets a member send besides the microphone. */
+class MattermostSends : Record {
+  @Field val screen: Boolean = false
+  @Field val camera: Boolean = false
+}
+
 /** JS face of [VoiceEngine]: commands in, one `change` event carrying the whole snapshot out. */
 class VoiceModule : Module() {
   private val listener: () -> Unit = { sendEvent("change", VoiceEngine.last) }
   private val levelListener: (Double) -> Unit = { level -> sendEvent("level", mapOf("level" to level)) }
   private val mutedSpeechListener: () -> Unit = { sendEvent("mutedSpeech", emptyMap<String, Any>()) }
+  private val videoDeclinedListener: () -> Unit = { sendEvent("videoDeclined", emptyMap<String, Any>()) }
+  private val screenUnavailableListener: () -> Unit = { sendEvent("screenUnavailable", emptyMap<String, Any>()) }
   private val hangUpListener: () -> Unit = { sendEvent("hangUp", emptyMap<String, Any>()) }
   private val offerListener: (String) -> Unit = { sdp -> sendEvent("localOffer", mapOf("sdp" to sdp)) }
+  private val dataListener: (ByteArray) -> Unit = { data -> sendEvent("data", mapOf("data" to data.map { it.toInt() and 0xff })) }
   private var consent: Promise? = null
 
   override fun definition() = ModuleDefinition {
     Name("Voice")
-    Events("change", "level", "hangUp", "localOffer", "mutedSpeech")
+    Events("change", "level", "hangUp", "localOffer", "data", "mutedSpeech", "videoDeclined", "screenUnavailable")
     OnCreate {
       VoiceEngine.attach(appContext.reactContext ?: throw IllegalStateException("No React context"))
       VoiceEngine.listen(listener)
       VoiceEngine.listenLevel(levelListener)
       VoiceEngine.listenMutedSpeech(mutedSpeechListener)
+      VoiceEngine.listenVideoDeclined(videoDeclinedListener)
+      VoiceEngine.listenScreenUnavailable(screenUnavailableListener)
       CallService.listen(hangUpListener)
       VoiceEngine.onLocalOffer = offerListener
+      VoiceEngine.onData = dataListener
     }
     OnDestroy {
       VoiceEngine.unlisten(listener)
       VoiceEngine.unlistenLevel(levelListener)
       VoiceEngine.unlistenMutedSpeech(mutedSpeechListener)
+      VoiceEngine.unlistenVideoDeclined(videoDeclinedListener)
+      VoiceEngine.unlistenScreenUnavailable(screenUnavailableListener)
       CallService.unlisten(hangUpListener)
       VoiceEngine.onLocalOffer = null
+      VoiceEngine.onData = null
     }
     Function("snapshot") { VoiceEngine.last }
     Function("canvasRead") { load: String -> Canvas.readDocument(load) }
@@ -67,11 +82,14 @@ class VoiceModule : Module() {
     AsyncFunction("connectChime") { callId: String, signalingUrl: String, audioHost: String, attendeeId: String, joinToken: String, origin: String, title: String ->
       VoiceEngine.connectChime(callId, ChimeCredentials(signalingUrl, audioHost, attendeeId, joinToken, origin), title)
     }.runOnQueue(Queues.MAIN)
-    AsyncFunction("connectMattermost") { callId: String, server: String, token: String, channelId: String, userId: String, iceServers: String, title: String ->
-      VoiceEngine.connectMattermost(callId, MattermostCall(server, token, channelId, userId, iceServers), title)
+    AsyncFunction("connectMattermost") { callId: String, server: String, token: String, channelId: String, userId: String, iceServers: String, title: String, sends: MattermostSends ->
+      VoiceEngine.connectMattermost(callId, MattermostCall(server, token, channelId, userId, iceServers, sends.screen, sends.camera), title)
     }.runOnQueue(Queues.MAIN)
-    AsyncFunction("connectExternal") { callId: String, identity: String, title: String, answering: Boolean ->
-      VoiceEngine.connectExternal(callId, identity, title, answering)
+    AsyncFunction("connectExternal") { callId: String, identity: String, title: String, answering: Boolean, video: Boolean, dataChannel: String?, receiveVideos: Int, videoUpFront: Boolean ->
+      VoiceEngine.connectExternal(callId, identity, title, answering, video, dataChannel, receiveVideos, videoUpFront)
+    }.runOnQueue(Queues.MAIN)
+    AsyncFunction("sendData") { data: List<Int> ->
+      VoiceEngine.sendData(ByteArray(data.size) { data[it].toByte() })
     }.runOnQueue(Queues.MAIN)
     AsyncFunction("connectPcm") { callId: String, address: String, title: String ->
       VoiceEngine.connectPcm(callId, address, title)
@@ -81,6 +99,11 @@ class VoiceModule : Module() {
     AsyncFunction("remoteRoster") { members: List<Map<String, Any?>> ->
       VoiceEngine.remoteRoster(members.map { m ->
         Triple(m["id"] as? String ?: "", m["name"] as? String ?: "", m["muted"] as? Boolean ?: false)
+      })
+    }.runOnQueue(Queues.MAIN)
+    AsyncFunction("remoteVideos") { videos: List<Map<String, Any?>> ->
+      VoiceEngine.remoteVideos(videos.map { v ->
+        RemoteVideo(v["stream"] as? String ?: "", v["member"] as? String ?: "", if (v["screen"] == true) "screen" else "camera")
       })
     }.runOnQueue(Queues.MAIN)
     AsyncFunction("remoteEnded") { reason: String -> VoiceEngine.remoteEnded(reason) }.runOnQueue(Queues.MAIN)

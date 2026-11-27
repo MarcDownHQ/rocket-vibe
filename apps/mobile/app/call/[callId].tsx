@@ -15,14 +15,16 @@ import { WebView } from 'react-native-webview';
 
 import { callAllowed as teamsCallAllowed } from '@rocket-vibe/provider-teams/translate';
 import type { ExternalCallEngine, PcmCallEngine } from '@rocket-vibe/provider-api/calls';
-import { answerNative, answerableNative, callContext, callPersonName, carriesPcm, carryNative, joinConference, joinsInRoomNative, nativeChime, nativeJitsi, nativeMattermost, placeNative } from '../../lib/call.ts';
+import { answerableNative, answerNative, callContext, callPersonName, callRoom, callSends, carriesPcm, carryNative, joinConference, joinsInRoomNative, nativeChime, nativeJitsi, nativeMattermost, placeNative } from '../../lib/call.ts';
 import { sameOrigin, originOf } from '../../lib/origin.ts';
-import { VoiceNative, type VoiceSnapshot } from '../../modules/voice/index.ts';
+import { VoiceNative, VoiceVideoView, type VoiceSnapshot } from '../../modules/voice/index.ts';
 import type { RestClient } from '../../lib/rest.ts';
 import { TILE_GAP, arrangeTiles } from '../../lib/voiceGrid.ts';
 import { useT } from '../../ui/i18n.ts';
 import type { TranslateFn as T } from '../../ui/messages.ts';
-import { ControlButton, VoiceTile, type VoiceCard } from '../../ui/voice.tsx';
+import { ControlButton, ScreenStage, VoiceTile, type VoiceCard } from '../../ui/voice.tsx';
+import { notify } from '../../ui/toast.tsx';
+import { Icon } from '../../ui/icon.tsx';
 import { useSession } from '../../ui/session.tsx';
 import {useSync} from '../../ui/sync.tsx';
 import { type Colors, FONTS, useColors } from '../../ui/theme.ts';
@@ -222,8 +224,8 @@ function Call({
           const sub = voice.addListener('localOffer', ({ sdp }) => { clearTimeout(timer); sub.remove(); resolve(sdp); });
         });
         const engine: ExternalCallEngine = {
-          start: async (identity) => {
-            if (!await voice.connectExternal(callId, identity, title, false)) throw new Error('voice_unavailable');
+          start: async (identity, options) => {
+            if (!await voice.connectExternal(callId, identity, title, false, true, options?.dataChannel ?? null, options?.receiveVideos ?? 0, options?.videoUpFront === true)) throw new Error('voice_unavailable');
           },
           offer: () => offered,
           answer: (sdp) => voice.remoteAnswer(sdp),
@@ -235,6 +237,7 @@ function Call({
               if (next.state === 'disconnected') { sub.remove(); resolve(); }
             });
           }),
+          ...externalVideo(voice),
         };
         return await placeNative(client, rid, engine);
       } catch {
@@ -281,7 +284,7 @@ function Call({
         await requestMicrophone();
         const call = await nativeMattermost(client, callId);
         if (call === null || !alive) return false;
-        return await VoiceNative.connectMattermost(callId, call.server, call.token, call.channelId, call.userId, JSON.stringify(call.iceServers), title);
+        return await VoiceNative.connectMattermost(callId, call.server, call.token, call.channelId, call.userId, JSON.stringify(call.iceServers), title, { screen: call.screen, camera: call.camera });
       } catch {
         return false;
       }
@@ -293,8 +296,8 @@ function Call({
       try {
         await requestMicrophone();
         const engine: ExternalCallEngine = {
-          start: async (identity) => {
-            if (!await voice.connectExternal(callId, identity, title, true)) throw new Error('voice_unavailable');
+          start: async (identity, options) => {
+            if (!await voice.connectExternal(callId, identity, title, true, true, options?.dataChannel ?? null, options?.receiveVideos ?? 0, options?.videoUpFront === true)) throw new Error('voice_unavailable');
           },
           offer: () => Promise.reject(new Error('answering')),
           answer: (sdp) => voice.remoteAnswer(sdp),
@@ -306,6 +309,7 @@ function Call({
               if (next.state === 'disconnected') { sub.remove(); resolve(); }
             });
           }),
+          ...externalVideo(voice),
         };
         return await answerNative(client, room, engine);
       } catch {
@@ -388,6 +392,8 @@ function Call({
   // Teams passes through Microsoft's sign-in and CDNs: its lock is Microsoft's
   // own pages (`callAllowed` in provider-teams), not one origin.
   const teams = client.kind === 'teams';
+  // The call's room, its chat opened over this screen: the voice engine holds the call meanwhile, back returns here.
+  const room = callRoom(callId, rid);
 
   return (
     <View style={[styles.full, { backgroundColor: '#000', paddingTop: insets.top }]}>
@@ -397,6 +403,18 @@ function Call({
         <Text style={[styles.title, { color: c.text }]} numberOfLines={1}>
           {title}
         </Text>
+        {native && room !== null && (
+          <Pressable
+            onPress={() => router.push({ pathname: '/room/[rid]', params: { rid: room } })}
+            hitSlop={8}
+            accessibilityRole="button"
+            accessibilityLabel={t('voice.openChat')}
+            android_ripple={{ color: c.ripple, borderless: true }}
+            style={styles.chat}
+          >
+            <Icon name="chat-message-new" size={22} color={c.secondaryText} />
+          </Pressable>
+        )}
         <Pressable
           onPress={finish}
           hitSlop={10}
@@ -482,11 +500,52 @@ function endReason(t: T, reason: string | null | undefined): string {
   }
 }
 
+/** The own camera on or off; it asks for the camera first. */
+async function toggleCamera(on: boolean, t: T): Promise<void> {
+  if (on) return VoiceNative?.setCamera(false);
+  if (Platform.OS === 'android' && await PermissionsAndroid.request(PermissionsAndroid.PERMISSIONS.CAMERA) !== PermissionsAndroid.RESULTS.GRANTED) {
+    notify(t('voice.cameraDenied'));
+    return;
+  }
+  await VoiceNative?.setCamera(true);
+}
+
+/** The voice engine's video, for a call whose signalling the app speaks (Teams): its later offers, what this side sends, whose the other side's videos are, and its data channel. */
+function externalVideo(voice: NonNullable<typeof VoiceNative>): Pick<ExternalCallEngine, 'offers' | 'sending' | 'sent' | 'videos' | 'sendData' | 'data'> {
+  return {
+    offers: (listener) => {
+      const sub = voice.addListener('localOffer', ({ sdp }) => listener(sdp));
+      return () => sub.remove();
+    },
+    sending: () => {
+      const now = voice.snapshot();
+      return { camera: now.camera === true, screen: now.sharing === true };
+    },
+    sent: (listener) => {
+      let last = '';
+      const sub = voice.addListener('change', (next) => {
+        const local = next.participants.find((p) => p.local);
+        const now = { camera: local?.camera === true, screen: local?.screen === true };
+        const key = `${now.camera} ${now.screen}`;
+        if (key !== last) { last = key; listener(now); }
+      });
+      return () => sub.remove();
+    },
+    videos: (videos) => voice.remoteVideos(videos),
+    sendData: (data) => voice.sendData(Array.from(data)),
+    data: (listener) => {
+      const sub = voice.addListener('data', ({ data }) => listener(Uint8Array.from(data)));
+      return () => sub.remove();
+    },
+  };
+}
+
 /**
- * A native Jitsi call, drawn as the Vibez voice screen: a tile per person
- * whose border lights while they speak, and the same control buttons. A lost
- * call shows "Reconnecting…" while the engine joins again; one that ends stays
- * on screen with the reason.
+ * A native call, drawn as the Vibez voice screen: a tile per person whose
+ * border lights while they speak, their camera filling it, a shared screen on a
+ * stage with the people in a strip, and the same control buttons, camera and
+ * screen only where the provider takes them. A lost call shows "Reconnecting…"
+ * while the engine joins again; one that ends stays on screen with the reason.
  */
 function NativeCall({ c, client, snapshot, onClose }: { c: Colors; client: RestClient; snapshot: VoiceSnapshot | null; onClose: () => void }) {
   // A provider that gives only ids (a Slack huddle): each name read once.
@@ -506,6 +565,11 @@ function NativeCall({ c, client, snapshot, onClose }: { c: Colors; client: RestC
   }, [client, unnamed]);
   const t = useT();
   const [area, setArea] = useState({ width: 0, height: 0 });
+  useEffect(() => {
+    const subscription = VoiceNative?.addListener('videoDeclined', () => notify(t('call.videoDeclined')));
+    const screen = VoiceNative?.addListener('screenUnavailable', () => notify(t('call.screenUnavailable')));
+    return () => { subscription?.remove(); screen?.remove(); };
+  }, [t]);
   if (snapshot === null || snapshot.state === 'connecting' || snapshot.state === 'idle') {
     return (
       <View style={styles.center}>
@@ -527,8 +591,10 @@ function NativeCall({ c, client, snapshot, onClose }: { c: Colors; client: RestC
   const muted = snapshot.microphone === false || snapshot.deafened === true;
   const cards: VoiceCard[] = snapshot.participants.map((p) => ({
     uid: p.identity, name: p.local ? t('voice.you') : (p.name || names[p.identity] || p.identity), speaking: p.speaking, muted: p.muted,
-    deafened: p.deafened === true, local: false, camera: false, screen: false, mutedHere: false,
+    deafened: p.deafened === true, local: false, camera: p.camera === true, screen: p.screen === true, mutedHere: false,
   }));
+  const sends = callSends(snapshot);
+  const sharer = cards.find((card) => card.screen);
   const layout = arrangeTiles(cards.length, area.width, area.height);
   const rows: VoiceCard[][] = [];
   for (let i = 0; i < cards.length; i += layout.columns) rows.push(cards.slice(i, i + layout.columns));
@@ -537,21 +603,33 @@ function NativeCall({ c, client, snapshot, onClose }: { c: Colors; client: RestC
       <Text style={[styles.status, { color: snapshot.state === 'connected' ? c.online : c.dimmed }]}>
         {snapshot.state === 'reconnecting' ? t('voice.reconnecting') : t('voice.connected')}
       </Text>
-      <View style={styles.grid} onLayout={e => setArea({ width: e.nativeEvent.layout.width, height: e.nativeEvent.layout.height })}>
-        {area.width > 0 && rows.map(row => (
-          <View key={row[0]!.uid} style={styles.gridRow}>
-            {row.map(card => (
-              <VoiceTile key={card.uid} c={c} client={null} card={card} width={layout.width} height={layout.height} you={t('voice.you')} />
-            ))}
-          </View>
-        ))}
-      </View>
+      {sharer !== undefined && VoiceVideoView !== null ? (
+        <ScreenStage c={c} client={null} sharer={sharer} cards={cards} />
+      ) : (
+        <View style={styles.grid} onLayout={e => setArea({ width: e.nativeEvent.layout.width, height: e.nativeEvent.layout.height })}>
+          {area.width > 0 && rows.map(row => (
+            <View key={row[0]!.uid} style={styles.gridRow}>
+              {row.map(card => (
+                <VoiceTile key={card.uid} c={c} client={null} card={card} width={layout.width} height={layout.height} you={t('voice.you')} />
+              ))}
+            </View>
+          ))}
+        </View>
+      )}
       <View style={styles.controls}>
         <ControlButton c={c} label={muted ? t('voice.unmute') : t('voice.mute')} icon={muted ? 'microphone-disabled' : 'audio-input-microphone'}
           active={muted} onPress={() => void VoiceNative?.setMicrophone(muted)} />
         <ControlButton c={c} label={snapshot.deafened ? t('voice.undeafen') : t('voice.deafen')}
           icon={snapshot.deafened ? 'audio-volume-muted' : 'audio-headphones'} active={snapshot.deafened === true}
           onPress={() => void VoiceNative?.setDeafened(!snapshot.deafened)} />
+        {sends.camera && (
+          <ControlButton c={c} label={snapshot.camera ? t('voice.cameraOff') : t('voice.camera')} icon="camera-web" active={snapshot.camera === true}
+            onPress={() => void toggleCamera(snapshot.camera === true, t)} />
+        )}
+        {sends.screen && (
+          <ControlButton c={c} label={snapshot.sharing ? t('voice.stopScreen') : t('voice.shareScreen')} icon="video-display" active={snapshot.sharing === true}
+            onPress={() => void (snapshot.sharing ? VoiceNative?.stopScreenShare() : VoiceNative?.startScreenShare())} />
+        )}
         <ControlButton c={c} label={t('voice.leave')} icon="call-stop" danger onPress={onClose} />
       </View>
     </View>
@@ -585,7 +663,8 @@ const styles = StyleSheet.create({
     paddingVertical: 10,
     borderBottomWidth: StyleSheet.hairlineWidth,
   },
-  title: { fontFamily: FONTS.title, fontSize: 16, flexShrink: 1 },
+  title: { fontFamily: FONTS.title, fontSize: 16, flexShrink: 1, flexGrow: 1 },
+  chat: { padding: 4 },
   finish: { borderRadius: 20, paddingHorizontal: 16, paddingVertical: 8 },
   finishText: { fontFamily: FONTS.bodyStrong, fontSize: 14 },
   loadingText: { fontFamily: FONTS.body, fontSize: 14 },

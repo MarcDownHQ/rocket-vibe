@@ -7,6 +7,16 @@ release, and its notes are that version's section here.
 
 ## [Unreleased]
 
+### Added
+
+- Calls inside the app (Rocket.Chat's Jitsi, kChat's kMeet, Mattermost's Calls plugin) show the others' cameras and shared screens, and send your camera and screen where the server takes them (Mattermost: a screen, and a camera when the plugin enables video).
+- The call screen has a chat button: the call's room opens over it while the call goes on, and Back returns to the call.
+- WhatsApp (experimental): 1:1 video calls ring and are answered inside the app, your camera off; during a 1:1 call you see the other person's camera and can send your camera or your screen. If they refuse the switch to video, a notice says so and your camera and screen sharing turn off. Group calls stay on the phone.
+- Teams (experimental): calls run in the app show the other person's camera and shared screen, and send your camera and your screen.
+- Teams (experimental): group calls and meetings run in the app show up to four people's cameras and a shared screen (not yet tried against Teams).
+- Slack (experimental): huddles run in the app show the others' cameras and shared screens, and send your camera and your screen (not yet tried in a live huddle).
+- Teams (experimental): in group calls and meetings run in the app, your camera and your screen go out as Teams' web client sends them (not yet tried against Teams).
+
 ## [0.27.0] - 2026-11-18
 
 ### Added
